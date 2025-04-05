@@ -80,6 +80,46 @@ You have a few options to run the agent:
 
 The agent will start, log its initialization, and begin processing the profile specified by `TEST_PROFILE_URL` in your `.env` file. Watch the console for detailed logs!
 
+## 🐍 Leaderboard Scraping Utility (Python)
+
+This project includes a separate Python utility to scrape the SpacesDashboard leaderboard for potentially interesting Twitter Spaces hosts. This uses the `nova-act` library.
+
+**Location:** `scraper_utility/scrape_leaderboard.py`
+
+**Requirements:**
+
+*   Python 3.x installed.
+*   Python dependencies installed: Run `pip install -r scraper_utility/requirements.txt` from the project root or within the `scraper_utility` directory.
+*   `NOVA_ACT_API_KEY` environment variable: You need an API key for the `nova-act` service. Set this variable in your environment before running the script.
+
+**How to Run:**
+
+1.  Navigate to the utility directory:
+    ```bash
+    cd scraper_utility
+    ```
+2.  Install dependencies (if you haven't already):
+    ```bash
+    pip install -r requirements.txt
+    ```
+3.  Set the API key environment variable (replace `'your_key_here'`):
+    ```bash
+    export NOVA_ACT_API_KEY='your_key_here'
+    # Or on Windows (Command Prompt):
+    # set NOVA_ACT_API_KEY=your_key_here
+    # Or on Windows (PowerShell):
+    # $env:NOVA_ACT_API_KEY='your_key_here'
+    ```
+4.  Run the script:
+    ```bash
+    python scrape_leaderboard.py
+    ```
+    *   You can pass options like `--headless=false` or `--limit=100`.
+
+**Output:**
+
+The script will save the scraped data to `leaderboard_data.json` in the **project root directory** (i.e., `../leaderboard_data.json` relative to the script).
+
 ## ⚙️ Configuration Details (.env)
 
 *   `SPEECHLAB_EMAIL`/`PASSWORD`: Essential for accessing the SpeechLab API.
