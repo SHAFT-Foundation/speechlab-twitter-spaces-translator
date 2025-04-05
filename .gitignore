@@ -134,3 +134,16 @@ dist
 .yarn/build-state.yml
 .yarn/install-state.gz
 .pnp.*
+
+# Playwright specific ignores
+.cache/
+test-results/
+playwright-report/
+playwright/.cache/
+
+# Python Scraper Utility
+/scraper_utility/.venv/
+/scraper_utility/__pycache__/
+/scraper_utility/*.pyc
+*.html # Ignore potentially saved raw html files
+leaderboard_data.json # Ignore generated data file by default

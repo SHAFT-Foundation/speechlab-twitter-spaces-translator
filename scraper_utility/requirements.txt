@@ -1,0 +1,4 @@
+# Required libraries for the scraper utility
+nova-act
+pydantic
+fire 
