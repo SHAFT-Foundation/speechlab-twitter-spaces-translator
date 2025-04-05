@@ -60,8 +60,11 @@ def scrape_leaderboard(
             for i in range(scrolls + 1): # Initial load + number of scrolls
                 print(f"--- Extraction attempt {i+1}/{scrolls+1} ---")
                 prompt = (
-                    "Look at the list of Twitter Spaces shown in the main leaderboard area. Process each distinct entry listed and save the text data and any loinks if the text has a clickable link "
-              "Return all the information you find as a list wiht headers for the variables of each proprty u make up."
+                    "Examine the list of Twitter Spaces on the leaderboard. For each distinct entry, extract the following: "
+                    "1. The main title or topic of the space (map to 'spaceTitle'). "
+                    "2. The URL link to the host's profile (map to 'hostProfileUrl'). "
+                    "3. The URL associated with the 'Play' button or icon for that specific space entry (map to 'directSpaceUrl'). "
+                    "Return the results as a list of objects matching the provided schema."
                 )
                 result = nova.act(
                     prompt,
