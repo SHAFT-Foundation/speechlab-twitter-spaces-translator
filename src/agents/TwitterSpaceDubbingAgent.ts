@@ -6,6 +6,13 @@ import { downloadAndUploadAudio } from '../services/audioService';
 import { createDubbingProject, generateSharingLink } from '../services/speechlabApiService';
 import { LeaderboardEntry } from '../services/scraperService'; // Import the interface
 
+// Define a return type for the processing results
+export interface ProcessingResult {
+    processingAttempted: boolean; // Whether the entry had a valid play button and processing was attempted
+    success: boolean;             // Whether processing completed successfully
+    errorMessage?: string;        // Optional error message if processing failed
+}
+
 export class TwitterSpaceDubbingAgent {
 
     constructor() {
@@ -15,16 +22,22 @@ export class TwitterSpaceDubbingAgent {
     /**
      * Processes a single leaderboard entry: finds M3U8, downloads, dubs, posts.
      * @param entry The LeaderboardEntry object containing space details.
+     * @returns ProcessingResult object indicating processing status
      */
-    async processLeaderboardEntry(entry: LeaderboardEntry): Promise<void> {
+    async processLeaderboardEntry(entry: LeaderboardEntry): Promise<ProcessingResult> {
         const processingId = entry.spaceTitle || entry.directSpaceUrl || entry.hostProfileUrl || 'Unknown Entry';
         logger.info(`[🚀 Agent] Starting processing for: ${processingId}`);
 
         // Validate required input from the entry
         if (!entry.directSpaceUrl) {
              logger.warn(`[🚀 Agent] Skipping entry - Missing directSpaceUrl: ${JSON.stringify(entry)}`);
-             return;
+             return { 
+                 processingAttempted: false, 
+                 success: false, 
+                 errorMessage: 'Missing direct space URL'
+             };
         }
+        
         // Host profile URL is useful for context/logging but not strictly essential for M3U8 capture if direct link works
         // Space title is used for naming, provide a default if missing
         const spaceNameToUse = entry.spaceTitle || `Dubbed Space from ${entry.hostProfileUrl || 'Unknown Host'}`;
@@ -38,8 +51,15 @@ export class TwitterSpaceDubbingAgent {
             
             if (!interactionResult || !interactionResult.m3u8Url) {
                 logger.warn(`[🚀 Agent] ---X Phase 2 Failed: Could not extract M3U8 URL for ${entry.directSpaceUrl}. Skipping entry.`);
-                return;
+                // Return early, indicating that no real processing was attempted (play button not found)
+                return { 
+                    processingAttempted: false, 
+                    success: false, 
+                    errorMessage: 'No play button found or M3U8 extraction failed' 
+                };
             }
+            
+            // At this point, we've found a valid Play button and have attempted to process the space
             const { m3u8Url, originalTweetUrl } = interactionResult;
             logger.info(`[🚀 Agent] ---> Phase 2 Success: Found M3U8: ${m3u8Url}`);
             if (originalTweetUrl) logger.info(`                 Original Tweet URL (if found): ${originalTweetUrl}`);
@@ -51,7 +71,11 @@ export class TwitterSpaceDubbingAgent {
 
             if (!publicAudioUrl) {
                 logger.error(`[🚀 Agent] ---X Phase 3 Failed: Could not download/upload audio for ${m3u8Url}. Skipping entry.`);
-                return;
+                return { 
+                    processingAttempted: true, 
+                    success: false, 
+                    errorMessage: 'Audio download/upload failed' 
+                };
             }
             logger.info(`[🚀 Agent] ---> Phase 3 Success: Audio uploaded to ${publicAudioUrl}`);
 
@@ -61,7 +85,11 @@ export class TwitterSpaceDubbingAgent {
 
             if (!projectId) {
                 logger.error(`[🚀 Agent] ---X Phase 4 Failed: Could not create SpeechLab project. Skipping entry.`);
-                return;
+                return { 
+                    processingAttempted: true, 
+                    success: false, 
+                    errorMessage: 'SpeechLab project creation failed' 
+                };
             }
             logger.info(`[🚀 Agent] ---> Phase 4 Success: SpeechLab project created with ID: ${projectId}`);
 
@@ -71,7 +99,11 @@ export class TwitterSpaceDubbingAgent {
 
             if (!sharingLink) {
                 logger.error(`[🚀 Agent] ---X Phase 5 Failed: Could not generate sharing link. Skipping entry.`);
-                return;
+                return { 
+                    processingAttempted: true, 
+                    success: false, 
+                    errorMessage: 'Sharing link generation failed' 
+                };
             }
             logger.info(`[🚀 Agent] ---> Phase 5 Success: Sharing link generated: ${sharingLink}`);
 
@@ -82,6 +114,12 @@ export class TwitterSpaceDubbingAgent {
                 const postSuccess: boolean = await postReplyToTweet(originalTweetUrl, commentText);
                  if (!postSuccess) {
                      logger.warn(`[🚀 Agent] ---> Phase 6 Failed: Could not post reply to ${originalTweetUrl}. (Check implementation/login)`);
+                     // Not considered a full failure since we still have the sharing link
+                     return { 
+                         processingAttempted: true, 
+                         success: true, 
+                         errorMessage: 'Tweet reply posting failed, but dubbing was successful' 
+                     };
                  } else {
                      logger.info(`[🚀 Agent] ---> Phase 6 Success: Reply posted to ${originalTweetUrl}.`);
                  }
@@ -92,10 +130,16 @@ export class TwitterSpaceDubbingAgent {
             }
 
             logger.info(`[🚀 Agent] ✅ Successfully completed processing for: ${processingId}`);
+            return { processingAttempted: true, success: true };
 
         } catch (error) {
+            const errorMsg = error instanceof Error ? error.message : String(error);
             logger.error(`[🚀 Agent] ❌ Unhandled error during processing entry ${processingId}:`, error);
+            return { 
+                processingAttempted: true, 
+                success: false, 
+                errorMessage: `Unhandled error: ${errorMsg}` 
+            };
         }
     }
-
 } 

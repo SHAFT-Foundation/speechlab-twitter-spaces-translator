@@ -147,3 +147,8 @@ playwright/.cache/
 /scraper_utility/*.pyc
 *.html # Ignore potentially saved raw html files
 leaderboard_data.json # Ignore generated data file by default
+leaderboard_data_playwright.json # Ignore generated data file from Playwright scraper
+
+# Debug screenshots
+debug-screenshots/
+error_reply_screenshot_*.png

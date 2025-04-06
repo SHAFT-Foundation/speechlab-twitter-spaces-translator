@@ -12,6 +12,11 @@ export interface LeaderboardEntry {
     spaceTitle: string | null;
     hostProfileUrl: string | null;
     directSpaceUrl: string | null; // Link from PLAY button
+    // Additional fields from the Playwright scraper
+    hostHandle?: string | null;   // Twitter handle (with @)
+    hostName?: string | null;     // Display name of host
+    listenerCount?: number;       // Number of listeners
+    thirdPartyId?: string;        // ID to use for SpeechLab API
 }
 
 // --- Selectors (Hypotheses - Need Verification) ---

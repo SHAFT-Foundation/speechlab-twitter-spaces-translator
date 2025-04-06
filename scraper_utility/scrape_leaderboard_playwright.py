@@ -10,11 +10,12 @@ import fire  # type: ignore
 LEADERBOARD_URL = 'https://spacesdashboard.com/leaderboard'
 OUTPUT_FILE = '../leaderboard_data_playwright.json' # Save in the project root relative to script dir
 SCROLL_ATTEMPTS = 5 # How many times to scroll down
-SCROLL_DELAY = 8 # Seconds to wait after each scroll for content to load
-PAGE_LOAD_TIMEOUT = 120000 # Max time for page navigation (milliseconds) - increased from 60000
-LOCATOR_TIMEOUT = 30000 # Max time for finding elements (milliseconds) - increased from 10000
-INITIAL_WAIT_TIME = 15 # Seconds to wait after initial page load before interacting
+SCROLL_DELAY = 5 # Seconds to wait after each scroll for content to load
+PAGE_LOAD_TIMEOUT = 60000 # Max time for page navigation (milliseconds)
+LOCATOR_TIMEOUT = 20000 # Max time for finding elements (milliseconds)
+INITIAL_WAIT_TIME = 5 # Seconds to wait after initial page load before interacting
 MIN_ENTRIES_TARGET = 50 # Aim for at least this many entries (adjust as needed)
+DEBUG_MODE = True # Take screenshots and log more details
 
 def clean_text(text):
     """Utility function to clean whitespace from text."""
@@ -117,15 +118,15 @@ def extract_data_from_row(row):
 def scrape_leaderboard_playwright(
     headless: bool = True,
     limit: int = MIN_ENTRIES_TARGET,
-    scrolls: int = SCROLL_ATTEMPTS
+    scrolls: int = SCROLL_ATTEMPTS,
+    debug: bool = DEBUG_MODE
 ):
     print(f"--- Starting Playwright Scraper ---")
     print(f"Target URL: {LEADERBOARD_URL}")
     print(f"Headless mode: {headless}")
     print(f"Target entries: ~{limit} (will stop scrolling if reached)")
     print(f"Max scroll attempts: {scrolls}")
-    print(f"Page load timeout: {PAGE_LOAD_TIMEOUT/1000}s, Locator timeout: {LOCATOR_TIMEOUT/1000}s")
-    print(f"Initial wait time: {INITIAL_WAIT_TIME}s, Scroll delay: {SCROLL_DELAY}s")
+    print(f"Debug mode: {debug}")
 
     all_entries = {} # Use dict for easy deduplication by key
 
@@ -138,85 +139,96 @@ def scrape_leaderboard_playwright(
 
             print(f"Navigating to {LEADERBOARD_URL}...")
             page.goto(LEADERBOARD_URL, timeout=PAGE_LOAD_TIMEOUT, wait_until='networkidle')
-            print(f"Page loaded. Waiting additional {INITIAL_WAIT_TIME} seconds for content to stabilize...")
-            time.sleep(INITIAL_WAIT_TIME)  # Give extra time for JavaScript to render content
+            print(f"Page loaded. Waiting {INITIAL_WAIT_TIME} seconds for content to render...")
+            time.sleep(INITIAL_WAIT_TIME)
             
-            print("Checking if table is present...")
-
-            # Wait for the table body to be present
-            try:
-                table_body = page.locator('tbody.bg-white.divide-y.divide-gray-20').first
-                table_body.wait_for(state='visible', timeout=LOCATOR_TIMEOUT * 2) # Longer wait for initial load
-                print("Table body found.")
+            if debug:
+                print("Taking initial screenshot...")
+                page.screenshot(path="debug_initial_load.png")
+                print("Screenshot saved as debug_initial_load.png")
                 
-                # Check if there are any rows
-                initial_rows = table_body.locator('tr').count()
-                print(f"Initially found {initial_rows} rows in table body.")
-                
-                if initial_rows == 0:
-                    print("No rows found immediately. Waiting additional time for rows to appear...")
-                    time.sleep(10)  # Additional wait for rows
-                    initial_rows = table_body.locator('tr').count()
-                    print(f"After additional wait, found {initial_rows} rows.")
-            except PlaywrightTimeoutError:
-                print("Error: Table body did not appear within timeout. Page source snippet:")
-                print(page.content()[:1000]) # Log start of page source
-                browser.close()
-                return
-
-            # --- Scrolling Logic ---
-            print("Attempting to scroll and load more entries...")
-            last_height = page.evaluate('document.body.scrollHeight')
-            for i in range(scrolls):
-                print(f"Scroll attempt {i+1}/{scrolls}...")
-                page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
-                print(f"Waiting {SCROLL_DELAY} seconds for content...")
-                time.sleep(SCROLL_DELAY)
-
-                # Optional: Check if height changed significantly
-                new_height = page.evaluate('document.body.scrollHeight')
-                if new_height <= last_height:
-                    print("Scroll height did not increase significantly, waiting longer...")
-                    time.sleep(5)  # Wait a bit more in case of delayed loading
-                    new_height = page.evaluate('document.body.scrollHeight')
-                    if new_height <= last_height:
-                        print("Still no change after additional wait, stopping scrolls.")
-                        break
-                last_height = new_height
-
-                # Check if we have enough entries after scrolling (rough check)
-                current_row_count = page.locator('tbody.bg-white.divide-y.divide-gray-20 >> tr.hidden.md\\:table-row').count()
-                print(f"Found approximately {current_row_count} rows after scroll {i+1}.")
-                if current_row_count >= limit:
-                    print(f"Potential entry count ({current_row_count}) meets or exceeds target ({limit}). Proceeding to extraction.")
-                    # Don't break here yet, allow one more scroll maybe? Or just proceed. Let's proceed.
-                    break
-
-            # --- Data Extraction ---
-            print("--- Starting Data Extraction ---")
-            table_body = page.locator('tbody.bg-white.divide-y.divide-gray-20').first
-            # Target the desktop rows as they seem more consistently structured
-            rows = table_body.locator('tr.hidden.md\\:table-row')
-            row_count = rows.count()
-            print(f"Found {row_count} potential entry rows (desktop view).")
-            
-            if row_count == 0:
-                print("No rows found in desktop view. Checking if page content is properly loaded...")
+                # Log page information
                 print("Page title:", page.title())
                 print("Current URL:", page.url)
-                print("Taking screenshot for debugging...")
-                page.screenshot(path="leaderboard_debug.png")
-                print("Screenshot saved as leaderboard_debug.png")
                 
-                # Try waiting longer and check again
-                print("Waiting additional 20 seconds to see if content appears...")
-                time.sleep(20)
-                rows = table_body.locator('tr.hidden.md\\:table-row')
-                row_count = rows.count()
-                print(f"After additional wait, found {row_count} potential entry rows.")
+                # Check for any visible tables
+                table_count = page.locator('table').count()
+                print(f"Found {table_count} tables on page")
+                
+                # Check for tbody elements
+                tbody_count = page.locator('tbody').count()
+                print(f"Found {tbody_count} tbody elements on page")
+                
+                # Check for tr elements (regardless of parent)
+                tr_count = page.locator('tr').count()
+                print(f"Found {tr_count} tr elements on page")
+                
+                # Log the HTML structure to help debug
+                print("HTML structure around table (if any):")
+                table_html = page.locator('table').first.inner_html() if table_count > 0 else "No table found"
+                print(table_html[:1000] + "..." if len(table_html) > 1000 else table_html)
 
+            # Try different selectors to find the table and rows
+            print("Attempting to find table data using multiple selector strategies...")
+            
+            # Strategy 1: Original selectors
+            table_body1 = page.locator('tbody.bg-white.divide-y.divide-gray-20').first
+            rows1 = page.locator('tbody.bg-white.divide-y.divide-gray-20 >> tr.hidden.md\\:table-row')
+            count1 = rows1.count()
+            print(f"Strategy 1 (original selectors): Found {count1} rows")
+            
+            # Strategy 2: Simplified selectors
+            rows2 = page.locator('tbody >> tr').all()
+            count2 = len(rows2) if rows2 else 0
+            print(f"Strategy 2 (simplified selectors): Found {count2} rows")
+            
+            # Strategy 3: Even more general
+            rows3 = page.locator('table tr').all()
+            count3 = len(rows3) if rows3 else 0
+            print(f"Strategy 3 (general selector): Found {count3} rows")
+            
+            # Decide which strategy to use
+            if count1 > 0:
+                print("Using original selectors for data extraction")
+                table_body = table_body1
+                rows = rows1
+                row_count = count1
+            elif count2 > 0:
+                print("Using simplified selectors for data extraction")
+                table_body = page.locator('tbody').first
+                rows = page.locator('tbody >> tr')
+                row_count = count2
+            elif count3 > 0:
+                print("Using general selectors for data extraction")
+                table_body = page.locator('table').first
+                rows = page.locator('table tr')
+                row_count = count3
+            else:
+                if debug:
+                    print("No table rows found with any strategy. Taking debug screenshot...")
+                    page.screenshot(path="debug_no_rows_found.png")
+                    
+                    # Try to find any element with text content to see what's on the page
+                    text_elements = page.locator('body *:not(script):not(style)').all()
+                    print(f"Found {len(text_elements)} text elements on page. First 10 elements:")
+                    for i, elem in enumerate(text_elements[:10]):
+                        try:
+                            text = elem.text_content().strip()
+                            if text:
+                                print(f"Element {i+1}: {text[:100]}")
+                        except Exception as e:
+                            print(f"Error getting text content: {e}")
+                
+                print("ERROR: No table rows found with any selector strategy")
+                return
+            
+            print(f"Found {row_count} rows to process")
+            
+            # --- Data Extraction ---
+            print("--- Starting Data Extraction ---")
             processed_count = 0
             error_count = 0
+            
             for i in range(row_count):
                 if len(all_entries) >= limit:
                     print(f"Reached target limit of {limit} unique entries. Stopping extraction.")
@@ -224,24 +236,48 @@ def scrape_leaderboard_playwright(
 
                 print(f"Processing row {i+1}/{row_count}...")
                 row = rows.nth(i)
-                entry_data = extract_data_from_row(row)
-
-                if entry_data and entry_data.get('id'):
-                    if entry_data['id'] not in all_entries:
-                         if 'error' not in entry_data:
-                             all_entries[entry_data['id']] = entry_data
-                             processed_count += 1
-                             print(f"-> Added entry: {entry_data.get('space_title', 'N/A')} by {entry_data.get('host_handle', 'N/A')} (Total: {len(all_entries)})")
-                         else:
-                             error_count += 1
-                             print(f"-> Skipped row {i+1} due to processing error: {entry_data['error']}")
+                
+                # Try to debug the row structure before extraction
+                if debug and i == 0:
+                    try:
+                        print(f"First row HTML structure:")
+                        row_html = row.inner_html()
+                        print(row_html[:1000] + "..." if len(row_html) > 1000 else row_html)
+                        
+                        # Check column count
+                        columns = row.locator('td').all()
+                        print(f"First row has {len(columns)} columns")
+                        for j, col in enumerate(columns):
+                            try:
+                                col_text = col.text_content().strip()
+                                print(f"Column {j+1}: {col_text[:50]}")
+                            except Exception as e:
+                                print(f"Error getting column text: {e}")
+                    except Exception as e:
+                        print(f"Error debugging row: {e}")
+                
+                try:
+                    entry_data = extract_data_from_row(row)
+                    
+                    if entry_data and entry_data.get('id'):
+                        if entry_data['id'] not in all_entries:
+                            if 'error' not in entry_data:
+                                all_entries[entry_data['id']] = entry_data
+                                processed_count += 1
+                                print(f"-> Added entry: {entry_data.get('space_title', 'N/A')} by {entry_data.get('host_handle', 'N/A')} (Total: {len(all_entries)})")
+                            else:
+                                error_count += 1
+                                print(f"-> Skipped row {i+1} due to processing error: {entry_data['error']}")
+                        else:
+                            print(f"-> Skipped duplicate entry: {entry_data.get('space_title', 'N/A')} by {entry_data.get('host_handle', 'N/A')}")
                     else:
-                         print(f"-> Skipped duplicate entry: {entry_data.get('space_title', 'N/A')} by {entry_data.get('host_handle', 'N/A')}")
-
-                else:
+                        error_count += 1
+                        print(f"-> Failed to process or get ID for row {i+1}.")
+                except Exception as e:
+                    print(f"Exception processing row {i+1}: {e}")
+                    import traceback
+                    traceback.print_exc()
                     error_count += 1
-                    print(f"-> Failed to process or get ID for row {i+1}.")
-
 
             print(f"--- Extraction finished ---")
             print(f"Successfully processed: {processed_count} new entries.")
