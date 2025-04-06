@@ -80,9 +80,61 @@ You have a few options to run the agent:
 
 The agent will start, log its initialization, and begin processing the profile specified by `TEST_PROFILE_URL` in your `.env` file. Watch the console for detailed logs!
 
+## 🧪 Testing Utilities
+
+The project includes several standalone test scripts in the `src` directory that allow you to test specific components of the agent independently. These are valuable for debugging, development, and testing specific functionality without running the entire workflow.
+
+### Available Test Scripts
+
+1. **M3U8 Extraction Test** (`test-download-m3u8.ts`):
+   * **Purpose**: Tests the ability to extract the M3U8 audio stream URL from a Twitter Space.
+   * **What it does**: Navigates to a Space URL, finds and clicks the "Play recording" button, and captures the M3U8 URL.
+   * **How to run**:
+     ```bash
+     npm run build
+     node dist/test-download-m3u8.js
+     ```
+   * **Configuration**: Uses the Twitter Space URL from your `.env` file's `TEST_PROFILE_URL` or a default URL.
+
+2. **Profile Search Test** (`test-profile-search.ts`):
+   * **Purpose**: Tests the ability to find Space-related tweets on a Twitter profile.
+   * **What it does**: Navigates to a user's profile page, scans for tweets that reference Spaces, and extracts tweet IDs.
+   * **How to run**:
+     ```bash
+     npm run build
+     node dist/test-profile-search.js
+     ```
+   * **Configuration**: Modifiable username parameter in the script or defaults to value from `.env`.
+
+3. **Reply Posting Test** (`test-reply-posting.ts`):
+   * **Purpose**: Tests the ability to post a reply to a specific tweet.
+   * **What it does**: Logs into Twitter (using credentials from `.env`), navigates to a specified tweet, and posts a reply.
+   * **How to run**:
+     ```bash
+     npm run build
+     node dist/test-reply-posting.js
+     ```
+   * **Configuration**: Configurable tweet URL and reply text in the script or via command line parameters.
+
+### Usage Tips
+
+* **Isolate Problems**: These utilities help isolate issues. If the full agent workflow fails, you can run the individual test scripts to identify which component is causing problems.
+
+* **Debug Browser Automation**: All test scripts support running in non-headless mode so you can visually see what's happening in the browser. Add `--headless=false` when running:
+  ```bash
+  node dist/test-download-m3u8.js --headless=false
+  ```
+
+* **Customize Tests**: Each test script provides command-line options to override default values. Use `--help` with any test to see available options:
+  ```bash
+  node dist/test-reply-posting.js --help
+  ```
+
 ## 🐍 Leaderboard Scraping Utility (Python)
 
-This project includes a separate Python utility to scrape the SpacesDashboard leaderboard for potentially interesting Twitter Spaces hosts. This uses the `nova-act` library.
+This project includes separate Python utilities to scrape the SpacesDashboard leaderboard for potentially interesting Twitter Spaces hosts.
+
+### Nova-Act Implementation
 
 **Location:** `scraper_utility/scrape_leaderboard.py`
 
@@ -119,6 +171,52 @@ This project includes a separate Python utility to scrape the SpacesDashboard le
 **Output:**
 
 The script will save the scraped data to `leaderboard_data.json` in the **project root directory** (i.e., `../leaderboard_data.json` relative to the script).
+
+### Playwright Implementation (Recommended)
+
+**Location:** `scraper_utility/scrape_leaderboard_playwright.py`
+
+**Requirements:**
+
+*   Python 3.x installed.
+*   Python dependencies installed: Run `pip install -r scraper_utility/requirements.txt` from the project root or within the `scraper_utility` directory.
+*   Playwright browsers installed: Run `playwright install` after installing the dependencies.
+
+**How to Run:**
+
+1.  Navigate to the utility directory:
+    ```bash
+    cd scraper_utility
+    ```
+2.  Install dependencies (if you haven't already):
+    ```bash
+    pip install -r requirements.txt
+    playwright install
+    ```
+3.  Run the script:
+    ```bash
+    python scrape_leaderboard_playwright.py --headless=False
+    ```
+    *   Add `--headless=False` to see the browser automation in action.
+    *   Use `--limit=N` to restrict the number of entries to collect.
+
+**Output:**
+
+The script will save the scraped data to `leaderboard_data_playwright.json` in the project root directory. This file will be used by the main Node.js agent. For testing, a smaller subset of the data is also saved to `leaderboard_data_playwright_FINAL.json`, which contains only the entries with the highest listener counts.
+
+The data format for both files is:
+```json
+[
+  {
+    "space_title": "Example Space Title",
+    "host_handle": "@exampleHost",
+    "host_name": "Example Host Name",
+    "listener_count": 12345,
+    "direct_play_url": "https://x.com/i/spaces/12345example"
+  },
+  // ... more entries
+]
+```
 
 ## ⚙️ Configuration Details (.env)
 
