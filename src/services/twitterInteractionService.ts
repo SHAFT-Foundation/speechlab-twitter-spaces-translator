@@ -505,42 +505,152 @@ export async function getM3u8ForSpacePage(directSpaceUrl: string): Promise<{ m3u
             fs.mkdirSync(screenshotDir, { recursive: true });
         }
 
-        // Log all network requests - this will help us figure out what's happening
+        // Create a single request handler to monitor network activity
         page.on('request', request => {
             const url = request.url();
             networkRequests.push(`${request.method()} ${url}`);
             
-            // Log when we see media files or playlist requests
-            if (url.includes('.m3u8') || url.includes('playlist') || url.includes('media') || 
-                url.includes('audio') || url.includes('video') || url.includes('pscp.tv')) {
-                logger.debug(`[🐦 Twitter] 🔍 Network request: ${request.method()} ${url}`);
-            }
-
-            // Check for potential M3U8 URLs with broader patterns
-            if ((url.includes('.m3u8') || url.includes('playlist')) && 
-                (url.includes('pscp.tv') || url.includes('periscope') || url.includes('video'))) {
-                logger.info(`[🐦 Twitter] ✅ Potential M3U8 URL detected: ${url}`);
+            // Specifically look for the fastly m3u8 pattern with looser matching
+            if ((url.includes('prod-fastly') && url.includes('.m3u8')) ||
+                (url.includes('.m3u8?type=replay'))) {
+                logger.info(`[🐦 Twitter] ✅✅ Twitter Space m3u8 URL detected in request: ${url}`);
                 if (!capturedM3u8Url) {
                     capturedM3u8Url = url;
                     resolveM3u8Promise(url);
                 }
+                return;
+            }
+            
+            // Log potentially relevant media-related requests
+            if (url.includes('.m3u8') || url.includes('playlist') || url.includes('media') || 
+                url.includes('audio') || url.includes('video') || url.includes('pscp.tv') ||
+                url.includes('fastly') || url.includes('stream')) {
+                logger.debug(`[🐦 Twitter] 🔍 Network request: ${request.method()} ${url}`);
             }
         });
 
-        // Also capture responses to see content types
+        // Also capture responses to see content types and analyze JSON responses
         page.on('response', async (response) => {
             const url = response.url();
             const contentType = response.headers()['content-type'] || '';
+            const request = response.request();
+            const resourceType = request.resourceType();
+            
+            // Check for GraphQL API responses that might contain Space info
+            if (url.includes('AudioSpaceById') || url.includes('AudioSpace')) {
+                logger.info(`[🐦 Twitter] 🔍 GraphQL API response for Space: ${url}`);
+                
+                try {
+                    // Try to parse the response as JSON
+                    const responseBody = await response.json().catch(() => null);
+                    if (responseBody) {
+                        logger.info(`[🐦 Twitter] 📊 Got JSON response from AudioSpace API`);
+                        
+                        // Stringify to search for patterns
+                        const responseStr = JSON.stringify(responseBody);
+                        
+                        // Log a snippet of the response for debugging
+                        const snippet = responseStr.substring(0, Math.min(500, responseStr.length));
+                        logger.debug(`[🐦 Twitter] API response snippet: ${snippet}...`);
+                        
+                        // Look for media_key which might help identify the Space
+                        if (responseStr.includes('media_key')) {
+                            const mediaKeyMatch = responseStr.match(/"media_key"\s*:\s*"([^"]+)"/);
+                            if (mediaKeyMatch && mediaKeyMatch[1]) {
+                                logger.info(`[🐦 Twitter] 🔑 Found media_key: ${mediaKeyMatch[1]}`);
+                            }
+                        }
+                        
+                        // Extract master playlist URLs
+                        if (responseStr.includes('master_playlist')) {
+                            logger.info(`[🐦 Twitter] 🎯 Found master_playlist in API response`);
+                            const urlMatches = responseStr.match(/"(https:\/\/[^"]*?\.m3u8[^"]*?)"/g);
+                            if (urlMatches && urlMatches.length > 0) {
+                                // Clean up the URLs (remove quotes)
+                                const cleanUrls = urlMatches.map(url => url.replace(/"/g, ''));
+                                logger.info(`[🐦 Twitter] 🎯 Found ${cleanUrls.length} potential m3u8 URLs in response`);
+                                
+                                // Look for the right pattern
+                                const fastlyUrl = cleanUrls.find(url => 
+                                    (url.includes('prod-fastly') && url.includes('.m3u8')) || 
+                                    url.includes('.m3u8?type=replay')
+                                );
+                                
+                                if (fastlyUrl && !capturedM3u8Url) {
+                                    logger.info(`[🐦 Twitter] ✅✅ Extracted m3u8 URL from API response: ${fastlyUrl}`);
+                                    capturedM3u8Url = fastlyUrl;
+                                    resolveM3u8Promise(fastlyUrl);
+                                    return;
+                                } else if (cleanUrls.length > 0 && !capturedM3u8Url) {
+                                    // If no exact match but we have URLs, use the first one
+                                    logger.info(`[🐦 Twitter] ✅ Using first m3u8 URL from response: ${cleanUrls[0]}`);
+                                    capturedM3u8Url = cleanUrls[0];
+                                    resolveM3u8Promise(cleanUrls[0]);
+                                    return;
+                                }
+                            }
+                        }
+                        
+                        // If we didn't find a structured field, try extracting any m3u8 URL
+                        const anyM3u8Match = responseStr.match(/https:\/\/[^"]*?\.m3u8[^"]*?/);
+                        if (anyM3u8Match && anyM3u8Match[0] && !capturedM3u8Url) {
+                            logger.info(`[🐦 Twitter] ✅ Found generic m3u8 URL in API response: ${anyM3u8Match[0]}`);
+                            capturedM3u8Url = anyM3u8Match[0];
+                            resolveM3u8Promise(anyM3u8Match[0]);
+                            return;
+                        }
+                    }
+                } catch (e) {
+                    logger.warn(`[🐦 Twitter] Error processing API response: ${e}`);
+                }
+            }
+            
+            // Handle XHR live_video_stream responses which may give us media details
+            if (url.includes('live_video_stream') || url.includes('status')) {
+                logger.info(`[🐦 Twitter] 🔍 Checking live_video_stream response: ${url}`);
+                try {
+                    const responseBody = await response.json().catch(() => null);
+                    if (responseBody) {
+                        logger.info(`[🐦 Twitter] 📊 Got JSON from live_video_stream API`);
+                        
+                        // Stringify for search
+                        const responseStr = JSON.stringify(responseBody);
+                        
+                        // Log a snippet for debugging
+                        const snippet = responseStr.substring(0, Math.min(500, responseStr.length));
+                        logger.debug(`[🐦 Twitter] live_video_stream response snippet: ${snippet}...`);
+                        
+                        // Extract any m3u8 URL
+                        const m3u8Match = responseStr.match(/https:\/\/[^"]*?\.m3u8[^"]*?/);
+                        if (m3u8Match && m3u8Match[0] && !capturedM3u8Url) {
+                            logger.info(`[🐦 Twitter] ✅ Found m3u8 URL in live_video_stream: ${m3u8Match[0]}`);
+                            capturedM3u8Url = m3u8Match[0];
+                            resolveM3u8Promise(m3u8Match[0]);
+                        }
+                    }
+                } catch (e) {
+                    logger.warn(`[🐦 Twitter] Error processing live_video_stream response: ${e}`);
+                }
+            }
             
             // Log media responses
             if (contentType.includes('audio') || contentType.includes('video') || 
                 contentType.includes('application/vnd.apple.mpegurl') || 
                 contentType.includes('application/octet-stream') ||
-                url.includes('.m3u8')) {
-                logger.debug(`[🐦 Twitter] 📡 Media Response: ${url} (${contentType})`);
+                url.includes('.m3u8') || url.includes('stream')) {
+                logger.info(`[🐦 Twitter] 📡 Media Response: ${url} (${contentType})`);
                 
+                // Look for the fastly m3u8 pattern with looser matching in responses
+                if ((url.includes('prod-fastly') && url.includes('.m3u8')) ||
+                    url.includes('.m3u8?type=replay')) {
+                    logger.info(`[🐦 Twitter] ✅✅ Found Twitter Space m3u8 URL in response: ${url}`);
+                    if (!capturedM3u8Url) {
+                        capturedM3u8Url = url;
+                        resolveM3u8Promise(url);
+                    }
+                }
                 // Check if this could be an M3U8 by content type
-                if (contentType.includes('vnd.apple.mpegurl') || url.includes('.m3u8')) {
+                else if (contentType.includes('vnd.apple.mpegurl') || url.includes('.m3u8')) {
                     logger.info(`[🐦 Twitter] ✅ Potential M3U8 response by content-type: ${url}`);
                     if (!capturedM3u8Url) {
                         capturedM3u8Url = url;
@@ -553,15 +663,20 @@ export async function getM3u8ForSpacePage(directSpaceUrl: string): Promise<{ m3u
         // Network Interception with broader pattern matching
         logger.debug('[🐦 Twitter] Setting up network interception for M3U8...');
         await page.route(
-            // Expanded pattern matching to catch more potential M3U8 URLs
-            (url) => url.hostname.includes('pscp.tv') || 
-                     url.hostname.includes('periscope') ||
-                     (url.pathname.includes('.m3u8') || url.pathname.includes('playlist')),
+            // Simple pattern matching for Twitter Spaces m3u8
+            (url) => {
+                const urlString = url.toString();
+                return (
+                    urlString.includes('prod-fastly') && urlString.includes('.m3u8') ||
+                    urlString.includes('.m3u8?type=replay')
+                );
+            },
             (route, request) => {
                 const url = request.url();
                 logger.info(`[🐦 Twitter] ✅ Intercepted potential media URL: ${url}`);
-                if (!capturedM3u8Url && 
-                    (url.includes('.m3u8') || url.includes('playlist'))) {
+                
+                if (!capturedM3u8Url) {
+                    logger.info(`[🐦 Twitter] ✅✅ Found Space m3u8 URL: ${url}`);
                     capturedM3u8Url = url;
                     resolveM3u8Promise(url);
                 }
@@ -576,39 +691,167 @@ export async function getM3u8ForSpacePage(directSpaceUrl: string): Promise<{ m3u
             return { m3u8Url: null, originalTweetUrl: null };
         }
 
-        // Now that we're logged in, navigate to space URL
+        // Now that we're logged in, navigate to space URL - use 'domcontentloaded' to be faster
         logger.info(`[🐦 Twitter] Navigating to space URL: ${directSpaceUrl}`);
-        await page.goto(directSpaceUrl, { waitUntil: 'networkidle', timeout: 60000 });
-        logger.info('[🐦 Twitter] Space page loaded. Taking initial screenshot...');
+        await page.goto(directSpaceUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        logger.info('[🐦 Twitter] Space page initial load complete. Taking screenshot...');
         await page.screenshot({ path: path.join(screenshotDir, 'space-page-loaded.png') });
         
-        // Find and click the Play button on the space page - with a shorter timeout
-        const playButton = page.locator(SPACE_PAGE_PLAY_BUTTON_SELECTOR).first();
+        // Wait a moment for page to stabilize
+        await page.waitForTimeout(3000);
         
-        // Use a shorter timeout to fail faster if the button doesn't exist
-        logger.info('[🐦 Twitter] Looking for "Play recording" button (with 10s timeout)...');
-        const buttonVisible = await playButton.isVisible({ timeout: 10000 }).catch(() => false);
+        // More reliable selectors for the Play recording button
+        const playButtonSelectors = [
+            'button[aria-label*="Play recording"]',
+            'button:has-text("Play recording")',
+            'div[role="button"]:has-text("Play recording")',
+            'button:has-text("Play")',
+            'button[data-testid="play"]'
+        ];
         
-        if (!buttonVisible) {
-            logger.warn('[🐦 Twitter] Play recording button not found within timeout - this may not be a valid recorded Space');
+        logger.info('[🐦 Twitter] Looking for "Play recording" button...');
+        
+        // Try each selector
+        let playButton = null;
+        for (const selector of playButtonSelectors) {
+            logger.debug(`[🐦 Twitter] Trying play button selector: ${selector}`);
+            const button = page.locator(selector).first();
+            
+            try {
+                const isVisible = await button.isVisible({ timeout: 2000 });
+                if (isVisible) {
+                    playButton = button;
+                    logger.info(`[🐦 Twitter] Found play button with selector: ${selector}`);
+                    break;
+                }
+            } catch (e) {
+                logger.debug(`[🐦 Twitter] Selector ${selector} not found`);
+            }
+        }
+        
+        // If no button found yet, try screenshots and body search
+        if (!playButton) {
+            logger.debug('[🐦 Twitter] Play button not found with standard selectors. Taking screenshot and trying alternate approach...');
+            await page.screenshot({ path: path.join(screenshotDir, 'before-button-search.png') });
+            
+            // Take screenshot of page content
+            await page.evaluate(() => {
+                // Scroll down a bit to reveal potential UI elements
+                window.scrollBy(0, 300);
+            });
+            await page.waitForTimeout(1000);
+            await page.screenshot({ path: path.join(screenshotDir, 'scrolled-page.png') });
+            
+            // Check for any button that looks like a play button
+            const genericButtonSelectors = [
+                'button:has(svg)',
+                'div[role="button"]:has(svg)',
+                '[aria-label*="Play"]',
+                '[title*="Play"]'
+            ];
+            
+            for (const selector of genericButtonSelectors) {
+                const buttons = await page.locator(selector).all();
+                logger.debug(`[🐦 Twitter] Found ${buttons.length} elements matching ${selector}`);
+                
+                // Try clicking the first few buttons that might be play buttons
+                for (let i = 0; i < Math.min(buttons.length, 3); i++) {
+                    const button = buttons[i];
+                    const bbox = await button.boundingBox();
+                    if (bbox && bbox.width > 20 && bbox.height > 20) { // Reasonably sized button
+                        logger.debug(`[🐦 Twitter] Trying potential play button ${i+1}`);
+                        await page.screenshot({ path: path.join(screenshotDir, `potential-button-${i+1}.png`) });
+                        
+                        // Try clicking
+                        try {
+                            await button.click({ timeout: 5000 });
+                            logger.info(`[🐦 Twitter] Clicked potential play button ${i+1}`);
+                            await page.waitForTimeout(3000);
+                            
+                            // Check if we got any media requests after clicking
+                            if (networkRequests.some(req => 
+                                req.includes('.m3u8') || 
+                                req.includes('fastly') && req.includes('stream') ||
+                                req.includes('playlist'))) {
+                                playButton = button;
+                                break;
+                            }
+                        } catch (e) {
+                            logger.debug(`[🐦 Twitter] Failed to click potential button ${i+1}: ${e}`);
+                        }
+                    }
+                }
+                
+                if (playButton) break;
+            }
+        }
+        
+        if (!playButton) {
+            logger.warn('[🐦 Twitter] No Play recording button found after extensive search');
             await page.screenshot({ path: path.join(screenshotDir, 'no-play-button-found.png') });
+            
+            // Try a direct browser debugger evaluation as last resort
+            try {
+                logger.debug('[🐦 Twitter] Attempting JavaScript-based approach to find and click play button...');
+                
+                // Try to click using JS
+                await page.evaluate(() => {
+                    // Various ways to find play buttons via JS
+                    const possibleButtons = [
+                        // By text content
+                        ...Array.from(document.querySelectorAll('button')).filter(el => 
+                            el.textContent?.includes('Play') || el.textContent?.includes('play')),
+                        // By aria label
+                        ...Array.from(document.querySelectorAll('[aria-label*="Play" i]')),
+                        // By common play button attributes
+                        ...Array.from(document.querySelectorAll('[data-testid="play"]')),
+                        // SVG icons that might be play buttons
+                        ...Array.from(document.querySelectorAll('button svg, [role="button"] svg'))
+                            .map(svg => {
+                                const buttonElement = svg.closest('button') || svg.closest('[role="button"]');
+                                return buttonElement;
+                            })
+                            .filter(el => el !== null)
+                    ];
+                    
+                    // Click the first 3 possibilities
+                    for (let i = 0; i < Math.min(possibleButtons.length, 3); i++) {
+                        const btn = possibleButtons[i];
+                        if (btn) {
+                            console.log(`Clicking possible play button ${i+1}`);
+                            // Type assertion for HTMLElement which has click() method
+                            (btn as HTMLElement).click();
+                        }
+                    }
+                });
+                
+                await page.waitForTimeout(5000);
+                await page.screenshot({ path: path.join(screenshotDir, 'after-js-click-attempt.png') });
+            } catch (e) {
+                logger.error('[🐦 Twitter] JavaScript approach failed:', e);
+            }
+            
             return { m3u8Url: null, originalTweetUrl: null };
         }
         
         // Button found, proceed with clicking it
         logger.info('[🐦 Twitter] "Play recording" button found. Clicking...');
-        await playButton.click({ timeout: 10000 });
-        
-        // Take a screenshot after clicking the button
-        await page.screenshot({ path: path.join(screenshotDir, 'after-play-button-click.png') });
+        if (playButton) {
+            await playButton.click({ force: true, timeout: 10000 });
+            logger.info('[🐦 Twitter] Play button clicked. Taking screenshot...');
+            
+            // Take a screenshot after clicking the button
+            await page.waitForTimeout(2000);
+            await page.screenshot({ path: path.join(screenshotDir, 'after-play-button-click.png') });
+        }
         
         // Clear network requests list and start collecting for the post-click period
         networkRequests.length = 0;
 
-        // Wait for the M3U8 URL to be captured
-        logger.debug('[🐦 Twitter] Waiting for M3U8 network request...');
+        // Wait for the M3U8 URL to be captured with increased timeout
+        logger.debug('[🐦 Twitter] Waiting for M3U8 network request (up to 30s)...');
         try {
-            // Use a reasonable timeout for M3U8 capture
+            // Use a longer timeout for M3U8 capture
             const m3u8CapturePromise = new Promise<string>((resolve, reject) => {
                 const timeoutId = setTimeout(() => {
                     // Dump all network requests to the log to help debug
@@ -617,19 +860,19 @@ export async function getM3u8ForSpacePage(directSpaceUrl: string): Promise<{ m3u
                         logger.info(`[🐦 Twitter] Request ${i+1}: ${req}`);
                     });
                     
-                    // Take another screenshot before failing - only if page still exists
+                    // Take another screenshot before failing
                     if (page) {
                         page.screenshot({ path: path.join(screenshotDir, 'before-m3u8-timeout.png') })
                             .then(() => {
-                                reject(new Error('M3U8 capture timeout (15s)'));
+                                reject(new Error('M3U8 capture timeout (30s)'));
                             })
                             .catch(() => {
-                                reject(new Error('M3U8 capture timeout (15s) - also failed to take screenshot'));
+                                reject(new Error('M3U8 capture timeout (30s) - also failed to take screenshot'));
                             });
                     } else {
-                        reject(new Error('M3U8 capture timeout (15s) - page no longer available'));
+                        reject(new Error('M3U8 capture timeout (30s) - page no longer available'));
                     }
-                }, 15000);
+                }, 30000);
                 
                 m3u8Promise.then(url => {
                     clearTimeout(timeoutId);
@@ -658,21 +901,45 @@ export async function getM3u8ForSpacePage(directSpaceUrl: string): Promise<{ m3u
                 logger.warn('[🐦 Twitter] Additionally failed to extract original tweet URL:', linkError);
             }
             
-            // No m3u8 captured, return null for it
-            return { m3u8Url: null, originalTweetUrl: foundOriginalTweetUrl };
+            // Double-check and log ALL network requests
+            logger.info('[🐦 Twitter] Dumping ALL network requests captured during session:');
+            networkRequests.forEach((req, i) => {
+                // Only log ones that might be relevant to streams
+                if (req.includes('playlist') || req.includes('stream') || 
+                    req.includes('audio') || req.includes('video') || 
+                    req.includes('pscp') || req.includes('m3u8') ||
+                    req.includes('fastly')) {
+                    logger.info(`[🐦 Twitter] Relevant request ${i+1}: ${req}`);
+                    
+                    // Check if we missed the URL in our patterns
+                    if (!capturedM3u8Url && (
+                        req.includes('.m3u8') || 
+                        (req.includes('fastly.net') && req.includes('stream')))) {
+                        capturedM3u8Url = req.split(' ')[1]; // Extract URL part
+                        logger.info(`[🐦 Twitter] ✅ Found potential M3U8 URL in request log: ${capturedM3u8Url}`);
+                    }
+                }
+            });
+            
+            // If we still don't have an M3U8 URL, return null
+            if (!capturedM3u8Url) {
+                return { m3u8Url: null, originalTweetUrl: foundOriginalTweetUrl };
+            }
         }
 
         return { m3u8Url: capturedM3u8Url, originalTweetUrl: foundOriginalTweetUrl };
-
     } catch (error) {
-        logger.error(`[🐦 Twitter] ❌ Error processing direct space URL ${directSpaceUrl}:`, error);
-        return { m3u8Url: null, originalTweetUrl: null }; // Return nulls on failure
+        logger.error('[🐦 Twitter] ❌ Unexpected error in Space processing:', error);
+        if (page) {
+            await page.screenshot({ path: path.join(process.cwd(), 'debug-screenshots', 'unexpected-error.png') })
+                .catch(() => {}); // Ignore screenshot errors
+        }
+        return { m3u8Url: null, originalTweetUrl: null };
     } finally {
-        logger.debug('[🐦 Twitter] Cleaning up browser instance (getM3u8ForSpacePage)...');
-        if (page && !page.isClosed()) await page.close().catch(e => logger.warn('[🐦 Twitter] Error closing page', e));
-        if (context) await context.close().catch(e => logger.warn('[🐦 Twitter] Error closing context', e));
-        if (browser) await browser.close().catch(e => logger.warn('[🐦 Twitter] Error closing browser', e));
-        logger.debug('[🐦 Twitter] Browser cleanup complete (getM3u8ForSpacePage).');
+        if (browser) {
+            logger.debug('[🐦 Twitter] Closing browser...');
+            await browser.close().catch(e => logger.warn('[🐦 Twitter] Error closing browser:', e));
+        }
     }
 }
 

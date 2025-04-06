@@ -67,6 +67,9 @@ export class TwitterSpaceDubbingAgent {
 
             // Phase 3: Download audio and upload to S3
             logger.info(`[🚀 Agent] ---> Phase 3: Downloading and uploading audio from ${m3u8Url}...`);
+            logger.info(`[🚀 Agent] This process includes downloading audio stream and uploading to S3 (may take several minutes)`);
+            logger.info(`[🚀 Agent] 🔊 Processing audio for "${spaceNameToUse}"`);
+
             const publicAudioUrl: string | null = await downloadAndUploadAudio(m3u8Url, spaceNameToUse);
 
             if (!publicAudioUrl) {
@@ -78,9 +81,11 @@ export class TwitterSpaceDubbingAgent {
                 };
             }
             logger.info(`[🚀 Agent] ---> Phase 3 Success: Audio uploaded to ${publicAudioUrl}`);
+            logger.info(`[🚀 Agent] Audio is now available for downloading/sharing at the URL above`);
 
             // Phase 4: Create dubbing project via SpeechLab API
             logger.info(`[🚀 Agent] ---> Phase 4: Creating SpeechLab dubbing project for "${spaceNameToUse}"...`);
+            logger.info(`[🚀 Agent] 🎬 Sending request to SpeechLab API to create a new dubbing project`);
             const projectId: string | null = await createDubbingProject(publicAudioUrl, spaceNameToUse);
 
             if (!projectId) {
