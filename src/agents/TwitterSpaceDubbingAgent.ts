@@ -1,9 +1,11 @@
 import logger from '../utils/logger';
 import { config } from '../utils/config';
+import path from 'path';
+import fs from 'fs';
 // Import services
 import { getM3u8ForSpacePage, postReplyToTweet, findTweetEmbeddingSpace, findSpaceTweetFromProfile } from '../services/twitterInteractionService';
 import { downloadAndUploadAudio } from '../services/audioService';
-import { createDubbingProject, generateSharingLink } from '../services/speechlabApiService';
+import { createDubbingProject, generateSharingLink, waitForProjectCompletion } from '../services/speechlabApiService';
 import { LeaderboardEntry } from '../services/scraperService'; // Import the interface
 
 // Define a return type for the processing results
@@ -94,6 +96,20 @@ export class TwitterSpaceDubbingAgent {
             // Phase 4: Create dubbing project via SpeechLab API
             logger.info(`[🚀 Agent] ---> Phase 4: Creating SpeechLab dubbing project for "${spaceNameToUse}"...`);
             logger.info(`[🚀 Agent] 🎬 Sending request to SpeechLab API to create a new dubbing project`);
+            
+            // Sanitize spaceName for thirdPartyID creation (this should match the logic in createDubbingProject)
+            const thirdPartyId = spaceNameToUse.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 50);
+            logger.info(`[🚀 Agent] 🔑 Generated thirdPartyId: ${thirdPartyId}`);
+            
+            // Output thirdPartyId to a file for debugging
+            try {
+                const idFilePath = path.join(process.cwd(), 'third_party_id.txt');
+                fs.writeFileSync(idFilePath, thirdPartyId);
+                logger.info(`[🚀 Agent] 📝 Wrote thirdPartyId to ${idFilePath}`);
+            } catch (err) {
+                logger.error(`[🚀 Agent] ❌ Failed to write thirdPartyId to file:`, err);
+            }
+            
             const projectId: string | null = await createDubbingProject(publicAudioUrl, spaceNameToUse);
 
             if (!projectId) {
@@ -105,6 +121,20 @@ export class TwitterSpaceDubbingAgent {
                 };
             }
             logger.info(`[🚀 Agent] ---> Phase 4 Success: SpeechLab project created with ID: ${projectId}`);
+            
+            // Phase 4b: Wait for project processing to complete before proceeding
+            logger.info(`[🚀 Agent] ---> Phase 4b: Waiting for SpeechLab project to complete processing...`);
+            logger.info(`[🚀 Agent] This could take several minutes to an hour depending on audio length.`);
+            
+            const projectCompleted = await waitForProjectCompletion(thirdPartyId);
+            
+            if (!projectCompleted) {
+                logger.error(`[🚀 Agent] ---X Phase 4b Failed: Project did not reach COMPLETE status within allotted time.`);
+                logger.info(`[🚀 Agent] Will continue with sharing link generation, but dubbing may not be ready yet.`);
+                // We continue anyway, as the link will still be valid when the project eventually completes
+            } else {
+                logger.info(`[🚀 Agent] ---> Phase 4b Success: SpeechLab project processing completed successfully!`);
+            }
 
             // Phase 5: Generate SpeechLab sharing link
             logger.info(`[🚀 Agent] ---> Phase 5: Generating sharing link for project ${projectId}...`);
