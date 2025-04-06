@@ -54,9 +54,8 @@ async function testReplyPosting(spaceUrl: string): Promise<void> {
         // Step 2: Post a reply to the tweet with the sharing link
         logger.info(`[🧪 Test] Posting reply to tweet...`);
         
-        // Generate the comment text with a timestamp to make it unique
-        const timestamp = new Date().toISOString().slice(0, 16).replace('T', ' ');
-        const commentText = `Speechlab Twitter Space Agent sponsored by @shaftfinance $shaft has dubbed this space in Latin Spanish! [${timestamp}] ${EXISTING_SHARING_LINK}`;
+        // Generate the comment text including the host username
+        const commentText = `Speechlab Twitter Space Agent sponsored by @shaftfinance $shaft has dubbed this @${HOST_USERNAME} space in Latin Spanish! Contact for more languages! ${EXISTING_SHARING_LINK}`;
         
         const postSuccess = await postReplyToTweet(tweetUrl, commentText);
         
@@ -79,9 +78,8 @@ async function testDirectReply(tweetUrl: string): Promise<void> {
     logger.info(`[🧪 Test] Starting direct reply test for tweet URL: ${tweetUrl}`);
     
     try {
-        // Generate the comment text with a timestamp to make it unique
-        const timestamp = new Date().toISOString().slice(0, 16).replace('T', ' ');
-        const commentText = `Speechlab Twitter Space Agent sponsored by @shaftfinance $shaft has dubbed this space in Latin Spanish! [${timestamp}] ${EXISTING_SHARING_LINK}`;
+        // Generate the comment text with the host username
+        const commentText = `Speechlab Twitter Space Agent sponsored by @shaftfinance $shaft has dubbed this @${HOST_USERNAME} space in Latin Spanish! Contact for more languages! ${EXISTING_SHARING_LINK}`;
         
         const postSuccess = await postReplyToTweet(tweetUrl, commentText);
         
@@ -131,8 +129,7 @@ async function testProfileSearch(username: string): Promise<void> {
             const tweetUrl = `https://twitter.com/i/status/${tweetId}`;
             logger.info(`[🧪 Test] Attempting to reply to tweet ${tweetUrl}`);
             
-            const timestamp = new Date().toISOString().slice(0, 16).replace('T', ' ');
-            const commentText = `Speechlab Twitter Space Agent sponsored by @shaftfinance $shaft has dubbed this space in Latin Spanish! [${timestamp}] ${EXISTING_SHARING_LINK}`;
+            const commentText = `Speechlab Twitter Space Agent sponsored by @shaftfinance $shaft has dubbed this @${username} space in Latin Spanish! Contact for more languages! ${EXISTING_SHARING_LINK}`;
             
             const postSuccess = await postReplyToTweet(tweetUrl, commentText);
             

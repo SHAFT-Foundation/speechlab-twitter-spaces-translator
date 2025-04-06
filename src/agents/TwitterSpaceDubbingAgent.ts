@@ -220,9 +220,8 @@ export class TwitterSpaceDubbingAgent {
             if (tweetUrl) {
                 logger.info(`[🚀 Agent] ---> Phase 6b: Posting reply to tweet ${tweetUrl}...`);
                 
-                // Generate the comment text with a timestamp to make it unique
-                const timestamp = new Date().toISOString().slice(0, 16).replace('T', ' ');
-                const commentText = `Speechlab Twitter Space Agent sponsored by @shaftfinance $shaft has dubbed this space in Latin Spanish! [${timestamp}] ${sharingLink}`;
+                // Generate the comment text including the host's Twitter handle
+                const commentText = `Speechlab Twitter Space Agent sponsored by @shaftfinance $shaft has dubbed this @${hostUsername} space in Latin Spanish! Contact for more languages! ${sharingLink}`;
                 
                 const postSuccess: boolean = await postReplyToTweet(tweetUrl, commentText);
                 
