@@ -1,6 +1,8 @@
 import axios, { AxiosInstance, AxiosError } from 'axios';
 import { config } from '../utils/config';
 import logger from '../utils/logger';
+import path from 'path';
+import fs from 'fs';
 
 const API_BASE_URL = 'https://translate-api.speechlab.ai';
 
@@ -47,6 +49,22 @@ interface GenerateLinkPayload {
 interface GenerateLinkResponse {
     link: string;
     // Add other potential fields
+}
+
+interface GetProjectsResponse {
+    results: Array<{
+        id: string;
+        job: {
+            name: string;
+            sourceLanguage: string;
+            targetLanguage: string;
+            status: string; // "COMPLETE", "PROCESSING", etc.
+            // No progress field in the actual API
+        };
+        // Other project fields
+    }>;
+    totalResults: number;
+    // Other pagination fields
 }
 
 // Simple in-memory cache for the token
@@ -213,4 +231,186 @@ export async function generateSharingLink(projectId: string): Promise<string | n
         handleApiError(error, `sharing link generation for project ${projectId}`);
         return null;
     }
+}
+
+/**
+ * Gets project details by thirdPartyID to check its status.
+ * @param thirdPartyID The thirdPartyID used when creating the project
+ * @returns {Promise<{id: string, status: string, progress: number} | null>} Project details if found, otherwise null
+ */
+export async function getProjectByThirdPartyID(thirdPartyID: string): Promise<{id: string, status: string, progress: number} | null> {
+    logger.info(`[🤖 SpeechLab] Getting project status for thirdPartyID: ${thirdPartyID}`);
+    const token = await getAuthToken();
+    if (!token) {
+        logger.error('[🤖 SpeechLab] ❌ Cannot check project status: Failed to get authentication token.');
+        return null;
+    }
+
+    try {
+        // URL encode the thirdPartyID to ensure it works in the query parameter
+        const encodedThirdPartyID = encodeURIComponent(thirdPartyID);
+        const url = `/v1/projects?sortBy=createdAt%3Aasc&limit=10&page=1&expand=true&thirdPartyIDs=${encodedThirdPartyID}`;
+        
+        logger.debug(`[🤖 SpeechLab] 🔍 Fetching project status from API URL: ${url}`);
+        const response = await apiClient.get<GetProjectsResponse>(url, {
+            headers: { 'Authorization': `Bearer ${token}` }
+        });
+
+        // Write the full API response to a temporary file for debugging
+        const tempFilePath = path.join(process.cwd(), 'temp_api_response.json');
+        try {
+            fs.writeFileSync(
+                tempFilePath,
+                JSON.stringify({
+                    timestamp: new Date().toISOString(),
+                    thirdPartyID: thirdPartyID,
+                    url: url,
+                    response: response.data
+                }, null, 2)
+            );
+            logger.info(`[🤖 SpeechLab] 📝 Wrote API response to ${tempFilePath}`);
+        } catch (writeError) {
+            logger.error(`[🤖 SpeechLab] ❌ Failed to write API response to file:`, writeError);
+        }
+
+        // Log the raw response to help with debugging
+        logger.debug(`[🤖 SpeechLab] 📊 Raw API response: ${JSON.stringify(response.data)}`);
+
+        // Check if we got projects back and that there is at least one
+        if (response.data?.results && response.data.results.length > 0) {
+            const project = response.data.results[0]; // Get first project (should be only one)
+            
+            // Log the job structure for debugging
+            logger.debug(`[🤖 SpeechLab] 🔍 Project job data: ${JSON.stringify(project.job)}`);
+            
+            // Extract status and determine progress
+            const status = project.job?.status || "UNKNOWN";
+            // If status is COMPLETE, set progress to 100, otherwise default to 0 (no progress field in API)
+            const progress = status === "COMPLETE" ? 100 : (status === "PROCESSING" ? 50 : 0);
+            
+            // Enhanced logging with more details
+            logger.info(`[🤖 SpeechLab] ✅ Found project with ID: ${project.id} for thirdPartyID: ${thirdPartyID}`);
+            logger.info(`[🤖 SpeechLab] 📊 Project status: ${status}, Progress: ${progress}%`);
+            logger.info(`[🤖 SpeechLab] 📋 Project details: Name: "${project.job?.name || 'Unknown'}", Source: ${project.job?.sourceLanguage || 'Unknown'}, Target: ${project.job?.targetLanguage || 'Unknown'}`);
+            
+            return {
+                id: project.id,
+                status: status,
+                progress: progress
+            };
+        } else {
+            // More detailed warning when no projects are found
+            logger.warn(`[🤖 SpeechLab] ⚠️ No projects found for thirdPartyID: ${thirdPartyID}`);
+            if (response.data?.totalResults !== undefined) {
+                logger.warn(`[🤖 SpeechLab] API returned ${response.data.totalResults} total projects`);
+            }
+            
+            // Write an error log file with more detailed information
+            const errorLogPath = path.join(process.cwd(), 'project_not_found.json');
+            try {
+                fs.writeFileSync(
+                    errorLogPath,
+                    JSON.stringify({
+                        timestamp: new Date().toISOString(),
+                        error: "No projects found",
+                        thirdPartyID: thirdPartyID,
+                        url: url,
+                        apiResponse: response.data,
+                        total: response.data?.totalResults
+                    }, null, 2)
+                );
+                logger.info(`[🤖 SpeechLab] 📝 Wrote error details to ${errorLogPath}`);
+            } catch (writeError) {
+                logger.error(`[🤖 SpeechLab] ❌ Failed to write error log:`, writeError);
+            }
+            
+            return null;
+        }
+    } catch (error) {
+        handleApiError(error, `getting project status for thirdPartyID: ${thirdPartyID}`);
+        
+        // Write error details to file
+        try {
+            const errorPath = path.join(process.cwd(), 'api_error.json');
+            fs.writeFileSync(
+                errorPath,
+                JSON.stringify({
+                    timestamp: new Date().toISOString(),
+                    thirdPartyID: thirdPartyID,
+                    error: error instanceof Error ? error.message : String(error),
+                    stack: error instanceof Error ? error.stack : undefined
+                }, null, 2)
+            );
+            logger.info(`[🤖 SpeechLab] 📝 Wrote API error details to ${errorPath}`);
+        } catch (writeError) {
+            logger.error(`[🤖 SpeechLab] ❌ Failed to write error details:`, writeError);
+        }
+        
+        return null;
+    }
+}
+
+/**
+ * Waits for a project to reach COMPLETE status, checking at regular intervals.
+ * @param thirdPartyID The thirdPartyID of the project to monitor
+ * @param maxWaitTimeMs Maximum time to wait in milliseconds (default: 1 hour)
+ * @param checkIntervalMs Interval between status checks in milliseconds (default: 30 seconds)
+ * @returns {Promise<boolean>} True if project completed successfully, false otherwise
+ */
+export async function waitForProjectCompletion(
+    thirdPartyID: string, 
+    maxWaitTimeMs = 60 * 60 * 1000, // 1 hour default
+    checkIntervalMs = 30000 // 30 seconds default
+): Promise<boolean> {
+    logger.info(`[🤖 SpeechLab] Waiting for project completion: ${thirdPartyID}`);
+    logger.info(`[🤖 SpeechLab] Maximum wait time: ${maxWaitTimeMs/1000/60} minutes, Check interval: ${checkIntervalMs/1000} seconds`);
+    
+    const startTime = Date.now();
+    let pollCount = 0;
+    
+    // Continue polling until max time is reached
+    while (Date.now() - startTime < maxWaitTimeMs) {
+        pollCount++;
+        const elapsedSeconds = ((Date.now() - startTime) / 1000).toFixed(1);
+        
+        logger.info(`[🤖 SpeechLab] 🔄 Poll #${pollCount} - Checking project status (${elapsedSeconds}s elapsed)...`);
+        
+        const projectDetails = await getProjectByThirdPartyID(thirdPartyID);
+        
+        if (!projectDetails) {
+            logger.warn(`[🤖 SpeechLab] ⚠️ Poll #${pollCount} - Could not retrieve project details, will retry in ${checkIntervalMs/1000}s...`);
+        } else if (projectDetails.status === "COMPLETE") {
+            const elapsedMinutes = ((Date.now() - startTime) / 1000 / 60).toFixed(1);
+            logger.info(`[🤖 SpeechLab] ✅ Poll #${pollCount} - Project completed successfully after ${elapsedMinutes} minutes!`);
+            return true;
+        } else if (projectDetails.status === "FAILED") {
+            logger.error(`[🤖 SpeechLab] ❌ Poll #${pollCount} - Project failed to process!`);
+            return false;
+        } else {
+            // More detailed status update including remaining time estimate
+            const progressPercent = projectDetails.progress || 0;
+            let remainingTimeEstimate = "unknown";
+            
+            // If we have progress > 0, try to estimate remaining time
+            if (progressPercent > 0) {
+                const elapsedMs = Date.now() - startTime;
+                const estimatedTotalMs = (elapsedMs / progressPercent) * 100;
+                const estimatedRemainingMs = estimatedTotalMs - elapsedMs;
+                const estimatedRemainingMin = Math.ceil(estimatedRemainingMs / 1000 / 60);
+                remainingTimeEstimate = `~${estimatedRemainingMin} minutes`;
+            }
+            
+            logger.info(`[🤖 SpeechLab] 🕒 Poll #${pollCount} - Project status: ${projectDetails.status}, Progress: ${progressPercent}%, Estimated time remaining: ${remainingTimeEstimate}`);
+            logger.info(`[🤖 SpeechLab] ⏳ Poll #${pollCount} - Will check again in ${checkIntervalMs/1000}s...`);
+        }
+        
+        // Wait for the specified interval before checking again
+        logger.debug(`[🤖 SpeechLab] 💤 Poll #${pollCount} - Sleeping for ${checkIntervalMs/1000}s before next check...`);
+        await new Promise(resolve => setTimeout(resolve, checkIntervalMs));
+    }
+    
+    // If we get here, we've exceeded the maximum wait time
+    const maxWaitMinutes = (maxWaitTimeMs/1000/60).toFixed(1);
+    logger.warn(`[🤖 SpeechLab] ⏰ Poll #${pollCount} - Maximum wait time of ${maxWaitMinutes} minutes exceeded without project completion.`);
+    return false;
 } 

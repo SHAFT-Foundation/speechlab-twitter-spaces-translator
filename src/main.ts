@@ -6,29 +6,47 @@ import * as path from 'path';
 // Assuming LeaderboardEntry might be defined elsewhere or we use a generic type for now
 import { LeaderboardEntry } from './services/scraperService'; // Import if defined in scraperService, otherwise define locally or in types/
 
-const LEADERBOARD_DATA_PATH = path.join(process.cwd(), 'leaderboard_data.json');
+// Update to use the new Playwright scraper output file
+const LEADERBOARD_DATA_PATH = path.join(process.cwd(), 'leaderboard_data_playwright.json');
 
 /**
- * Loads leaderboard data from the JSON file.
+ * Loads leaderboard data from the JSON file and maps to the required format.
  */
 function loadLeaderboardData(): LeaderboardEntry[] | null {
     logger.info(`Attempting to load leaderboard data from ${LEADERBOARD_DATA_PATH}...`);
     if (!fs.existsSync(LEADERBOARD_DATA_PATH)) {
         logger.error(`❌ Error: Leaderboard data file not found at ${LEADERBOARD_DATA_PATH}.`);
-        logger.error(`Please run the Python scraper utility first: python scraper_utility/scrape_leaderboard.py`);
+        logger.error(`Please run the Python scraper utility first: python scraper_utility/scrape_leaderboard_playwright.py --headless=False`);
         return null;
     }
     try {
         const fileContent = fs.readFileSync(LEADERBOARD_DATA_PATH, 'utf-8');
-        const data = JSON.parse(fileContent);
+        const rawData = JSON.parse(fileContent);
+        
         // Basic validation: check if it's an array
-        if (!Array.isArray(data)) {
+        if (!Array.isArray(rawData)) {
              logger.error(`❌ Error: Invalid format in ${LEADERBOARD_DATA_PATH}. Expected a JSON array.`);
              return null;
         }
-        // TODO: Add more robust validation using Pydantic-like checks or Zod if needed
-        logger.info(`✅ Successfully loaded ${data.length} entries from ${LEADERBOARD_DATA_PATH}.`);
-        return data as LeaderboardEntry[]; // Cast to the expected type
+        
+        // Map the Playwright format data to our required LeaderboardEntry format
+        const mappedData: LeaderboardEntry[] = rawData
+            .filter(entry => !!entry.direct_play_url) // Only entries with direct_play_url
+            .map(entry => ({
+                spaceTitle: entry.space_title || null,
+                hostProfileUrl: entry.host_handle ? `https://x.com/${entry.host_handle.replace('@', '')}` : null,
+                directSpaceUrl: entry.direct_play_url || null,
+                // Additional data we can use
+                hostHandle: entry.host_handle || null,
+                hostName: entry.host_name || null,
+                listenerCount: entry.listener_count || 0,
+                thirdPartyId: entry.space_title || `Space by ${entry.host_handle || 'Unknown'}`
+            }));
+            
+        logger.info(`✅ Successfully loaded and mapped ${mappedData.length} entries from ${LEADERBOARD_DATA_PATH}.`);
+        logger.debug(`Original data had ${rawData.length} entries, filtered to ${mappedData.length} with direct Space URLs.`);
+        
+        return mappedData;
     } catch (error) {
         logger.error(`❌ Error reading or parsing ${LEADERBOARD_DATA_PATH}:`, error);
         return null;
@@ -58,19 +76,21 @@ async function main() {
         logger.info(`▶️ Processing ${leaderboardEntries.length} entries from leaderboard data...`);
 
         for (const entry of leaderboardEntries) {
-            // TODO: Adapt agent.processSingleProfile to accept LeaderboardEntry 
-            // or create a new method agent.processLeaderboardEntry(entry)
             logger.info(`--- Processing Entry: ${entry.spaceTitle || entry.directSpaceUrl || 'Unknown'} ---`);
-            
-            // Placeholder for calling the agent logic with the entry data
-            // For now, just log - replace with actual agent call later
-            // await agent.processLeaderboardEntry(entry); 
-            logger.debug(`   Host: ${entry.hostProfileUrl}`);
+            logger.debug(`   Host: ${entry.hostProfileUrl} (${entry.hostHandle || 'Unknown'})`);
             logger.debug(`   Space Link: ${entry.directSpaceUrl}`);
-
-            // Implement delay between processing entries
-            logger.info(`[⏳] Waiting ${config.DELAY_BETWEEN_PROFILES_MS / 1000}s before next entry...`);
-            await new Promise(resolve => setTimeout(resolve, config.DELAY_BETWEEN_PROFILES_MS));
+            
+            // Process entry using the agent and get a result indicating if processing was attempted
+            const processingResult = await agent.processLeaderboardEntry(entry);
+            
+            // Only wait if the entry was actually processed (had a valid play button)
+            // This prevents unnecessary waiting when the entry wasn't valid
+            if (processingResult.processingAttempted) {
+                logger.info(`[⏳] Waiting ${config.DELAY_BETWEEN_PROFILES_MS / 1000}s before next entry...`);
+                await new Promise(resolve => setTimeout(resolve, config.DELAY_BETWEEN_PROFILES_MS));
+            } else {
+                logger.info(`Skipping delay - entry was quickly determined to be invalid.`);
+            }
             logger.info(`---------------------------------------------------`);
         }
 
@@ -79,12 +99,13 @@ async function main() {
         logger.info('===================================================');
 
     } catch (error) {
-        logger.error('❌ Agent encountered a fatal error during processing loop:', error);
-        process.exitCode = 1; // Indicate failure
-    } finally {
-        logger.info('Agent shutting down.');
+        logger.error('❌ Unhandled error in main process:', error);
+        process.exitCode = 1;
     }
 }
 
-// Execute the main function
-main(); 
+// Start the application
+main().catch(error => {
+    logger.error('❌ Fatal error:', error);
+    process.exit(1);
+}); 
