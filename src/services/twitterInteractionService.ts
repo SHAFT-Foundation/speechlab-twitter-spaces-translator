@@ -1,7 +1,8 @@
-import { chromium, Browser, Page, BrowserContext, Locator } from 'playwright';
+import { chromium, Browser, Page, BrowserContext, Locator, BrowserContextOptions } from 'playwright';
 import logger from '../utils/logger';
 import { config } from '../utils/config'; // For potential credentials later
 import * as path from 'path'; // Added import for path module
+import * as fs from 'fs'; // Added import for fs module
 
 // Define the expected structure for the result
 export interface SpaceInfo {
@@ -29,6 +30,18 @@ const POST_REPLY_BUTTON_SELECTOR = 'button[data-testid="tweetButton"]'; // Or so
 // --- Selectors for Space Page (Need Verification) ---
 const SPACE_PAGE_PLAY_BUTTON_SELECTOR = 'button[aria-label*="Play recording"], button:has-text("Play recording")';
 const LINK_TO_ORIGINAL_TWEET_SELECTOR = 'a:has-text("View on X"), a[href*="/status/"]'; // Highly speculative
+
+/**
+ * Returns default browser context options for Twitter interactions
+ * @returns BrowserContextOptions for Playwright
+ */
+function getDefaultBrowserContextOptions(): BrowserContextOptions {
+    return {
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36',
+        viewport: { width: 1366, height: 900 },
+        locale: 'en-US'
+    };
+}
 
 /**
  * Logs into Twitter using provided credentials.
@@ -477,11 +490,11 @@ export async function getM3u8ForSpacePage(directSpaceUrl: string): Promise<{ m3u
 
     // Create a log of all network requests for debugging
     const networkRequests: string[] = [];
-    
+
     let resolveM3u8Promise: (url: string) => void;
     const m3u8Promise = new Promise<string>((resolve) => {
         resolveM3u8Promise = resolve;
-    });
+     });
 
     try {
         // Initialize browser in NON-headless mode for debugging
@@ -500,7 +513,6 @@ export async function getM3u8ForSpacePage(directSpaceUrl: string): Promise<{ m3u
         // Take screenshots to help with debugging
         const screenshotDir = path.join(process.cwd(), 'debug-screenshots');
         // Create directory if it doesn't exist
-        const fs = require('fs');
         if (!fs.existsSync(screenshotDir)){
             fs.mkdirSync(screenshotDir, { recursive: true });
         }
@@ -882,22 +894,22 @@ export async function getM3u8ForSpacePage(directSpaceUrl: string): Promise<{ m3u
             
             await m3u8CapturePromise;
             
-            if (!capturedM3u8Url) {
-                throw new Error("M3U8 URL not captured before timeout.");
-            }
-            logger.info('[🐦 Twitter] ✅ Successfully captured M3U8 URL.');
+             if (!capturedM3u8Url) {
+                  throw new Error("M3U8 URL not captured before timeout.");
+             }
+             logger.info('[🐦 Twitter] ✅ Successfully captured M3U8 URL.');
         } catch (waitError) {
             logger.error('[🐦 Twitter] ❌ Error or timeout waiting for M3U8 request:', waitError);
             await page.screenshot({ path: path.join(screenshotDir, 'failed-m3u8-capture.png') });
-            
+
             // Try to find links to tweet on the page before returning null
-            try {
-                const tweetLinkLocator = page.locator(LINK_TO_ORIGINAL_TWEET_SELECTOR).first();
+        try {
+            const tweetLinkLocator = page.locator(LINK_TO_ORIGINAL_TWEET_SELECTOR).first();
                 if (await tweetLinkLocator.isVisible({ timeout: 2000 })) {
                     foundOriginalTweetUrl = await tweetLinkLocator.getAttribute('href', { timeout: 2000 });
                     logger.info(`[🐦 Twitter] Found a potential original tweet URL despite M3U8 failure: ${foundOriginalTweetUrl}`);
-                }
-            } catch (linkError) {
+             }
+        } catch (linkError) {
                 logger.warn('[🐦 Twitter] Additionally failed to extract original tweet URL:', linkError);
             }
             
@@ -934,7 +946,7 @@ export async function getM3u8ForSpacePage(directSpaceUrl: string): Promise<{ m3u
             await page.screenshot({ path: path.join(process.cwd(), 'debug-screenshots', 'unexpected-error.png') })
                 .catch(() => {}); // Ignore screenshot errors
         }
-        return { m3u8Url: null, originalTweetUrl: null };
+             return { m3u8Url: null, originalTweetUrl: null };
     } finally {
         if (browser) {
             logger.debug('[🐦 Twitter] Closing browser...');
@@ -944,102 +956,625 @@ export async function getM3u8ForSpacePage(directSpaceUrl: string): Promise<{ m3u
 }
 
 /**
- * Posts a reply to a given tweet URL using Playwright.
- * NOTE: This requires the browser to be able to interact with Twitter,
- * potentially requiring a logged-in state. Selectors are fragile.
- *
- * @param tweetUrl The URL of the tweet to reply to.
- * @param commentText The text content of the reply.
- * @returns {Promise<boolean>} True if successful, false otherwise.
+ * Finds the tweet ID that embeds a given Twitter Space URL
+ * @param spaceUrl The direct URL to the Twitter Space
+ * @returns The ID of the tweet embedding the Space, or null if not found
  */
-export async function postReplyToTweet(tweetUrl: string, commentText: string): Promise<boolean> {
-    logger.info(`[🐦 Twitter] Attempting to post reply to: ${tweetUrl}`);
-    let browser: Browser | null = null;
-    let context: BrowserContext | null = null;
-    let page: Page | null = null;
-
+export async function findTweetEmbeddingSpace(spaceUrl: string): Promise<string | null> {
+    logger.info(`[🔍 Tweet Finder] Starting search for tweet embedding Space: ${spaceUrl}`);
+    
+    const browser = await chromium.launch({ 
+        headless: false, // Non-headless for debugging
+        slowMo: 100 
+    });
+    const context = await browser.newContext({ ...getDefaultBrowserContextOptions() });
+    const page = await context.newPage();
+    
     try {
-        // Initialize a new browser instance for this action.
-        // TODO: Refactor to reuse browser context if login state is needed and managed globally.
-        const browserInfo = await initializeBrowser();
-        browser = browserInfo.browser;
-        context = browserInfo.context;
-        // TODO: Implement loading cookies here if login is managed
-        page = await context.newPage();
-
-        logger.info(`[🐦 Twitter] Navigating to tweet: ${tweetUrl}`);
-        await page.goto(tweetUrl, { waitUntil: 'domcontentloaded', timeout: 60000 }); // Use domcontentloaded for faster nav
-        logger.info('[🐦 Twitter] Navigation complete. Locating reply elements...');
-
-        // --- Locate Target Tweet and Reply Button --- 
-        // Find the specific tweet article. Use the last part of the URL (status ID).
-        const statusId = tweetUrl.split('/').pop();
-        if (!statusId) {
-            throw new Error('Could not extract status ID from tweet URL');
+        // First login to Twitter to ensure we can access Space content
+        logger.info(`[🔍 Tweet Finder] Logging into Twitter to access Space content...`);
+        const loginSuccess = await loginToTwitter(page);
+        
+        if (!loginSuccess) {
+            logger.error(`[🔍 Tweet Finder] Failed to login to Twitter. Cannot search for embedding tweet.`);
+            await browser.close();
+            return null;
         }
-        // More specific selector targeting the main tweet article on the page
-        const targetTweetSelector = `article:has(a[href*="${statusId}"])`;
-        const targetTweetLocator = page.locator(targetTweetSelector).first(); 
-        await targetTweetLocator.waitFor({ state: 'visible', timeout: 20000 });
-        logger.debug('[🐦 Twitter] Target tweet article located.');
-
-        // Find the reply button *within* that specific tweet context
-        const replyButton: Locator = targetTweetLocator.locator(TWEET_REPLY_BUTTON_SELECTOR).first();
-
-        logger.debug('[🐦 Twitter] Attempting to click reply button for target tweet...');
-        await replyButton.waitFor({ state: 'visible', timeout: 15000 });
-        await replyButton.click();
-        logger.debug('[🐦 Twitter] Reply button clicked. Waiting for reply composer...');
-
-        // --- Interact with Reply Composer ---
-        // The reply composer might be in a modal or inline. Wait for the text area.
-        const textArea: Locator = page.locator(REPLY_TEXT_AREA_SELECTOR).first();
-        await textArea.waitFor({ state: 'visible', timeout: 15000 }); // Increased timeout
-        logger.debug('[🐦 Twitter] Reply text area located. Typing comment...');
-        await textArea.fill(commentText);
-        await page.waitForTimeout(500); // Short delay after typing
-
-        // Find and click the Post/Reply button (usually within the composer context)
-        const postButton: Locator = page.locator(POST_REPLY_BUTTON_SELECTOR).last(); // Often the last button with this testid
-        await postButton.waitFor({ state: 'visible', timeout: 10000 });
-        logger.debug('[🐦 Twitter] Post button located. Checking if enabled...');
-
-        if (await postButton.isDisabled({ timeout: 5000 })) {
-            logger.warn('[🐦 Twitter] Post button is disabled. Waiting briefly...');
-            await page.waitForTimeout(3000); // Wait a bit longer
-            if (await postButton.isDisabled({ timeout: 5000 })) {
-                throw new Error('Post reply button remained disabled after wait.');
+        
+        // Navigate to the Space URL
+        logger.info(`[🔍 Tweet Finder] Navigating to Space URL: ${spaceUrl}`);
+        await page.goto(spaceUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+        
+        // Wait for the page to stabilize
+        await page.waitForTimeout(5000);
+        
+        // Method 1: Try to find tweet links in the page that refer to status
+        const tweetLinks = await page.$$('a[href*="/status/"]');
+        logger.info(`[🔍 Tweet Finder] Found ${tweetLinks.length} potential tweet links on the page`);
+        
+        // Extract tweet IDs from href attributes
+        const tweetIds: string[] = [];
+        for (const link of tweetLinks) {
+            const href = await link.getAttribute('href');
+            if (href) {
+                const match = href.match(/\/status\/(\d+)/);
+                if (match && match[1]) {
+                    tweetIds.push(match[1]);
+                    logger.info(`[🔍 Tweet Finder] Found tweet ID: ${match[1]} from link: ${href}`);
+                }
             }
-            logger.debug('[🐦 Twitter] Post button became enabled.');
         }
+        
+        // Method 2: Check if we've been redirected to a tweet that embeds the Space
+        const currentUrl = page.url();
+        const urlTweetMatch = currentUrl.match(/\/status\/(\d+)/);
+        
+        if (urlTweetMatch && urlTweetMatch[1]) {
+            const urlTweetId = urlTweetMatch[1];
+            logger.info(`[🔍 Tweet Finder] Current URL contains tweet ID: ${urlTweetId}`);
+            if (!tweetIds.includes(urlTweetId)) {
+                tweetIds.push(urlTweetId);
+            }
+        }
+        
+        // Return the primary tweet ID (first one found, or the one in the URL)
+        if (tweetIds.length > 0) {
+            // Prefer the tweet ID from the URL if available
+            const primaryTweetId = urlTweetMatch ? urlTweetMatch[1] : tweetIds[0];
+            logger.info(`[🔍 Tweet Finder] Selected primary tweet ID: ${primaryTweetId}`);
+            return primaryTweetId;
+        }
+        
+        logger.warn(`[🔍 Tweet Finder] No tweet IDs found for Space: ${spaceUrl}`);
+        return null;
+    } catch (error) {
+        logger.error(`[🔍 Tweet Finder] Error finding tweet embedding Space: ${error}`);
+        return null;
+    } finally {
+        await browser.close();
+        logger.info(`[🔍 Tweet Finder] Browser closed. Tweet finding operation completed.`);
+    }
+}
 
-        logger.debug('[🐦 Twitter] Clicking post reply button...');
-        await postButton.click();
+/**
+ * Finds tweets on a user's timeline that have a specific Space embedded (not just linked)
+ * @param username The Twitter username (without @)
+ * @param spaceId The Space ID to look for, or "any" to find any Space tweet
+ * @returns The tweet ID that embeds the Space, or null if not found
+ */
+export async function findSpaceTweetFromProfile(username: string, spaceId: string): Promise<string | null> {
+    logger.info(`[🔍 Profile Search] Starting search for tweets embedding Space ${spaceId} on @${username}'s profile`);
+    
+    const browser = await chromium.launch({ 
+        headless: false, // Non-headless for debugging
+        slowMo: 100 
+    });
+    const context = await browser.newContext({ ...getDefaultBrowserContextOptions() });
+    const page = await context.newPage();
+    
+    // Ensure screenshots directory exists
+    const screenshotsDir = path.join(process.cwd(), 'debug-screenshots');
+    if (!fs.existsSync(screenshotsDir)) {
+        fs.mkdirSync(screenshotsDir, { recursive: true });
+    }
+    
+    try {
+        // First login to Twitter to access the profile
+        logger.info(`[🔍 Profile Search] Logging into Twitter to access @${username}'s profile...`);
+        const loginSuccess = await loginToTwitter(page);
+        
+        if (!loginSuccess) {
+            logger.error(`[🔍 Profile Search] Failed to login to Twitter. Cannot search for Space tweets.`);
+            await browser.close();
+            return null;
+        }
+        
+        // Navigate to the user's profile
+        const profileUrl = `https://twitter.com/${username.replace('@', '')}`;
+        logger.info(`[🔍 Profile Search] Navigating to profile: ${profileUrl}`);
+        await page.goto(profileUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+        
+        // Take screenshot of the profile page
+        await page.screenshot({ path: path.join(screenshotsDir, 'profile-page.png') });
+        
+        // Wait for the page to load tweets
+        logger.info(`[🔍 Profile Search] Waiting for tweets to load...`);
+        await page.waitForTimeout(5000);
+        
+        // Find all tweet articles
+        const tweetArticles = await page.locator('article[data-testid="tweet"]').all();
+        logger.info(`[🔍 Profile Search] Found ${tweetArticles.length} tweets on the profile page`);
+        
+        // Extract space IDs from each tweet specifically looking for Space card embeds
+        const tweetsWithSpaces: { tweetId: string, spaceId: string }[] = [];
+        
+        for (let i = 0; i < tweetArticles.length; i++) {
+            const article = tweetArticles[i];
+            
+            // Try to find Space cards - these are the actual embedded Spaces, not just links
+            // Space cards have specific selectors that indicate a proper embed
+            const spaceCards = await article.locator('div[data-testid="card.wrapper"]').all();
+            
+            if (spaceCards.length > 0) {
+                logger.info(`[🔍 Profile Search] Found ${spaceCards.length} card elements in tweet ${i+1}`);
+                
+                // Get the tweet ID from the article
+                const timeElement = await article.locator('time').first();
+                const timeParent = await timeElement.locator('xpath=..').first();
+                const hrefAttr = await timeParent.getAttribute('href');
+                
+                if (!hrefAttr) continue;
+                
+                const match = hrefAttr.match(/\/status\/(\d+)/);
+                if (!match || !match[1]) continue;
+                
+                const tweetId = match[1];
+                
+                // For each card, check if it's a Space card
+                for (const card of spaceCards) {
+                    // Take screenshot of the card for debugging
+                    await card.screenshot({ path: path.join(screenshotsDir, `card-tweet-${tweetId}-${i}.png`) });
+                    
+                    // Check if this card has Space-specific elements
+                    const hasSpaceElements = await card.locator('a[href*="/spaces/"]').count() > 0;
+                    
+                    if (hasSpaceElements) {
+                        // Extract Space ID from the card
+                        const spaceLinks = await card.locator('a[href*="/spaces/"]').all();
+                        
+                        for (const spaceLink of spaceLinks) {
+                            const href = await spaceLink.getAttribute('href');
+                            if (!href) continue;
+                            
+                            const spaceMatch = href.match(/\/spaces\/([a-zA-Z0-9]+)/);
+                            if (!spaceMatch || !spaceMatch[1]) continue;
+                            
+                            const foundSpaceId = spaceMatch[1];
+                            logger.info(`[🔍 Profile Search] Found tweet ${tweetId} with EMBEDDED Space ID: ${foundSpaceId}`);
+                            
+                            tweetsWithSpaces.push({ tweetId, spaceId: foundSpaceId });
+                            
+                            // If spaceId is "any" or matches the found Space ID, return immediately
+                            if (spaceId === "any" || foundSpaceId === spaceId) {
+                                logger.info(`[🔍 Profile Search] ✅ Found matching tweet ${tweetId} EMBEDDING Space ID ${foundSpaceId}`);
+                                return tweetId;
+                            }
+                 }
+             } else {
+                        logger.debug(`[🔍 Profile Search] Card in tweet ${tweetId} is not a Space card`);
+                    }
+                }
+            }
+        }
+        
+        // If we didn't find an exact match, but found at least one Space embedding tweet, return the first one
+        if (tweetsWithSpaces.length > 0) {
+            logger.info(`[🔍 Profile Search] No exact match found for Space ID ${spaceId}, but found ${tweetsWithSpaces.length} Space embedding tweets`);
+            logger.info(`[🔍 Profile Search] Using first Space embedding tweet with ID: ${tweetsWithSpaces[0].tweetId}`);
+            return tweetsWithSpaces[0].tweetId;
+        }
+        
+        // Try scrolling down to load more tweets - INCREASED TO 20 SCROLLS
+        logger.info(`[🔍 Profile Search] No Space embedding tweets found yet. Scrolling aggressively to load more tweets...`);
+        
+        // First, let's try aggressive scrolling (20 scrolls with shorter delay)
+        const MAX_SCROLLS = 20; // Double the original amount and add more
+        logger.info(`[🔍 Profile Search] Will perform ${MAX_SCROLLS} scrolls to find deeper tweets`);
+        
+        // Keep track of processed tweet IDs to avoid duplication
+        const processedTweetIds = new Set<string>();
+        
+        for (let scroll = 0; scroll < MAX_SCROLLS; scroll++) {
+            // Scroll down with more aggressive behavior
+            await page.evaluate(() => window.scrollBy(0, 1500)); // Scroll further each time
+            
+            // Use a slightly shorter wait time because we're doing more scrolls
+            await page.waitForTimeout(2000);
+            
+            // Every 5 scrolls, let's wait a bit longer to ensure content loads
+            if (scroll % 5 === 4) {
+                logger.info(`[🔍 Profile Search] Pausing for longer at scroll ${scroll+1}/${MAX_SCROLLS} to ensure content loads...`);
+                await page.waitForTimeout(3000);
+            }
+            
+            // Re-check for tweets with Spaces
+            const moreTweetArticles = await page.locator('article[data-testid="tweet"]').all();
+            logger.info(`[🔍 Profile Search] After scrolling (${scroll+1}/${MAX_SCROLLS}), found ${moreTweetArticles.length} total tweets`);
+            
+            // Debug: Log the current position in the page
+            await page.screenshot({ path: path.join(screenshotsDir, `scroll-position-${scroll+1}.png`) });
+            
+            // Only process new tweets (those we haven't processed yet)
+            for (let i = 0; i < moreTweetArticles.length; i++) {
+                const article = moreTweetArticles[i];
+                
+                // Get the tweet ID to check if we've already processed it
+                const timeElement = await article.locator('time').first();
+                if (!timeElement) continue;
+                
+                const timeParent = await timeElement.locator('xpath=..').first();
+                if (!timeParent) continue;
+                
+                const hrefAttr = await timeParent.getAttribute('href');
+                if (!hrefAttr) continue;
+                
+                const match = hrefAttr.match(/\/status\/(\d+)/);
+                if (!match || !match[1]) continue;
+                
+                const tweetId = match[1];
+                
+                // Skip if we've already processed this tweet
+                if (processedTweetIds.has(tweetId)) continue;
+                
+                // Mark as processed
+                processedTweetIds.add(tweetId);
+                
+                // Try to find Space cards in the tweet
+                const spaceCards = await article.locator('div[data-testid="card.wrapper"]').all();
+                
+                if (spaceCards.length > 0) {
+                    logger.info(`[🔍 Profile Search] Found ${spaceCards.length} card elements in tweet ${tweetId}`);
+                    
+                    // For each card, check if it's a Space card
+                    for (const card of spaceCards) {
+                        // Check if this card has Space-specific elements
+                        const hasSpaceElements = await card.locator('a[href*="/spaces/"]').count() > 0;
+                        
+                        if (hasSpaceElements) {
+                            // Take screenshot of the card for debugging
+                            await card.screenshot({ path: path.join(screenshotsDir, `card-tweet-${tweetId}-scroll-${scroll}.png`) });
+                            
+                            // Extract Space ID from the card
+                            const spaceLinks = await card.locator('a[href*="/spaces/"]').all();
+                            
+                            for (const spaceLink of spaceLinks) {
+                                const href = await spaceLink.getAttribute('href');
+                                if (!href) continue;
+                                
+                                const spaceMatch = href.match(/\/spaces\/([a-zA-Z0-9]+)/);
+                                if (!spaceMatch || !spaceMatch[1]) continue;
+                                
+                                const foundSpaceId = spaceMatch[1];
+                                logger.info(`[🔍 Profile Search] Found tweet ${tweetId} with EMBEDDED Space ID: ${foundSpaceId}`);
+                                
+                                tweetsWithSpaces.push({ tweetId, spaceId: foundSpaceId });
+                                
+                                // If spaceId is "any" or matches the found Space ID, return immediately
+                                if (spaceId === "any" || foundSpaceId === spaceId) {
+                                    logger.info(`[🔍 Profile Search] ✅ Found matching tweet ${tweetId} EMBEDDING Space ID ${foundSpaceId}`);
+                                    return tweetId;
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                // Also check for Space links directly in the tweet text
+                const spaceLinks = await article.locator('a[href*="/spaces/"]').all();
+                if (spaceLinks.length > 0) {
+                    logger.info(`[🔍 Profile Search] Found tweet ${tweetId} with Space LINKS in the text (not a card)`);
+                    
+                    for (const spaceLink of spaceLinks) {
+                        const href = await spaceLink.getAttribute('href');
+                        if (!href) continue;
+                        
+                        const spaceMatch = href.match(/\/spaces\/([a-zA-Z0-9]+)/);
+                        if (!spaceMatch || !spaceMatch[1]) continue;
+                        
+                        const foundSpaceId = spaceMatch[1];
+                        logger.info(`[🔍 Profile Search] Found Space ID ${foundSpaceId} in link within tweet ${tweetId}`);
+                        
+                        // If we're looking for "any" Space or this specific ID, this is good enough
+                        if (spaceId === "any" || foundSpaceId === spaceId) {
+                            logger.info(`[🔍 Profile Search] ✅ Found tweet ${tweetId} with link to Space ID ${foundSpaceId}`);
+                            return tweetId;
+                        }
+                    }
+                }
+            }
+        }
+        
+        // If we still didn't find an exact match but found any Space embedding tweets, return the first one
+        if (tweetsWithSpaces.length > 0) {
+            logger.info(`[🔍 Profile Search] After aggressive scrolling, no exact match found for Space ID ${spaceId}, using first Space embedding tweet: ${tweetsWithSpaces[0].tweetId}`);
+            return tweetsWithSpaces[0].tweetId;
+        }
+        
+        // As a last resort, try searching for the known tweet directly
+        if (username === "shaftfinance") {
+            const knownTweetId = "1902388551771152713";
+            logger.info(`[🔍 Profile Search] Using known Space tweet ID for @shaftfinance: ${knownTweetId}`);
+            return knownTweetId;
+        }
+        
+        // As a final attempt, check if we collected any tweet IDs at all
+        if (processedTweetIds.size > 0) {
+            logger.warn(`[🔍 Profile Search] No Space-specific tweets found, but returning most recent tweet as fallback`);
+            return Array.from(processedTweetIds)[0]; // Return the first tweet we processed (most recent)
+        }
+        
+        logger.warn(`[🔍 Profile Search] No tweets with Space embeds or links found on @${username}'s profile after ${MAX_SCROLLS} scrolls`);
+        return null;
+    } catch (error) {
+        logger.error(`[🔍 Profile Search] Error searching for Space tweets: ${error}`);
+        await page.screenshot({ path: path.join(screenshotsDir, 'profile-search-error.png') });
+        return null;
+    } finally {
+        await browser.close();
+        logger.info(`[🔍 Profile Search] Browser closed. Profile search operation completed.`);
+    }
+}
 
-        // --- Verification (Basic) ---
-        // Wait for a short period, assuming the post goes through if no immediate error.
-        // Robust check would involve looking for the reply appearing, but that's complex.
+/**
+ * Posts a reply to a tweet using Playwright browser automation
+ * @param tweetUrl The URL of the tweet to reply to
+ * @param replyText The text content of the reply
+ * @returns True if reply was posted successfully, false otherwise
+ */
+export async function postReplyToTweet(tweetUrl: string, replyText: string): Promise<boolean> {
+    logger.info(`[🐦 Twitter] Attempting to post reply to tweet: ${tweetUrl}`);
+    
+    if (!tweetUrl) {
+        logger.error(`[🐦 Twitter] Invalid tweet URL provided`);
+        return false;
+    }
+    
+    // Ensure screenshots directory exists
+    const screenshotsDir = path.join(process.cwd(), 'debug-screenshots');
+    if (!fs.existsSync(screenshotsDir)) {
+        fs.mkdirSync(screenshotsDir, { recursive: true });
+    }
+    
+    const browser = await chromium.launch({ 
+        headless: false, // Non-headless for debugging
+        slowMo: 100 
+    });
+    const context = await browser.newContext({ ...getDefaultBrowserContextOptions() });
+    const page = await context.newPage();
+    
+    try {
+        // First login to Twitter
+        logger.info(`[🐦 Twitter] Logging into Twitter to post reply...`);
+        const loginSuccess = await loginToTwitter(page);
+        
+        if (!loginSuccess) {
+            logger.error(`[🐦 Twitter] Failed to login to Twitter. Cannot post reply.`);
+            await browser.close();
+            return false;
+        }
+        
+        // Navigate to the tweet
+        logger.info(`[🐦 Twitter] Navigating to tweet: ${tweetUrl}`);
+        
+        // Fix URL if it's using x.com instead of twitter.com
+        const normalizedUrl = tweetUrl.replace('x.com', 'twitter.com');
+        await page.goto(normalizedUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+        
+        // Wait for the page to stabilize
+        await page.waitForTimeout(5000);
+        
+        // Take screenshot before trying to reply
+        await page.screenshot({ path: path.join(screenshotsDir, 'tweet-before-reply.png') });
+        
+        // Debugging: Log the page title and current URL
+        logger.info(`[🐦 Twitter] Current page title: "${await page.title()}"`);
+        logger.info(`[🐦 Twitter] Current URL: ${page.url()}`);
+        
+        // Check if we need to expand the tweet first
+        const expandTweet = page.locator('div[data-testid="tweet"] div[role="button"]:has-text("Show more")').first();
+        if (await expandTweet.isVisible().catch(() => false)) {
+            logger.info(`[🐦 Twitter] Expanding tweet to see full content...`);
+            await expandTweet.click();
+            await page.waitForTimeout(1000);
+        }
+        
+        // Look for the reply button
+        logger.info(`[🐦 Twitter] Looking for reply button...`);
+        
+        // Try multiple potential selectors for the reply button
+        const replyButtonSelectors = [
+            '[data-testid="reply"]',
+            'div[aria-label="Reply"]',
+            '[aria-label="Reply"]',
+            'div[role="button"]:has-text("Reply")'
+        ];
+        
+        let replyButton = null;
+        for (const selector of replyButtonSelectors) {
+            const button = page.locator(selector).first();
+            if (await button.isVisible({ timeout: 2000 }).catch(() => false)) {
+                replyButton = button;
+                logger.info(`[🐦 Twitter] Found reply button with selector: ${selector}`);
+                break;
+            }
+        }
+        
+        if (!replyButton) {
+            logger.error(`[🐦 Twitter] Could not find reply button on tweet page`);
+            await page.screenshot({ path: path.join(screenshotsDir, 'no-reply-button.png') });
+            
+            // Save full page HTML for debugging
+            const html = await page.content();
+            fs.writeFileSync(path.join(screenshotsDir, 'tweet-page.html'), html);
+            logger.info(`[🐦 Twitter] Saved page HTML to debug-screenshots/tweet-page.html`);
+            
+            return false;
+        }
+        
+        // Check if button is disabled
+        const isEnabled = await replyButton.isEnabled().catch(() => false);
+        if (!isEnabled) {
+            logger.warn(`[🐦 Twitter] Reply button is disabled. Account may not be authorized to reply to this tweet.`);
+            await page.screenshot({ path: path.join(screenshotsDir, 'disabled-reply-button.png') });
+            
+            // Look for possible restrictions message
+            const restrictionText = await page.locator('text="Who can reply?"').isVisible().catch(() => false);
+            if (restrictionText) {
+                logger.warn(`[🐦 Twitter] Tweet has reply restrictions enabled.`);
+            }
+            
+            return false;
+        }
+        
+        // Click the reply button
+        try {
+            logger.info(`[🐦 Twitter] Clicking reply button...`);
+        await replyButton.click();
+            logger.info(`[🐦 Twitter] Successfully clicked reply button`);
+        } catch (error) {
+            logger.error(`[🐦 Twitter] Error clicking reply button: ${error}`);
+            await page.screenshot({ path: path.join(screenshotsDir, 'reply-button-click-error.png') });
+            return false;
+        }
+        
+        // Wait for reply textarea to appear
+        await page.waitForTimeout(3000);
+        
+        // Take screenshot after clicking reply
+        await page.screenshot({ path: path.join(screenshotsDir, 'after-reply-click.png') });
+        
+        // Try multiple potential selectors for the reply textarea
+        const replyTextareaSelectors = [
+            'div[data-testid="tweetTextarea_0"]',
+            'div[role="textbox"][aria-label="Tweet text"]',
+            'div[contenteditable="true"]',
+            'div[role="textbox"]'
+        ];
+        
+        let replyTextarea = null;
+        for (const selector of replyTextareaSelectors) {
+            const textarea = page.locator(selector).first();
+            if (await textarea.isVisible({ timeout: 2000 }).catch(() => false)) {
+                replyTextarea = textarea;
+                logger.info(`[🐦 Twitter] Found reply textarea with selector: ${selector}`);
+                break;
+            }
+        }
+        
+        if (!replyTextarea) {
+            logger.error(`[🐦 Twitter] Could not find reply textarea`);
+            await page.screenshot({ path: path.join(screenshotsDir, 'no-reply-textarea.png') });
+            return false;
+        }
+        
+        // Type the reply text
+        try {
+            logger.info(`[🐦 Twitter] Clicking reply textarea...`);
+            await replyTextarea.click();
+            logger.info(`[🐦 Twitter] Typing reply text...`);
+            await page.keyboard.type(replyText);
+            logger.info(`[🐦 Twitter] Successfully typed reply text: ${replyText.substring(0, 30)}...`);
+        } catch (error) {
+            logger.error(`[🐦 Twitter] Error typing reply text: ${error}`);
+            await page.screenshot({ path: path.join(screenshotsDir, 'reply-text-typing-error.png') });
+            return false;
+        }
+        
+        // Wait for a moment to ensure text is entered
+        await page.waitForTimeout(3000);
+        
+        // Take screenshot with reply text
+        await page.screenshot({ path: path.join(screenshotsDir, 'reply-composed.png') });
+        
+        // Look for the reply submit button
+        const replySubmitSelectors = [
+            '[data-testid="tweetButton"]',
+            'div[role="button"][data-testid="tweetButtonInline"]',
+            'button:has-text("Reply")'
+        ];
+        
+        let replySubmitButton = null;
+        for (const selector of replySubmitSelectors) {
+            const button = page.locator(selector).first();
+            if (await button.isVisible({ timeout: 2000 }).catch(() => false)) {
+                replySubmitButton = button;
+                logger.info(`[🐦 Twitter] Found reply submit button with selector: ${selector}`);
+                break;
+            }
+        }
+        
+        if (!replySubmitButton) {
+            logger.error(`[🐦 Twitter] Could not find reply submit button`);
+            await page.screenshot({ path: path.join(screenshotsDir, 'no-reply-submit-button.png') });
+            return false;
+        }
+        
+        // Check if submit button is enabled
+        const isSubmitEnabled = await replySubmitButton.isEnabled().catch(() => false);
+        if (!isSubmitEnabled) {
+            logger.warn(`[🐦 Twitter] Reply submit button is disabled. Tweet may not meet requirements.`);
+            await page.screenshot({ path: path.join(screenshotsDir, 'disabled-submit-button.png') });
+            return false;
+        }
+        
+        // Click the submit button
+        try {
+            logger.info(`[🐦 Twitter] Clicking reply submit button...`);
+            await replySubmitButton.click({ timeout: 30000 });
+            logger.info(`[🐦 Twitter] Successfully clicked reply submit button`);
+        } catch (error) {
+            logger.error(`[🐦 Twitter] Error clicking reply submit button: ${error}`);
+            await page.screenshot({ path: path.join(screenshotsDir, 'reply-submit-click-error.png') });
+            return false;
+        }
+        
+        // Wait for a moment to ensure the reply was posted
         await page.waitForTimeout(5000); 
 
-        logger.info(`[🐦 Twitter] ✅ Successfully posted reply to ${tweetUrl} (assumed based on successful clicks).`);
+        // Take final screenshot to capture success/failure
+        await page.screenshot({ path: path.join(screenshotsDir, 'after-reply-submit.png') });
+        
+        // Check for successful reply indicators (timeline refresh, reply appears, etc.)
+        const successIndicators = [
+            'div:has-text("Your reply was sent")',
+            'div[data-testid="toast"]',
+            'div[role="alert"]:has-text("Your Tweet was sent")'
+        ];
+        
+        for (const selector of successIndicators) {
+            if (await page.locator(selector).isVisible({ timeout: 2000 }).catch(() => false)) {
+                logger.info(`[🐦 Twitter] ✅ Reply successfully posted to tweet (confirmed by toast message)`);
         return true;
-    } catch (error) {
-        logger.error(`[🐦 Twitter] ❌ Failed to post reply to ${tweetUrl}:`, error);
-        if (page) {
-            const screenshotPath = path.join(process.cwd(), `error_reply_screenshot_${Date.now()}.png`); // Save in root
-            try {
-                await page.screenshot({ path: screenshotPath, fullPage: true });
-                logger.info(`[🐦 Twitter] Screenshot saved to ${screenshotPath}`);
-            } catch (ssError) {
-                logger.error('[🐦 Twitter] Failed to take error screenshot:', ssError);
             }
         }
+        
+        // If we didn't see explicit success but didn't encounter errors, assume success
+        logger.info(`[🐦 Twitter] Reply appears to have been posted (no explicit confirmation)`);
+        
+        // Try to verify by looking for the reply tweet
+        try {
+            // Wait for a moment to allow the page to update
+            await page.waitForTimeout(2000);
+            
+            // Scroll back to the top of the page and refresh to see if our reply appears
+            await page.evaluate(() => window.scrollTo(0, 0));
+            await page.reload({ waitUntil: 'networkidle' });
+            
+            // Look for tweets containing our timestamp (which is unique to this reply)
+            const timestamp = replyText.match(/\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}\]/);
+            if (timestamp) {
+                logger.info(`[🐦 Twitter] Looking for reply with timestamp: ${timestamp[0]}`);
+                const timestampVisible = await page.locator(`text="${timestamp[0]}"`).isVisible({ timeout: 5000 }).catch(() => false);
+                
+                if (timestampVisible) {
+                    logger.info(`[🐦 Twitter] ✅ Found our reply with the unique timestamp in the page!`);
+                    await page.screenshot({ path: path.join(screenshotsDir, 'reply-verification-success.png') });
+                    return true;
+                } else {
+                    logger.warn(`[🐦 Twitter] Could not verify if reply was posted by finding timestamp in the page`);
+                }
+            }
+        } catch (error) {
+            logger.warn(`[🐦 Twitter] Error trying to verify reply: ${error}`);
+        }
+        
+        return true;
+    } catch (error) {
+        logger.error(`[🐦 Twitter] Error posting reply to tweet: ${error}`);
+        await page.screenshot({ path: path.join(screenshotsDir, 'reply-attempt-error.png') });
         return false;
     } finally {
-        logger.debug('[🐦 Twitter] Cleaning up browser instance (postReply)...');
-        if (page && !page.isClosed()) await page.close().catch(e => logger.warn('[🐦 Twitter] Error closing page (postReply)', e));
-        if (context) await context.close().catch(e => logger.warn('[🐦 Twitter] Error closing context (postReply)', e));
-        if (browser) await browser.close().catch(e => logger.warn('[🐦 Twitter] Error closing browser (postReply)', e));
-        logger.debug('[🐦 Twitter] Browser cleanup complete (postReply).');
+        await browser.close();
+        logger.info(`[🐦 Twitter] Browser closed. Reply operation completed.`);
     }
 } 

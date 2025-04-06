@@ -38,9 +38,12 @@ function runFfmpegDownload(m3u8Url: string, outputFilePath: string): Promise<voi
             outputFilePath     // Output file path
         ];
 
+        // Log the full ffmpeg command prominently
+        const ffmpegCommand = `ffmpeg ${ffmpegArgs.join(' ')}`;
+        logger.info(`[🎧 Audio] 🔧 FFMPEG COMMAND: ${ffmpegCommand}`);
         logger.info(`[🎧 Audio] Starting ffmpeg download for: ${m3u8Url}`);
         logger.info(`[🎧 Audio] Output file will be saved to: ${outputFilePath}`);
-        logger.debug(`[🎧 Audio] ffmpeg command: ffmpeg ${ffmpegArgs.join(' ')}`);
+        logger.debug(`[🎧 Audio] ffmpeg command: ${ffmpegCommand}`);
 
         // Create timestamps for progress tracking
         const startTime = Date.now();
@@ -152,40 +155,83 @@ function runFfmpegDownload(m3u8Url: string, outputFilePath: string): Promise<voi
  * @returns Promise resolving with the public URL of the uploaded object.
  */
 async function uploadToS3(localFilePath: string, s3Key: string): Promise<string> {
-    try {
-        // Get file size for progress reporting
-        const stats = fs.statSync(localFilePath);
-        const fileSizeMB = (stats.size / (1024 * 1024)).toFixed(2);
-        logger.info(`[🎧 Audio] 📤 Starting S3 upload: ${localFilePath} (${fileSizeMB} MB) to key: ${s3Key}`);
-        
-        const startTime = Date.now();
-        const fileStream = fs.createReadStream(localFilePath);
+    // Maximum number of retries for upload
+    const MAX_RETRIES = 3;
+    let attempt = 0;
+    let lastError: any = null;
 
-        // Use the correct content type for MP4 files
-        const uploadParams: PutObjectCommandInput = {
-            Bucket: config.AWS_S3_BUCKET,
-            Key: s3Key,
-            Body: fileStream,
-            ContentType: 'video/mp4', // Updated content type for MP4 container
-        };
-
-        logger.debug(`[🎧 Audio] 📋 Uploading to bucket: ${config.AWS_S3_BUCKET}`);
-        const command = new PutObjectCommand(uploadParams);
-        await s3Client.send(command);
-
-        // Construct the public URL (consider different S3 URL formats if needed, e.g., virtual hosted-style)
-        // Determine region for URL construction
-        const region = config.AWS_REGION || await s3Client.config.region() || 'us-east-1';
-        const publicUrl = `https://${config.AWS_S3_BUCKET}.s3.${region}.amazonaws.com/${s3Key}`;
-
-        const endTime = Date.now();
-        const elapsedSeconds = ((endTime - startTime) / 1000).toFixed(1);
-        logger.info(`[🎧 Audio] ✅ S3 upload successful (${elapsedSeconds}s). Public URL: ${publicUrl}`);
-        return publicUrl;
-    } catch (error) {
-        logger.error(`[🎧 Audio] ❌ S3 upload failed for key: ${s3Key}`, error);
-        throw new Error(`S3 upload failed: ${error instanceof Error ? error.message : String(error)}`);
+    // Verify file exists before attempting upload
+    if (!fs.existsSync(localFilePath)) {
+        const errorMsg = `[🎧 Audio] ❌ ERROR: File does not exist at path: ${localFilePath}`;
+        logger.error(errorMsg);
+        throw new Error(errorMsg);
     }
+
+    // Log file info to confirm it's there
+    const stats = fs.statSync(localFilePath);
+    const fileSizeMB = (stats.size / (1024 * 1024)).toFixed(2);
+    const fileSizeBytes = stats.size;
+    
+    // Validate file has actual content
+    if (fileSizeBytes <= 0) {
+        const errorMsg = `[🎧 Audio] ❌ ERROR: File exists but has zero bytes: ${localFilePath}`;
+        logger.error(errorMsg);
+        throw new Error(errorMsg);
+    }
+    
+    logger.info(`[🎧 Audio] ✅ VERIFICATION: File exists at path: ${localFilePath}`);
+    logger.info(`[🎧 Audio] 📊 FILE INFO: Size: ${fileSizeMB} MB (${fileSizeBytes} bytes), Created: ${stats.birthtime}`);
+    
+    // Retry loop
+    while (attempt < MAX_RETRIES) {
+        attempt++;
+        try {
+            logger.info(`[🎧 Audio] 📤 Starting S3 upload (attempt ${attempt}/${MAX_RETRIES}): ${localFilePath} (${fileSizeMB} MB) to key: ${s3Key}`);
+            
+            const startTime = Date.now();
+            
+            // Read file into memory rather than using streams for small to medium files
+            // This can be more reliable for avoiding EPIPE errors
+            const fileBuffer = fs.readFileSync(localFilePath);
+            
+            // Use the correct content type for MP4 files
+            const uploadParams: PutObjectCommandInput = {
+                Bucket: config.AWS_S3_BUCKET,
+                Key: s3Key,
+                Body: fileBuffer,
+                ContentType: 'video/mp4', // Updated content type for MP4 container
+            };
+
+            logger.debug(`[🎧 Audio] 📋 Uploading to bucket: ${config.AWS_S3_BUCKET}`);
+            const command = new PutObjectCommand(uploadParams);
+            await s3Client.send(command);
+
+            // Construct the public URL (consider different S3 URL formats if needed, e.g., virtual hosted-style)
+            // Determine region for URL construction
+            const region = config.AWS_REGION || await s3Client.config.region() || 'us-east-1';
+            const publicUrl = `https://${config.AWS_S3_BUCKET}.s3.${region}.amazonaws.com/${s3Key}`;
+
+            const endTime = Date.now();
+            const elapsedSeconds = ((endTime - startTime) / 1000).toFixed(1);
+            logger.info(`[🎧 Audio] ✅ S3 upload successful (${elapsedSeconds}s). Public URL: ${publicUrl}`);
+            return publicUrl;
+            
+        } catch (error) {
+            lastError = error;
+            logger.error(`[🎧 Audio] ❌ S3 upload attempt ${attempt}/${MAX_RETRIES} failed:`, error);
+            
+            if (attempt < MAX_RETRIES) {
+                // Exponential backoff with jitter
+                const delayMs = Math.min(1000 * Math.pow(2, attempt) + Math.random() * 1000, 10000);
+                logger.info(`[🎧 Audio] ⏳ Retrying in ${(delayMs/1000).toFixed(1)}s...`);
+                await new Promise(resolve => setTimeout(resolve, delayMs));
+            }
+        }
+    }
+    
+    // If we get here, all attempts failed
+    logger.error(`[🎧 Audio] ❌ All ${MAX_RETRIES} S3 upload attempts failed for key: ${s3Key}`);
+    throw new Error(`S3 upload failed after ${MAX_RETRIES} attempts: ${lastError instanceof Error ? lastError.message : String(lastError)}`);
 }
 
 /**
