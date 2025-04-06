@@ -3,7 +3,7 @@ import { config } from '../utils/config';
 import path from 'path';
 import fs from 'fs';
 // Import services
-import { getM3u8ForSpacePage, postReplyToTweet, findTweetEmbeddingSpace, findSpaceTweetFromProfile } from '../services/twitterInteractionService';
+import { getM3u8ForSpacePage, postReplyToTweet, findTweetEmbeddingSpace, findSpaceTweetFromProfile, sendDirectMessage } from '../services/twitterInteractionService';
 import { downloadAndUploadAudio } from '../services/audioService';
 import { createDubbingProject, generateSharingLink, waitForProjectCompletion } from '../services/speechlabApiService';
 import { LeaderboardEntry } from '../services/scraperService'; // Import the interface
@@ -235,11 +235,47 @@ export class TwitterSpaceDubbingAgent {
                     };
                 } else {
                     logger.info(`[🚀 Agent] ---> Phase 6b Success: Reply posted to ${tweetUrl}.`);
+                    
+                    // Phase 6c: Send a DM to the host with the same message
+                    if (hostUsername !== 'unknown') {
+                        logger.info(`[🚀 Agent] ---> Phase 6c: Sending DM to @${hostUsername}...`);
+                        
+                        // Send the DM with the same text as the reply
+                        const dmSuccess = await sendDirectMessage(hostUsername, commentText);
+                        
+                        if (dmSuccess) {
+                            logger.info(`[🚀 Agent] ---> Phase 6c Success: DM sent to @${hostUsername}.`);
+                        } else {
+                            logger.warn(`[🚀 Agent] ---> Phase 6c Failed: Could not send DM to @${hostUsername}. (Check implementation/login)`);
+                            // Not considered a full failure since we still have posted the reply
+                        }
+                    } else {
+                        logger.warn(`[🚀 Agent] ---> Phase 6c Skipped: No valid host username found to send DM to.`);
+                    }
                 }
             } else {
                 logger.warn(`[🚀 Agent] ---> Phase 6 Skipped: No tweet URL found, cannot post reply automatically.`);
                 // Optionally log the sharing link so it can be posted manually
                 logger.info(`[ MANUAL POST ] Sharing link for space hosted by ${hostProfileForLog}: ${sharingLink}`);
+                
+                // Even if we couldn't find a tweet to reply to, we can still try to send a DM if we have the host username
+                if (hostUsername !== 'unknown') {
+                    logger.info(`[🚀 Agent] ---> Phase 6c: Sending DM to @${hostUsername} (fallback since no tweet found)...`);
+                    
+                    // Construct the message text with the host's Twitter handle
+                    const dmText = `Speechlab Twitter Space Agent sponsored by @shaftfinance $shaft has dubbed this @${hostUsername} space in Latin Spanish! Contact for more languages! ${sharingLink}`;
+                    
+                    // Send the DM
+                    const dmSuccess = await sendDirectMessage(hostUsername, dmText);
+                    
+                    if (dmSuccess) {
+                        logger.info(`[🚀 Agent] ---> Phase 6c Success: DM sent to @${hostUsername}.`);
+                    } else {
+                        logger.warn(`[🚀 Agent] ---> Phase 6c Failed: Could not send DM to @${hostUsername}. (Check implementation/login)`);
+                    }
+                } else {
+                    logger.warn(`[🚀 Agent] ---> Phase 6c Skipped: No valid host username found to send DM to.`);
+                }
             }
 
             logger.info(`[🚀 Agent] ✅ Successfully completed processing for: ${processingId}`);

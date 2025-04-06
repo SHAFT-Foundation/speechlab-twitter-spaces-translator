@@ -1578,3 +1578,314 @@ export async function postReplyToTweet(tweetUrl: string, replyText: string): Pro
         logger.info(`[🐦 Twitter] Browser closed. Reply operation completed.`);
     }
 } 
+
+/**
+ * Sends a direct message to a Twitter user
+ * @param username The Twitter username to send the DM to (without @)
+ * @param messageText The text content of the direct message
+ * @returns True if DM was sent successfully, false otherwise
+ */
+export async function sendDirectMessage(username: string, messageText: string): Promise<boolean> {
+    logger.info(`[🐦 Twitter] Attempting to send DM to @${username}`);
+    
+    if (!username) {
+        logger.error(`[🐦 Twitter] Invalid username provided`);
+        return false;
+    }
+    
+    // Ensure screenshots directory exists
+    const screenshotsDir = path.join(process.cwd(), 'debug-screenshots');
+    if (!fs.existsSync(screenshotsDir)) {
+        fs.mkdirSync(screenshotsDir, { recursive: true });
+    }
+    
+    const browser = await chromium.launch({ 
+        headless: false, // Non-headless for debugging
+        slowMo: 100 
+    });
+    const context = await browser.newContext({ ...getDefaultBrowserContextOptions() });
+    const page = await context.newPage();
+    
+    try {
+        // First login to Twitter
+        logger.info(`[🐦 Twitter] Logging into Twitter to send DM...`);
+        const loginSuccess = await loginToTwitter(page);
+        
+        if (!loginSuccess) {
+            logger.error(`[🐦 Twitter] Failed to login to Twitter. Cannot send DM.`);
+            await browser.close();
+            return false;
+        }
+        
+        // Navigate to Messages page
+        logger.info(`[🐦 Twitter] Navigating to direct messages page...`);
+        await page.goto('https://twitter.com/messages', { waitUntil: 'domcontentloaded', timeout: 60000 });
+        await page.waitForTimeout(3000);
+        
+        // Take screenshot
+        await page.screenshot({ path: path.join(screenshotsDir, 'dm-messages-page.png') });
+        
+        // Click "New message" button
+        logger.info(`[🐦 Twitter] Looking for "New message" button...`);
+        const newMessageButtonSelectors = [
+            '[data-testid="newDM"]',
+            'a[href="/messages/compose"]',
+            'div[aria-label="New message"]',
+            'a[aria-label="New message"]'
+        ];
+        
+        let newMessageButton = null;
+        for (const selector of newMessageButtonSelectors) {
+            const button = page.locator(selector).first();
+            if (await button.isVisible({ timeout: 2000 }).catch(() => false)) {
+                newMessageButton = button;
+                logger.info(`[🐦 Twitter] Found "New message" button with selector: ${selector}`);
+                break;
+            }
+        }
+        
+        if (!newMessageButton) {
+            logger.error(`[🐦 Twitter] Could not find "New message" button`);
+            await page.screenshot({ path: path.join(screenshotsDir, 'no-new-message-button.png') });
+            return false;
+        }
+        
+        // Click the new message button
+        try {
+            await newMessageButton.click();
+            logger.info(`[🐦 Twitter] Clicked "New message" button`);
+        } catch (error) {
+            logger.error(`[🐦 Twitter] Error clicking "New message" button: ${error}`);
+            await page.screenshot({ path: path.join(screenshotsDir, 'new-message-click-error.png') });
+            return false;
+        }
+        
+        await page.waitForTimeout(2000);
+        await page.screenshot({ path: path.join(screenshotsDir, 'after-new-message-click.png') });
+        
+        // Look for search input field
+        logger.info(`[🐦 Twitter] Looking for recipient search input...`);
+        const searchInputSelectors = [
+            'input[aria-label="Search query"]',
+            'input[placeholder="Search people"]',
+            'input[role="combobox"]',
+            'input[data-testid="searchPeople"]'
+        ];
+        
+        let searchInput = null;
+        for (const selector of searchInputSelectors) {
+            const input = page.locator(selector).first();
+            if (await input.isVisible({ timeout: 2000 }).catch(() => false)) {
+                searchInput = input;
+                logger.info(`[🐦 Twitter] Found search input with selector: ${selector}`);
+                break;
+            }
+        }
+        
+        if (!searchInput) {
+            logger.error(`[🐦 Twitter] Could not find recipient search input`);
+            await page.screenshot({ path: path.join(screenshotsDir, 'no-search-input.png') });
+            return false;
+        }
+        
+        // Type the username into the search input
+        try {
+            await searchInput.click();
+            await searchInput.fill(`@${username}`);
+            logger.info(`[🐦 Twitter] Entered username @${username} in search field`);
+        } catch (error) {
+            logger.error(`[🐦 Twitter] Error entering username in search: ${error}`);
+            await page.screenshot({ path: path.join(screenshotsDir, 'search-input-error.png') });
+            return false;
+        }
+        
+        await page.waitForTimeout(2000);
+        await page.screenshot({ path: path.join(screenshotsDir, 'after-username-search.png') });
+        
+        // Look for and click the user in the search results
+        logger.info(`[🐦 Twitter] Looking for @${username} in search results...`);
+        
+        // Wait for search results to appear
+        await page.waitForTimeout(3000);
+        
+        const userSelectors = [
+            `div[role="option"]:has-text("@${username}")`,
+            `div[data-testid="typeaheadResult"]:has-text("@${username}")`,
+            `div[data-testid="TypeaheadUser"]:has-text("@${username}")`
+        ];
+        
+        let userResult = null;
+        for (const selector of userSelectors) {
+            const result = page.locator(selector).first();
+            if (await result.isVisible({ timeout: 2000 }).catch(() => false)) {
+                userResult = result;
+                logger.info(`[🐦 Twitter] Found user @${username} in search results with selector: ${selector}`);
+                break;
+            }
+        }
+        
+        if (!userResult) {
+            logger.error(`[🐦 Twitter] Could not find @${username} in search results`);
+            await page.screenshot({ path: path.join(screenshotsDir, 'user-not-found.png') });
+            return false;
+        }
+        
+        // Click on the user result
+        try {
+            await userResult.click();
+            logger.info(`[🐦 Twitter] Selected @${username} from search results`);
+        } catch (error) {
+            logger.error(`[🐦 Twitter] Error selecting user from results: ${error}`);
+            await page.screenshot({ path: path.join(screenshotsDir, 'user-select-error.png') });
+            return false;
+        }
+        
+        await page.waitForTimeout(2000);
+        
+        // Click the "Next" button to proceed
+        logger.info(`[🐦 Twitter] Looking for "Next" button...`);
+        const nextButtonSelectors = [
+            'div[data-testid="nextButton"]',
+            'div[role="button"]:has-text("Next")',
+            'span:has-text("Next")'
+        ];
+        
+        let nextButton = null;
+        for (const selector of nextButtonSelectors) {
+            const button = page.locator(selector).first();
+            if (await button.isVisible({ timeout: 2000 }).catch(() => false)) {
+                nextButton = button;
+                logger.info(`[🐦 Twitter] Found "Next" button with selector: ${selector}`);
+                break;
+            }
+        }
+        
+        if (!nextButton) {
+            logger.error(`[🐦 Twitter] Could not find "Next" button`);
+            await page.screenshot({ path: path.join(screenshotsDir, 'no-next-button.png') });
+            return false;
+        }
+        
+        try {
+            await nextButton.click();
+            logger.info(`[🐦 Twitter] Clicked "Next" button`);
+        } catch (error) {
+            logger.error(`[🐦 Twitter] Error clicking "Next" button: ${error}`);
+            await page.screenshot({ path: path.join(screenshotsDir, 'next-button-error.png') });
+            return false;
+        }
+        
+        await page.waitForTimeout(2000);
+        await page.screenshot({ path: path.join(screenshotsDir, 'dm-compose-page.png') });
+        
+        // Look for the DM textarea
+        logger.info(`[🐦 Twitter] Looking for DM text input...`);
+        const dmTextareaSelectors = [
+            'div[data-testid="dmComposerTextInput"]',
+            'div[role="textbox"][aria-label="Start a message"]',
+            'div[contenteditable="true"]',
+            'div[data-contents="true"]'
+        ];
+        
+        let dmTextarea = null;
+        for (const selector of dmTextareaSelectors) {
+            const textarea = page.locator(selector).first();
+            if (await textarea.isVisible({ timeout: 2000 }).catch(() => false)) {
+                dmTextarea = textarea;
+                logger.info(`[🐦 Twitter] Found DM text input with selector: ${selector}`);
+                break;
+            }
+        }
+        
+        if (!dmTextarea) {
+            logger.error(`[🐦 Twitter] Could not find DM text input`);
+            await page.screenshot({ path: path.join(screenshotsDir, 'no-dm-textarea.png') });
+            return false;
+        }
+        
+        // Type the message
+        try {
+            await dmTextarea.click();
+            await page.keyboard.type(messageText);
+            logger.info(`[🐦 Twitter] Successfully typed DM text: ${messageText.substring(0, 30)}...`);
+        } catch (error) {
+            logger.error(`[🐦 Twitter] Error typing DM text: ${error}`);
+            await page.screenshot({ path: path.join(screenshotsDir, 'dm-typing-error.png') });
+            return false;
+        }
+        
+        await page.waitForTimeout(2000);
+        await page.screenshot({ path: path.join(screenshotsDir, 'dm-composed.png') });
+        
+        // Look for the send button
+        const sendButtonSelectors = [
+            'div[data-testid="dmComposerSendButton"]',
+            'div[role="button"]:has-text("Send")',
+            'button:has-text("Send")',
+            'svg[aria-label="Send"]'
+        ];
+        
+        let sendButton = null;
+        for (const selector of sendButtonSelectors) {
+            const button = page.locator(selector).first();
+            if (await button.isVisible({ timeout: 2000 }).catch(() => false)) {
+                sendButton = button;
+                logger.info(`[🐦 Twitter] Found send button with selector: ${selector}`);
+                break;
+            }
+        }
+        
+        if (!sendButton) {
+            logger.error(`[🐦 Twitter] Could not find send button`);
+            await page.screenshot({ path: path.join(screenshotsDir, 'no-send-button.png') });
+            return false;
+        }
+        
+        // Click the send button
+        try {
+            await sendButton.click();
+            logger.info(`[🐦 Twitter] Clicked send button`);
+        } catch (error) {
+            logger.error(`[🐦 Twitter] Error clicking send button: ${error}`);
+            await page.screenshot({ path: path.join(screenshotsDir, 'send-button-error.png') });
+            return false;
+        }
+        
+        // Wait for the message to be sent
+        await page.waitForTimeout(3000);
+        await page.screenshot({ path: path.join(screenshotsDir, 'after-dm-sent.png') });
+        
+        // Check if message was sent successfully
+        const successfulSendIndicators = [
+            'div:has-text("Sent")',
+            'div[data-testid="toast"]',
+            // Look for our message text in the conversation
+            `div:has-text("${messageText.substring(0, 20)}")`
+        ];
+        
+        for (const selector of successfulSendIndicators) {
+            if (await page.locator(selector).isVisible({ timeout: 2000 }).catch(() => false)) {
+                logger.info(`[🐦 Twitter] ✅ DM to @${username} sent successfully (confirmed by indicator)`);
+                await browser.close();
+                return true;
+            }
+        }
+        
+        // If we didn't see explicit success but didn't encounter errors, assume success
+        logger.info(`[🐦 Twitter] DM to @${username} appears to have been sent (no explicit confirmation)`);
+        await browser.close();
+        return true;
+        
+    } catch (error) {
+        logger.error(`[🐦 Twitter] Error sending DM to @${username}:`, error);
+        
+        try {
+            await page.screenshot({ path: path.join(screenshotsDir, 'dm-error.png') });
+        } catch (ssError) {
+            logger.error(`[🐦 Twitter] Failed to take screenshot of error:`, ssError);
+        }
+        
+        await browser.close();
+        return false;
+    }
+}

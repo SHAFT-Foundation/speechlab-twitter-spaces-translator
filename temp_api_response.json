@@ -1,5 +1,5 @@
 {
-  "timestamp": "2025-04-06T21:48:43.332Z",
+  "timestamp": "2025-04-06T21:55:26.066Z",
   "thirdPartyID": "TRADING_ALPHA_____SOL",
   "url": "/v1/projects?sortBy=createdAt%3Aasc&limit=10&page=1&expand=true&thirdPartyIDs=TRADING_ALPHA_____SOL",
   "response": {
@@ -2909,7 +2909,7 @@
           "id": "67f2f3f32ee9510026688b8f"
         },
         "createdAt": "2025-04-06T21:36:51.456Z",
-        "updatedAt": "2025-04-06T21:48:28.885Z",
+        "updatedAt": "2025-04-06T21:55:01.927Z",
         "content": {
           "fileUuid": "dd2ac573-4a8d-41e5-b02e-3ac0c4a55f24",
           "language": "en",
@@ -2930,8 +2930,9 @@
             "id": "67f2f4ac7561340026e5cfa6"
           },
           "createdAt": "2025-04-06T21:39:56.121Z",
-          "updatedAt": "2025-04-06T21:40:18.558Z",
+          "updatedAt": "2025-04-06T21:53:47.426Z",
           "convertedMedia": "67f2f4c2f65a15c1c8669d89",
+          "convertedCompressedMedia": "67f2f7ebf65a15c1c867021d",
           "id": "67f2f4ac7561340026e5cfa8"
         },
         "transcription": {
@@ -2952,7 +2953,7 @@
         "lastAccessed": [
           {
             "id": "64c02c788cc17800260aaa14",
-            "lastAccessedDate": "2025-04-06T21:48:28.871Z"
+            "lastAccessedDate": "2025-04-06T21:55:01.925Z"
           }
         ],
         "hasLastAccessed": true,
