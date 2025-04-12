@@ -20,6 +20,45 @@ export interface MentionInfo {
     text: string;
 }
 
+// --- Helper function to find Space URL on the current loaded page ---
+// Make sure this is exported
+export async function findSpaceUrlOnPage(page: Page): Promise<string | null> {
+    try {
+        // Look for Space links in tweet text
+        const spaceUrlRegex = /https:\/\/(?:twitter|x)\.com\/i\/spaces\/([a-zA-Z0-9]+)/;
+        
+        // Get all text content from tweet elements
+        const tweetTexts = await page.locator('div[data-testid="tweetText"]').allTextContents();
+        
+        // Check each tweet text for Space URL
+        for (const text of tweetTexts) {
+            const match = text.match(spaceUrlRegex);
+            if (match) {
+                logger.info(`[🐦 Twitter Helper] Found Space URL in tweet text: ${match[0]}`);
+                return match[0];
+            }
+        }
+        
+        // Also check for any Space links in the page
+        const spaceLinks = await page.locator('a[href*="/spaces/"]').all();
+        for (const link of spaceLinks) {
+            const href = await link.getAttribute('href');
+            if (href) {
+                const fullUrl = href.startsWith('http') ? href : `https://twitter.com${href}`;
+                if (spaceUrlRegex.test(fullUrl)) {
+                    logger.info(`[🐦 Twitter Helper] Found Space URL in link: ${fullUrl}`);
+                    return fullUrl;
+                }
+            }
+        }
+        
+        return null;
+    } catch (error) {
+        logger.error(`[🐦 Twitter Helper] Error searching for Space URL on page:`, error);
+        return null;
+    }
+}
+
 // Selectors - **Highly likely to change based on Twitter UI updates**
 // These are placeholders and need careful inspection and testing on the live site.
 const TWEET_SELECTOR = 'article[data-testid="tweet"]'; // General tweet container
@@ -1595,3 +1634,27 @@ export async function initializeDaemonBrowser(): Promise<{ browser: Browser, con
     return { browser, context };
 }
 // --- END Moved Function ---
+
+// --- ADD HELPER FUNCTIONS HERE ---
+/**
+ * Extracts the first valid Twitter Space URL from text.
+ * @param text The text to search within.
+ * @returns The Space URL or null if not found.
+ */
+export function extractSpaceUrl(text: string): string | null {
+    const spaceUrlRegex = /https:\/\/(?:twitter|x)\.com\/i\/spaces\/([a-zA-Z0-9]+)/;
+    const match = text.match(spaceUrlRegex);
+    return match ? match[0] : null;
+}
+
+/**
+ * Extracts the unique ID from a Twitter Space URL.
+ * @param spaceUrl The URL like https://x.com/i/spaces/...
+ * @returns The space ID string or null if not found.
+ */
+export function extractSpaceId(spaceUrl: string): string | null {
+    const spaceIdRegex = /spaces\/([a-zA-Z0-9]+)/;
+    const match = spaceUrl.match(spaceIdRegex);
+    return match ? match[1] : null;
+}
+// --- END HELPER FUNCTIONS ---

@@ -8,7 +8,9 @@ import {
     MentionInfo, 
     getM3u8ForSpacePage,
     postReplyToTweet,
-    initializeDaemonBrowser
+    initializeDaemonBrowser,
+    extractSpaceUrl, 
+    extractSpaceId
 } from './services/twitterInteractionService';
 import { downloadAndUploadAudio } from './services/audioService';
 import { createDubbingProject, waitForProjectCompletion, generateSharingLink } from './services/speechlabApiService';
@@ -410,28 +412,6 @@ async function markMentionAsProcessed(mentionId: string, processedMentions: Set<
         processedMentions.delete(mentionId);
         logger.warn(`[😈 Daemon] Removed ${mentionId} from in-memory set due to save failure.`);
     }
-}
-
-/**
- * Extracts the first valid Twitter Space URL from text.
- * @param text The text to search within.
- * @returns The Space URL or null if not found.
- */
-function extractSpaceUrl(text: string): string | null {
-    const spaceUrlRegex = /https:\/\/(?:twitter|x)\.com\/i\/spaces\/([a-zA-Z0-9]+)/;
-    const match = text.match(spaceUrlRegex);
-    return match ? match[0] : null;
-}
-
-/**
- * Extracts the unique ID from a Twitter Space URL.
- * @param spaceUrl The URL like https://x.com/i/spaces/...
- * @returns The space ID string or null if not found.
- */
-function extractSpaceId(spaceUrl: string): string | null {
-    const spaceIdRegex = /spaces\/([a-zA-Z0-9]+)/;
-    const match = spaceUrl.match(spaceIdRegex);
-    return match ? match[1] : null;
 }
 
 /**
