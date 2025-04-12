@@ -3,6 +3,7 @@ import logger from '../utils/logger';
 import { config } from '../utils/config'; // For potential credentials later
 import * as path from 'path'; // Added import for path module
 import * as fs from 'fs'; // Added import for fs module
+import * as fsPromises from 'fs/promises'; // Use promises API for fs
 
 // Define the expected structure for the result
 export interface SpaceInfo {
@@ -1112,10 +1113,34 @@ export async function postReplyToTweet(page: Page, tweetUrl: string, replyText: 
             await page.waitForTimeout(1000);
         }
         
-        // Look for the reply button
-        logger.info(`[🐦 Twitter] Looking for reply button...`);
+        // Look for the reply button - **MODIFIED TO BE MORE SPECIFIC**
+        logger.info(`[🐦 Twitter] Looking for the specific reply button for tweet ${tweetUrl}...`);
         
-        // Try multiple potential selectors for the reply button
+        // Extract the tweet ID from the URL
+        const tweetIdMatch = normalizedUrl.match(/\/status\/(\d+)/);
+        if (!tweetIdMatch || !tweetIdMatch[1]) {
+            logger.error(`[🐦 Twitter] Could not extract tweet ID from URL ${normalizedUrl} to target reply button.`);
+            return false;
+        }
+        const targetTweetId = tweetIdMatch[1];
+        logger.debug(`[🐦 Twitter] Target tweet ID for reply: ${targetTweetId}`);
+
+        // Locate the specific article containing a link to this tweet status
+        // This assumes the main tweet article has a timestamp link pointing to itself.
+        const targetArticleSelector = `article:has(a[href*="/status/${targetTweetId}"])`;
+        const targetArticle = page.locator(targetArticleSelector).first();
+
+        if (!await targetArticle.isVisible({ timeout: 5000 }).catch(() => false)) {
+            logger.error(`[🐦 Twitter] Could not find the specific article element for tweet ${targetTweetId}.`);
+            await page.screenshot({ path: path.join(screenshotsDir, 'no-target-article.png') });
+            // Save full page HTML for debugging
+            const html = await page.content();
+            fs.writeFileSync(path.join(screenshotsDir, 'tweet-page-no-article.html'), html);
+            return false;
+        }
+        logger.info(`[🐦 Twitter] Found target article for tweet ${targetTweetId}. Looking for reply button within it...`);
+
+        // Now, look for the reply button *within* that specific article
         const replyButtonSelectors = [
             '[data-testid="reply"]',
             'div[aria-label="Reply"]',
@@ -1125,10 +1150,11 @@ export async function postReplyToTweet(page: Page, tweetUrl: string, replyText: 
         
         let replyButton = null;
         for (const selector of replyButtonSelectors) {
-            const button = page.locator(selector).first();
+            // Use locator chaining: find the button *within* the targetArticle
+            const button = targetArticle.locator(selector).first(); 
             if (await button.isVisible({ timeout: 2000 }).catch(() => false)) {
                 replyButton = button;
-                logger.info(`[🐦 Twitter] Found reply button with selector: ${selector}`);
+                logger.info(`[🐦 Twitter] Found reply button for target tweet using selector: ${selector}`);
                 break;
             }
         }
@@ -1275,44 +1301,25 @@ export async function postReplyToTweet(page: Page, tweetUrl: string, replyText: 
             'div[role="alert"]:has-text("Your Tweet was sent")'
         ];
         
+        let explicitSuccessFound = false;
         for (const selector of successIndicators) {
             if (await page.locator(selector).isVisible({ timeout: 2000 }).catch(() => false)) {
-                logger.info(`[🐦 Twitter] ✅ Reply successfully posted to tweet (confirmed by toast message)`);
-        return true;
+                logger.info(`[🐦 Twitter] ✅ Reply successfully posted to tweet (confirmed by toast message: ${selector})`);
+                explicitSuccessFound = true;
+                break; // Exit loop once success is confirmed
             }
         }
         
-        // If we didn't see explicit success but didn't encounter errors, assume success
-        logger.info(`[🐦 Twitter] Reply appears to have been posted (no explicit confirmation)`);
-        
-        // Try to verify by looking for the reply tweet
-        try {
-            // Wait for a moment to allow the page to update
-            await page.waitForTimeout(2000);
-            
-            // Scroll back to the top of the page and refresh to see if our reply appears
-            await page.evaluate(() => window.scrollTo(0, 0));
-            await page.reload({ waitUntil: 'networkidle' });
-            
-            // Look for tweets containing our timestamp (which is unique to this reply)
-            const timestamp = replyText.match(/\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}\]/);
-            if (timestamp) {
-                logger.info(`[🐦 Twitter] Looking for reply with timestamp: ${timestamp[0]}`);
-                const timestampVisible = await page.locator(`text="${timestamp[0]}"`).isVisible({ timeout: 5000 }).catch(() => false);
-                
-                if (timestampVisible) {
-                    logger.info(`[🐦 Twitter] ✅ Found our reply with the unique timestamp in the page!`);
-                    await page.screenshot({ path: path.join(screenshotsDir, 'reply-verification-success.png') });
-                    return true;
-                } else {
-                    logger.warn(`[🐦 Twitter] Could not verify if reply was posted by finding timestamp in the page`);
-                }
-            }
-        } catch (error) {
-            logger.warn(`[🐦 Twitter] Error trying to verify reply: ${error}`);
+        // If explicit success was found, return true
+        if (explicitSuccessFound) {
+            return true;
         }
         
-        return true;
+        // If we didn't see explicit success, log a warning and return false
+        logger.warn(`[🐦 Twitter] ⚠️ Reply submitted, but no explicit success confirmation (e.g., toast message) was detected.`);
+        logger.warn(`[🐦 Twitter] The reply might have failed silently or might appear after a delay. Returning false.`);
+        
+        return false;
     } catch (error) {
         logger.error(`[🐦 Twitter] Error posting reply to tweet: ${error}`);
         if (page && !page.isClosed()) {
@@ -1443,7 +1450,7 @@ export async function scrapeMentions(page: Page): Promise<MentionInfo[]> {
 
                 // 4. Add to results if valid
                 if (tweetId && tweetUrl && username && text) {
-                    logger.info(`[�� Mention] ✅ Successfully extracted mention: ID=${tweetId}, User=${username}`);
+                    logger.info(`[🔔 Mention] ✅ Successfully extracted mention: ID=${tweetId}, User=${username}`);
                     foundMentions.push({ tweetId, tweetUrl, username, text });
                 } else {
                     logger.warn(`[🔔 Mention] ⚠️ Failed to extract all required info for tweet index ${i}. Skipping.`);
@@ -1477,3 +1484,114 @@ export async function scrapeMentions(page: Page): Promise<MentionInfo[]> {
     return foundMentions;
 }
 // --- END NEW FUNCTION ---
+
+// --- Moved from mentionDaemon.ts ---
+/**
+ * Initializes a Playwright browser instance and context.
+ */
+export async function initializeDaemonBrowser(): Promise<{ browser: Browser, context: BrowserContext }> {
+    const SCREENSHOT_DIR = path.join(process.cwd(), 'debug-screenshots');
+    logger.info('[😈 Daemon Browser] Initializing Playwright browser...');
+    
+     // Ensure screenshot directory exists
+     if (!await fsPromises.access(SCREENSHOT_DIR).then(() => true).catch(() => false)) {
+        await fsPromises.mkdir(SCREENSHOT_DIR, { recursive: true });
+        logger.info(`[😈 Daemon] Created screenshot directory: ${SCREENSHOT_DIR}`);
+    }
+    
+    // First check for cookies file (from saveCookies.ts)
+    const cookiesPath = path.join(process.cwd(), 'cookies', 'twitter-cookies.json');
+    const hasCookies = await fsPromises.access(cookiesPath).then(() => true).catch(() => false);
+    
+    // Then check for storage state file (backup)
+    const storageStatePath = path.join(process.cwd(), 'cookies', 'twitter-storage-state.json');
+    const hasStorageState = await fsPromises.access(storageStatePath).then(() => true).catch(() => false);
+    
+    // Fallback to browser-state directory for backwards compatibility
+    const oldStorageStatePath = path.join(process.cwd(), 'browser-state', 'twitter-storage-state.json');
+    const hasOldStorageState = await fsPromises.access(oldStorageStatePath).then(() => true).catch(() => false);
+    
+    let stateToUse = null;
+    if (hasCookies) {
+        logger.info(`[😈 Daemon Browser] Found cookies file at ${cookiesPath}. Will use for session.`);
+        stateToUse = 'cookies';
+    } else if (hasStorageState) {
+        logger.info(`[😈 Daemon Browser] Found storage state at ${storageStatePath}. Will use stored login session.`);
+        stateToUse = 'storage';
+    } else if (hasOldStorageState) {
+        logger.info(`[😈 Daemon Browser] Found old storage state at ${oldStorageStatePath}. Will use stored login session.`);
+        stateToUse = 'oldStorage';
+    } else {
+        logger.info(`[😈 Daemon Browser] No saved cookies or state found.`);
+        logger.info('[😈 Daemon Browser] Please run: npm run save:cookies to log in manually and save cookies');
+    }
+    
+    // Use non-headless mode for debugging
+    const isHeadless = false; // Force non-headless mode for debugging
+    logger.info(`[😈 Daemon Browser] Launching browser (Headless: ${isHeadless})`);
+    const browser = await chromium.launch({ 
+        headless: isHeadless, 
+        slowMo: isHeadless ? 0 : 250 // Slow down only if not headless
+    });
+    
+    // Create context with or without saved state
+    const contextOptions = {
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36',
+        viewport: { width: 1366, height: 900 },
+        locale: 'en-US'
+    };
+    
+    let context;
+    
+    if (stateToUse === 'cookies') {
+        // Load the cookies from file
+        logger.info('[😈 Daemon Browser] Creating browser context with saved cookies...');
+        
+        // First create a normal context
+        context = await browser.newContext(contextOptions);
+        
+        // Then load and add the cookies
+        try {
+            const cookiesJson = await fsPromises.readFile(cookiesPath, 'utf8');
+            const cookies = JSON.parse(cookiesJson);
+            logger.info(`[😈 Daemon Browser] Loaded ${cookies.length} cookies from file`);
+            await context.addCookies(cookies);
+            logger.info('[😈 Daemon Browser] Added cookies to browser context');
+        } catch (error) {
+            logger.error('[😈 Daemon Browser] Error loading/parsing cookies:', error);
+            logger.info('[😈 Daemon Browser] Falling back to standard context without cookies');
+        }
+    } else if (stateToUse === 'storage') {
+        // Use the storage state file (includes cookies and localStorage)
+        logger.info('[😈 Daemon Browser] Creating browser context with storage state...');
+        context = await browser.newContext({
+            ...contextOptions,
+            storageState: storageStatePath
+        });
+        logger.info('[😈 Daemon Browser] Browser context created with storage state');
+    } else if (stateToUse === 'oldStorage') {
+        // Use the old storage state path
+        logger.info('[😈 Daemon Browser] Creating browser context with old storage state...');
+        context = await browser.newContext({
+            ...contextOptions,
+            storageState: oldStorageStatePath
+        });
+        logger.info('[😈 Daemon Browser] Browser context created with old storage state');
+    } else {
+        // No saved state, create a fresh context
+        logger.info('[😈 Daemon Browser] Creating browser context without saved state...');
+        context = await browser.newContext(contextOptions);
+        logger.info('[😈 Daemon Browser] Browser context created without saved state.');
+    }
+    
+    // Add null check for context before returning
+    if (!context) {
+        logger.error('[😈 Daemon Browser] Failed to create browser context!');
+        await browser.close(); // Close the browser if context creation failed
+        throw new Error('Failed to initialize browser context');
+    }
+    
+    logger.info('[😈 Daemon Browser] ✅ Browser initialized.');
+    return { browser, context };
+}
+// --- END Moved Function ---

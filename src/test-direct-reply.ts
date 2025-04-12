@@ -1,7 +1,6 @@
 import logger from './utils/logger';
 import { config } from './utils/config';
-import { postReplyToTweet } from './services/twitterInteractionService';
-import { initializeDaemonBrowser } from './mentionDaemon'; // Re-use browser init
+import { postReplyToTweet, initializeDaemonBrowser } from './services/twitterInteractionService';
 import { Browser, Page, BrowserContext } from 'playwright';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -9,8 +8,8 @@ import * as fs from 'fs';
 // The specific tweet URL provided by the user
 const TEST_TWEET_URL = "https://x.com/RyanAtSpeechlab/status/1911112454756773919";
 
-// Sample reply text
-const TEST_REPLY_TEXT = `@RyanAtSpeechlab Testing the reply function directly! [${new Date().toISOString()}]`;
+// Sample reply text - Simplified but with timestamp for uniqueness during testing
+const TEST_REPLY_TEXT = `@RyanAtSpeechlab Test reply. [${new Date().toISOString()}]`;
 
 /**
  * Main function to run the direct reply test

@@ -7,7 +7,8 @@ import {
     scrapeMentions, 
     MentionInfo, 
     getM3u8ForSpacePage,
-    postReplyToTweet
+    postReplyToTweet,
+    initializeDaemonBrowser
 } from './services/twitterInteractionService';
 import { downloadAndUploadAudio } from './services/audioService';
 import { createDubbingProject, waitForProjectCompletion, generateSharingLink } from './services/speechlabApiService';
@@ -22,107 +23,6 @@ const PROCESSED_MENTIONS_PATH = path.join(process.cwd(), 'processed_mentions.jso
 const POLLING_INTERVAL_MS = 60 * 1000; // Check every 60 seconds
 const SCREENSHOT_DIR = path.join(process.cwd(), 'debug-screenshots');
 const MANUAL_LOGIN_WAIT_MS = 60 * 1000; // Wait 60 seconds for manual login if needed
-
-/**
- * Initializes a Playwright browser instance and context.
- */
-export async function initializeDaemonBrowser(): Promise<{ browser: Browser, context: BrowserContext }> {
-    logger.info('[😈 Daemon Browser] Initializing Playwright browser...');
-    
-     // Ensure screenshot directory exists
-     if (!await fs.access(SCREENSHOT_DIR).then(() => true).catch(() => false)) {
-        await fs.mkdir(SCREENSHOT_DIR, { recursive: true });
-        logger.info(`[😈 Daemon] Created screenshot directory: ${SCREENSHOT_DIR}`);
-    }
-    
-    // First check for cookies file (from saveCookies.ts)
-    const cookiesPath = path.join(process.cwd(), 'cookies', 'twitter-cookies.json');
-    const hasCookies = await fs.access(cookiesPath).then(() => true).catch(() => false);
-    
-    // Then check for storage state file (backup)
-    const storageStatePath = path.join(process.cwd(), 'cookies', 'twitter-storage-state.json');
-    const hasStorageState = await fs.access(storageStatePath).then(() => true).catch(() => false);
-    
-    // Fallback to browser-state directory for backwards compatibility
-    const oldStorageStatePath = path.join(process.cwd(), 'browser-state', 'twitter-storage-state.json');
-    const hasOldStorageState = await fs.access(oldStorageStatePath).then(() => true).catch(() => false);
-    
-    let stateToUse = null;
-    if (hasCookies) {
-        logger.info(`[😈 Daemon Browser] Found cookies file at ${cookiesPath}. Will use for session.`);
-        stateToUse = 'cookies';
-    } else if (hasStorageState) {
-        logger.info(`[😈 Daemon Browser] Found storage state at ${storageStatePath}. Will use stored login session.`);
-        stateToUse = 'storage';
-    } else if (hasOldStorageState) {
-        logger.info(`[😈 Daemon Browser] Found old storage state at ${oldStorageStatePath}. Will use stored login session.`);
-        stateToUse = 'oldStorage';
-    } else {
-        logger.info(`[😈 Daemon Browser] No saved cookies or state found.`);
-        logger.info('[😈 Daemon Browser] Please run: npm run save:cookies to log in manually and save cookies');
-    }
-    
-    // Use non-headless mode for debugging
-    const isHeadless = false; // Force non-headless mode for debugging
-    logger.info(`[😈 Daemon Browser] Launching browser (Headless: ${isHeadless})`);
-    const browser = await chromium.launch({ 
-        headless: isHeadless, 
-        slowMo: isHeadless ? 0 : 250 // Slow down only if not headless
-    });
-    
-    // Create context with or without saved state
-    const contextOptions = {
-        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36',
-        viewport: { width: 1366, height: 900 },
-        locale: 'en-US'
-    };
-    
-    let context;
-    
-    if (stateToUse === 'cookies') {
-        // Load the cookies from file
-        logger.info('[😈 Daemon Browser] Creating browser context with saved cookies...');
-        
-        // First create a normal context
-        context = await browser.newContext(contextOptions);
-        
-        // Then load and add the cookies
-        try {
-            const cookiesJson = await fs.readFile(cookiesPath, 'utf8');
-            const cookies = JSON.parse(cookiesJson);
-            logger.info(`[😈 Daemon Browser] Loaded ${cookies.length} cookies from file`);
-            await context.addCookies(cookies);
-            logger.info('[😈 Daemon Browser] Added cookies to browser context');
-        } catch (error) {
-            logger.error('[😈 Daemon Browser] Error loading/parsing cookies:', error);
-            logger.info('[😈 Daemon Browser] Falling back to standard context without cookies');
-        }
-    } else if (stateToUse === 'storage') {
-        // Use the storage state file (includes cookies and localStorage)
-        logger.info('[😈 Daemon Browser] Creating browser context with storage state...');
-        context = await browser.newContext({
-            ...contextOptions,
-            storageState: storageStatePath
-        });
-        logger.info('[😈 Daemon Browser] Browser context created with storage state');
-    } else if (stateToUse === 'oldStorage') {
-        // Use the old storage state path
-        logger.info('[😈 Daemon Browser] Creating browser context with old storage state...');
-        context = await browser.newContext({
-            ...contextOptions,
-            storageState: oldStorageStatePath
-        });
-        logger.info('[😈 Daemon Browser] Browser context created with old storage state');
-    } else {
-        // No saved state, create a fresh context
-        logger.info('[😈 Daemon Browser] Creating browser context without saved state...');
-        context = await browser.newContext(contextOptions);
-        logger.info('[😈 Daemon Browser] Browser context created without saved state.');
-    }
-    
-    logger.info('[😈 Daemon Browser] ✅ Browser initialized.');
-    return { browser, context };
-}
 
 /**
  * Logs into Twitter using provided credentials with an option for manual intervention.
@@ -751,13 +651,20 @@ async function processMention(
     logger.info(`[🧵 Mention] Processing mention ${mentionIndex}...`);
     
     try {
-        // Extract the tweet URL for potential navigation later
+        // Extract tweet URL and username early for potential replies
         const tweetUrl = await extractTweetUrl(page, mention);
         if (!tweetUrl) {
             logger.warn(`[🧵 Mention] Could not extract tweet URL for mention ${mentionIndex}.`);
             return false;
         }
         logger.info(`[🧵 Mention] Found tweet URL: ${tweetUrl}`);
+
+        const username = await extractUsername(mention);
+        if (!username) {
+            logger.warn(`[🧵 Mention] Could not extract username for mention ${mentionIndex}.`);
+            return false;
+        }
+        logger.info(`[🧵 Mention] Found username: ${username}`);
 
         // Extract text from the mention
         const mentionText = await mention.locator('div[data-testid="tweetText"]').textContent();
@@ -772,30 +679,33 @@ async function processMention(
         
         // If no Space URL in mention text, try to find it in the tweet thread
     if (!spaceUrl) {
-            logger.info(`[🧵 Mention] No Space URL found in mention text. Will check the tweet thread.`);
+            logger.info(`[🧵 Mention] No Space URL found in mention text. Will check the tweet thread for ${tweetUrl}.`);
             spaceUrl = await findSpaceUrlInTweetThread(page, tweetUrl);
+            // Add clear logging after checking the thread
+            if (spaceUrl) {
+                logger.info(`[🧵 Mention] Found Space URL in thread after check: ${spaceUrl}`);
+            } else {
+                logger.warn(`[🧵 Mention] Still no Space URL found after checking thread for tweet ${tweetUrl}.`);
+            }
         }
         
         if (!spaceUrl) {
-            logger.warn(`[🧵 Mention] No Space URL found in mention ${mentionIndex} or its thread.`);
-            return false;
+            logger.warn(`[🧵 Mention] No Space URL found in mention ${mentionIndex} or its thread. Skipping processing for this mention.`);
+            // Post a reply indicating no Space was found in this specific mention
+            await postReplyToTweet(page, tweetUrl, 
+                `@${username} Sorry, I couldn't find a Twitter Space link in this specific tweet or its recent thread.` // Use extracted username
+            );
+            return false; // Indicate failure to find URL for this mention
         }
         
-        logger.info(`[🧵 Mention] Found Space URL: ${spaceUrl}`);
-        
-        // Extract username from mention
-        const username = await extractUsername(mention);
-        if (!username) {
-            logger.warn(`[🧵 Mention] Could not extract username for mention ${mentionIndex}.`);
-            return false;
-        }
-        logger.info(`[🧵 Mention] Found username: ${username}`);
+        logger.info(`[🧵 Mention] Found Space URL: ${spaceUrl} associated with mention tweet ${tweetUrl}`);
         
         // Add mention to the queue for processing
+        const tweetId = (await extractTweetId(tweetUrl)) || `unknown_${Date.now()}`; // Provide a fallback ID
         const mentionInfo: MentionInfo = {
-            tweetId: (await extractTweetId(tweetUrl)) || `unknown_${Date.now()}`,
+            tweetId,
             tweetUrl,
-            username,
+            username, // Already extracted
             text: mentionText
         };
         
@@ -1079,9 +989,14 @@ async function main() {
         processedMentions = await loadProcessedMentions();
 
         logger.info('[😈 Daemon] Initializing browser and logging into Twitter...');
-        const browserInfo = await initializeDaemonBrowser(); // Use copied function
+        const browserInfo = await initializeDaemonBrowser(); // Use the imported function
         browser = browserInfo.browser;
         context = browserInfo.context;
+        
+        if (!context) { // Add null check for context
+             throw new Error('Browser context could not be initialized in main daemon loop.');
+        }
+        
         page = await context.newPage();
 
         // Print more diagnostic info before login
