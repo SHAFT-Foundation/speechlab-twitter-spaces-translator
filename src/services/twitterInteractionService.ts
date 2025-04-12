@@ -11,6 +11,14 @@ export interface SpaceInfo {
     spaceName: string | null; // Name might not always be easily extractable
 }
 
+// --- NEW: Interface for Mention Data ---
+export interface MentionInfo {
+    tweetId: string;
+    tweetUrl: string;
+    username: string;
+    text: string;
+}
+
 // Selectors - **Highly likely to change based on Twitter UI updates**
 // These are placeholders and need careful inspection and testing on the live site.
 const TWEET_SELECTOR = 'article[data-testid="tweet"]'; // General tweet container
@@ -30,6 +38,12 @@ const POST_REPLY_BUTTON_SELECTOR = 'button[data-testid="tweetButton"]'; // Or so
 // --- Selectors for Space Page (Need Verification) ---
 const SPACE_PAGE_PLAY_BUTTON_SELECTOR = 'button[aria-label*="Play recording"], button:has-text("Play recording")';
 const LINK_TO_ORIGINAL_TWEET_SELECTOR = 'a:has-text("View on X"), a[href*="/status/"]'; // Highly speculative
+
+// --- NEW: Selectors for Mention Scraping (VERY LIKELY TO CHANGE) ---
+const MENTION_TWEET_SELECTOR = 'article[data-testid="tweet"]'; // General tweet container on notifications/mentions page
+const MENTION_TWEET_TEXT_SELECTOR = 'div[data-testid="tweetText"]'; // Text content of the mention tweet
+const MENTION_USERNAME_SELECTOR = 'div[data-testid="User-Name"] span'; // Selector for spans within username, find one starting with @
+const MENTION_TIMESTAMP_LINK_SELECTOR = 'time'; // Time element within the tweet, used to find the tweet's specific URL via ancestor link
 
 /**
  * Returns default browser context options for Twitter interactions
@@ -274,27 +288,21 @@ async function loginToTwitter(page: Page): Promise<boolean> {
 }
 
 /**
- * Initializes a Playwright browser instance and context.
- * Consider persisting context for login state if needed later.
+ * Initialize a browser instance with necessary configuration for Twitter interactions
  */
-async function initializeBrowser(): Promise<{ browser: Browser, context: BrowserContext }> {
-    logger.info('[🐦 Twitter] Initializing Playwright browser...');
-    // Use non-headless mode for debugging
-    const browser = await chromium.launch({ 
-        headless: false, // Run in non-headless mode for debugging
-        slowMo: 250 // Add slight delay between actions for better visibility
+export async function initializeBrowser(): Promise<{ browser: Browser; context: BrowserContext }> {
+    logger.info('Initializing browser for Twitter interactions');
+    // For debugging, use non-headless by default
+    const browser = await chromium.launch({
+        headless: config.BROWSER_HEADLESS ?? false,
+        args: ['--disable-blink-features=AutomationControlled'],
     });
-    const context = await browser.newContext({
-        // Emulate a common user agent
-        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36',
-        // Viewport size can influence page layout - larger for better visibility
-        viewport: { width: 1366, height: 900 },
-        // Locale might influence language/selectors
-        locale: 'en-US'
-    });
+    logger.info(`Browser launched in ${config.BROWSER_HEADLESS ? 'headless' : 'non-headless'} mode`);
+    
+    // Create a new context with default options
+    const context = await browser.newContext(getDefaultBrowserContextOptions());
+    logger.info('Browser context created with default options');
 
-    // Optional: Add cookie handling here if login persistence is implemented
-    logger.info('[🐦 Twitter] ✅ Browser initialized in non-headless mode for debugging.');
     return { browser, context };
 }
 
@@ -478,13 +486,18 @@ export async function findLatestRecordedSpaceAndM3u8(profileUrl: string): Promis
  * Also attempts (best-effort) to find a link back to the original tweet.
  *
  * @param directSpaceUrl The URL like https://x.com/i/spaces/...
+ * @param page The already logged-in Playwright Page object.
  * @returns Promise resolving with M3U8 URL and potentially the original Tweet URL.
  */
-export async function getM3u8ForSpacePage(directSpaceUrl: string): Promise<{ m3u8Url: string | null, originalTweetUrl: string | null }> {
-    logger.info(`[🐦 Twitter] Starting direct Space URL processing: ${directSpaceUrl}`);
-    let browser: Browser | null = null;
-    let context: BrowserContext | null = null;
-    let page: Page | null = null;
+export async function getM3u8ForSpacePage(
+    directSpaceUrl: string, 
+    page: Page // Added page argument
+): Promise<{ m3u8Url: string | null, originalTweetUrl: string | null }> {
+    logger.info(`[🐦 Twitter] Getting M3U8 for direct Space URL: ${directSpaceUrl} using existing page.`);
+    // REMOVE browser/context/page initialization and login
+    // let browser: Browser | null = null;
+    // let context: BrowserContext | null = null;
+    // let page: Page | null = null; // Use the passed-in page
     let capturedM3u8Url: string | null = null;
     let foundOriginalTweetUrl: string | null = null;
 
@@ -496,462 +509,209 @@ export async function getM3u8ForSpacePage(directSpaceUrl: string): Promise<{ m3u
         resolveM3u8Promise = resolve;
      });
 
+    // Ensure screenshot directory exists (might be redundant if daemon creates it, but safe)
+    const screenshotDir = path.join(process.cwd(), 'debug-screenshots');
+    if (!fs.existsSync(screenshotDir)){
+        fs.mkdirSync(screenshotDir, { recursive: true });
+    }
+
+    // --- Network Listeners --- 
+    // Define listener functions to attach/detach them cleanly
+    const requestListener = (request: any) => {
+        const url = request.url();
+        networkRequests.push(`${request.method()} ${url}`);
+        if ((url.includes('prod-fastly') && url.includes('.m3u8')) || url.includes('.m3u8?type=replay')) {
+            logger.info(`[🐦 Twitter Req] ✅✅ Twitter Space m3u8 URL detected: ${url}`);
+            if (!capturedM3u8Url) {
+                capturedM3u8Url = url;
+                resolveM3u8Promise(url);
+            }
+        }
+        if (url.includes('.m3u8') || url.includes('playlist') || url.includes('media') || url.includes('audio') || url.includes('video') || url.includes('pscp.tv') || url.includes('fastly') || url.includes('stream')) {
+            logger.debug(`[🐦 Twitter Req] 🔍 Network request: ${request.method()} ${url}`);
+        }
+    };
+
+    const responseListener = async (response: any) => {
+        const url = response.url();
+        const contentType = response.headers()['content-type'] || '';
+        // Check for GraphQL API responses 
+        if (url.includes('AudioSpaceById') || url.includes('AudioSpace')) {
+             logger.info(`[🐦 Twitter Res] 🔍 GraphQL API response: ${url}`);
+             try {
+                 const responseBody = await response.json().catch(() => null);
+                 if (responseBody) {
+                     const responseStr = JSON.stringify(responseBody);
+                     const urlMatches = responseStr.match(/"(https:\/\/[^"]*?\.m3u8[^"]*?)"/g);
+                     if (urlMatches && urlMatches.length > 0) {
+                         const cleanUrls = urlMatches.map((u: string) => u.replace(/"/g, ''));
+                         const fastlyUrl = cleanUrls.find((u: string) => (u.includes('prod-fastly') && u.includes('.m3u8')) || u.includes('.m3u8?type=replay'));
+                         if (fastlyUrl && !capturedM3u8Url) {
+                             logger.info(`[🐦 Twitter Res] ✅✅ Extracted m3u8 URL from API: ${fastlyUrl}`);
+                             capturedM3u8Url = fastlyUrl;
+                             resolveM3u8Promise(fastlyUrl);
+                         }
+                     }
+                 }
+             } catch (e) { logger.warn(`[🐦 Twitter Res] Error processing API response: ${e}`); }
+         }
+         // Log media responses
+         if (contentType.includes('audio') || contentType.includes('video') || contentType.includes('application/vnd.apple.mpegurl') || url.includes('.m3u8')) {
+              logger.info(`[🐦 Twitter Res] 📡 Media Response: ${url} (${contentType})`);
+             if ((url.includes('prod-fastly') && url.includes('.m3u8')) || url.includes('.m3u8?type=replay')) {
+                 if (!capturedM3u8Url) {
+                     logger.info(`[🐦 Twitter Res] ✅✅ Found Space m3u8 URL in response: ${url}`);
+                     capturedM3u8Url = url;
+                     resolveM3u8Promise(url);
+                 }
+             }
+         }
+    };
+
+    // Route handler - less necessary now maybe, but keep for direct interception
+    const routeHandler = (route: any, request: any) => {
+         const url = request.url();
+         const urlString = url.toString();
+         if ((urlString.includes('prod-fastly') && urlString.includes('.m3u8')) || urlString.includes('.m3u8?type=replay')) {
+             logger.info(`[🐦 Twitter Route] ✅ Intercepted potential media URL: ${url}`);
+             if (!capturedM3u8Url) {
+                 logger.info(`[🐦 Twitter Route] ✅✅ Found Space m3u8 URL via route: ${url}`);
+                 capturedM3u8Url = url;
+                 resolveM3u8Promise(url);
+             }
+         }
+         route.continue();
+     };
+    const routePattern = (url: URL) => {
+        const urlString = url.toString();
+        return (urlString.includes('prod-fastly') && urlString.includes('.m3u8')) || urlString.includes('.m3u8?type=replay');
+    };
+
     try {
-        // Initialize browser in NON-headless mode for debugging
-        logger.info('[🐦 Twitter] Starting browser in non-headless mode for Space URL processing...');
-        browser = await chromium.launch({ 
-            headless: false, // Non-headless mode 
-            slowMo: 250 // Slow down actions for visibility during debugging
-        });
-        context = await browser.newContext({
-            userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36',
-            viewport: { width: 1366, height: 900 },
-            locale: 'en-US'
-        });
-        page = await context.newPage();
+        // Attach listeners
+        logger.debug('[🐦 Twitter] Attaching network listeners...');
+        page.on('request', requestListener);
+        page.on('response', responseListener);
+        await page.route(routePattern, routeHandler);
 
-        // Take screenshots to help with debugging
-        const screenshotDir = path.join(process.cwd(), 'debug-screenshots');
-        // Create directory if it doesn't exist
-        if (!fs.existsSync(screenshotDir)){
-            fs.mkdirSync(screenshotDir, { recursive: true });
-        }
+        // REMOVE LOGIN CALL - Assume page is logged in
+        // const loginSuccess = await loginToTwitter(page);
+        // if (!loginSuccess) { ... }
 
-        // Create a single request handler to monitor network activity
-        page.on('request', request => {
-            const url = request.url();
-            networkRequests.push(`${request.method()} ${url}`);
-            
-            // Specifically look for the fastly m3u8 pattern with looser matching
-            if ((url.includes('prod-fastly') && url.includes('.m3u8')) ||
-                (url.includes('.m3u8?type=replay'))) {
-                logger.info(`[🐦 Twitter] ✅✅ Twitter Space m3u8 URL detected in request: ${url}`);
-                if (!capturedM3u8Url) {
-                    capturedM3u8Url = url;
-                    resolveM3u8Promise(url);
-                }
-                return;
-            }
-            
-            // Log potentially relevant media-related requests
-            if (url.includes('.m3u8') || url.includes('playlist') || url.includes('media') || 
-                url.includes('audio') || url.includes('video') || url.includes('pscp.tv') ||
-                url.includes('fastly') || url.includes('stream')) {
-                logger.debug(`[🐦 Twitter] 🔍 Network request: ${request.method()} ${url}`);
-            }
-        });
-
-        // Also capture responses to see content types and analyze JSON responses
-        page.on('response', async (response) => {
-            const url = response.url();
-            const contentType = response.headers()['content-type'] || '';
-            const request = response.request();
-            const resourceType = request.resourceType();
-            
-            // Check for GraphQL API responses that might contain Space info
-            if (url.includes('AudioSpaceById') || url.includes('AudioSpace')) {
-                logger.info(`[🐦 Twitter] 🔍 GraphQL API response for Space: ${url}`);
-                
-                try {
-                    // Try to parse the response as JSON
-                    const responseBody = await response.json().catch(() => null);
-                    if (responseBody) {
-                        logger.info(`[🐦 Twitter] 📊 Got JSON response from AudioSpace API`);
-                        
-                        // Stringify to search for patterns
-                        const responseStr = JSON.stringify(responseBody);
-                        
-                        // Log a snippet of the response for debugging
-                        const snippet = responseStr.substring(0, Math.min(500, responseStr.length));
-                        logger.debug(`[🐦 Twitter] API response snippet: ${snippet}...`);
-                        
-                        // Look for media_key which might help identify the Space
-                        if (responseStr.includes('media_key')) {
-                            const mediaKeyMatch = responseStr.match(/"media_key"\s*:\s*"([^"]+)"/);
-                            if (mediaKeyMatch && mediaKeyMatch[1]) {
-                                logger.info(`[🐦 Twitter] 🔑 Found media_key: ${mediaKeyMatch[1]}`);
-                            }
-                        }
-                        
-                        // Extract master playlist URLs
-                        if (responseStr.includes('master_playlist')) {
-                            logger.info(`[🐦 Twitter] 🎯 Found master_playlist in API response`);
-                            const urlMatches = responseStr.match(/"(https:\/\/[^"]*?\.m3u8[^"]*?)"/g);
-                            if (urlMatches && urlMatches.length > 0) {
-                                // Clean up the URLs (remove quotes)
-                                const cleanUrls = urlMatches.map(url => url.replace(/"/g, ''));
-                                logger.info(`[🐦 Twitter] 🎯 Found ${cleanUrls.length} potential m3u8 URLs in response`);
-                                
-                                // Look for the right pattern
-                                const fastlyUrl = cleanUrls.find(url => 
-                                    (url.includes('prod-fastly') && url.includes('.m3u8')) || 
-                                    url.includes('.m3u8?type=replay')
-                                );
-                                
-                                if (fastlyUrl && !capturedM3u8Url) {
-                                    logger.info(`[🐦 Twitter] ✅✅ Extracted m3u8 URL from API response: ${fastlyUrl}`);
-                                    capturedM3u8Url = fastlyUrl;
-                                    resolveM3u8Promise(fastlyUrl);
-                                    return;
-                                } else if (cleanUrls.length > 0 && !capturedM3u8Url) {
-                                    // If no exact match but we have URLs, use the first one
-                                    logger.info(`[🐦 Twitter] ✅ Using first m3u8 URL from response: ${cleanUrls[0]}`);
-                                    capturedM3u8Url = cleanUrls[0];
-                                    resolveM3u8Promise(cleanUrls[0]);
-                                    return;
-                                }
-                            }
-                        }
-                        
-                        // If we didn't find a structured field, try extracting any m3u8 URL
-                        const anyM3u8Match = responseStr.match(/https:\/\/[^"]*?\.m3u8[^"]*?/);
-                        if (anyM3u8Match && anyM3u8Match[0] && !capturedM3u8Url) {
-                            logger.info(`[🐦 Twitter] ✅ Found generic m3u8 URL in API response: ${anyM3u8Match[0]}`);
-                            capturedM3u8Url = anyM3u8Match[0];
-                            resolveM3u8Promise(anyM3u8Match[0]);
-                            return;
-                        }
-                    }
-                } catch (e) {
-                    logger.warn(`[🐦 Twitter] Error processing API response: ${e}`);
-                }
-            }
-            
-            // Handle XHR live_video_stream responses which may give us media details
-            if (url.includes('live_video_stream') || url.includes('status')) {
-                logger.info(`[🐦 Twitter] 🔍 Checking live_video_stream response: ${url}`);
-                try {
-                    const responseBody = await response.json().catch(() => null);
-                    if (responseBody) {
-                        logger.info(`[🐦 Twitter] 📊 Got JSON from live_video_stream API`);
-                        
-                        // Stringify for search
-                        const responseStr = JSON.stringify(responseBody);
-                        
-                        // Log a snippet for debugging
-                        const snippet = responseStr.substring(0, Math.min(500, responseStr.length));
-                        logger.debug(`[🐦 Twitter] live_video_stream response snippet: ${snippet}...`);
-                        
-                        // Extract any m3u8 URL
-                        const m3u8Match = responseStr.match(/https:\/\/[^"]*?\.m3u8[^"]*?/);
-                        if (m3u8Match && m3u8Match[0] && !capturedM3u8Url) {
-                            logger.info(`[🐦 Twitter] ✅ Found m3u8 URL in live_video_stream: ${m3u8Match[0]}`);
-                            capturedM3u8Url = m3u8Match[0];
-                            resolveM3u8Promise(m3u8Match[0]);
-                        }
-                    }
-                } catch (e) {
-                    logger.warn(`[🐦 Twitter] Error processing live_video_stream response: ${e}`);
-                }
-            }
-            
-            // Log media responses
-            if (contentType.includes('audio') || contentType.includes('video') || 
-                contentType.includes('application/vnd.apple.mpegurl') || 
-                contentType.includes('application/octet-stream') ||
-                url.includes('.m3u8') || url.includes('stream')) {
-                logger.info(`[🐦 Twitter] 📡 Media Response: ${url} (${contentType})`);
-                
-                // Look for the fastly m3u8 pattern with looser matching in responses
-                if ((url.includes('prod-fastly') && url.includes('.m3u8')) ||
-                    url.includes('.m3u8?type=replay')) {
-                    logger.info(`[🐦 Twitter] ✅✅ Found Twitter Space m3u8 URL in response: ${url}`);
-                    if (!capturedM3u8Url) {
-                        capturedM3u8Url = url;
-                        resolveM3u8Promise(url);
-                    }
-                }
-                // Check if this could be an M3U8 by content type
-                else if (contentType.includes('vnd.apple.mpegurl') || url.includes('.m3u8')) {
-                    logger.info(`[🐦 Twitter] ✅ Potential M3U8 response by content-type: ${url}`);
-                    if (!capturedM3u8Url) {
-                        capturedM3u8Url = url;
-                        resolveM3u8Promise(url);
-                    }
-                }
-            }
-        });
-
-        // Network Interception with broader pattern matching
-        logger.debug('[🐦 Twitter] Setting up network interception for M3U8...');
-        await page.route(
-            // Simple pattern matching for Twitter Spaces m3u8
-            (url) => {
-                const urlString = url.toString();
-                return (
-                    urlString.includes('prod-fastly') && urlString.includes('.m3u8') ||
-                    urlString.includes('.m3u8?type=replay')
-                );
-            },
-            (route, request) => {
-                const url = request.url();
-                logger.info(`[🐦 Twitter] ✅ Intercepted potential media URL: ${url}`);
-                
-                if (!capturedM3u8Url) {
-                    logger.info(`[🐦 Twitter] ✅✅ Found Space m3u8 URL: ${url}`);
-                    capturedM3u8Url = url;
-                    resolveM3u8Promise(url);
-                }
-                route.continue();
-            }
-        );
-
-        // LOGIN FIRST - Critical step to ensure we can access the space content
-        const loginSuccess = await loginToTwitter(page);
-        if (!loginSuccess) {
-            logger.error('[🐦 Twitter] ❌ Failed to login to Twitter. Cannot proceed with space processing.');
-            return { m3u8Url: null, originalTweetUrl: null };
-        }
-
-        // Now that we're logged in, navigate to space URL - use 'domcontentloaded' to be faster
+        // Navigate to space URL
         logger.info(`[🐦 Twitter] Navigating to space URL: ${directSpaceUrl}`);
         await page.goto(directSpaceUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
         logger.info('[🐦 Twitter] Space page initial load complete. Taking screenshot...');
         await page.screenshot({ path: path.join(screenshotDir, 'space-page-loaded.png') });
-        
-        // Wait a moment for page to stabilize
         await page.waitForTimeout(3000);
         
-        // More reliable selectors for the Play recording button
+        // --- Find and Click Play Button Logic (Simplified for brevity) ---
         const playButtonSelectors = [
-            'button[aria-label*="Play recording"]',
-            'button:has-text("Play recording")',
-            'div[role="button"]:has-text("Play recording")',
-            'button:has-text("Play")',
+            'button[aria-label*="Play recording"]', 'button:has-text("Play recording")',
+            'div[role="button"]:has-text("Play recording")', 'button:has-text("Play")',
             'button[data-testid="play"]'
         ];
-        
         logger.info('[🐦 Twitter] Looking for "Play recording" button...');
-        
-        // Try each selector
         let playButton = null;
         for (const selector of playButtonSelectors) {
-            logger.debug(`[🐦 Twitter] Trying play button selector: ${selector}`);
             const button = page.locator(selector).first();
-            
-            try {
-                const isVisible = await button.isVisible({ timeout: 2000 });
-                if (isVisible) {
-                    playButton = button;
-                    logger.info(`[🐦 Twitter] Found play button with selector: ${selector}`);
-                    break;
-                }
-            } catch (e) {
-                logger.debug(`[🐦 Twitter] Selector ${selector} not found`);
+            if (await button.isVisible({ timeout: 2000 }).catch(() => false)) {
+                playButton = button;
+                logger.info(`[🐦 Twitter] Found play button with selector: ${selector}`);
+                break;
             }
         }
-        
-        // If no button found yet, try screenshots and body search
+
         if (!playButton) {
-            logger.debug('[🐦 Twitter] Play button not found with standard selectors. Taking screenshot and trying alternate approach...');
-            await page.screenshot({ path: path.join(screenshotDir, 'before-button-search.png') });
-            
-            // Take screenshot of page content
-            await page.evaluate(() => {
-                // Scroll down a bit to reveal potential UI elements
-                window.scrollBy(0, 300);
-            });
-            await page.waitForTimeout(1000);
-            await page.screenshot({ path: path.join(screenshotDir, 'scrolled-page.png') });
-            
-            // Check for any button that looks like a play button
-            const genericButtonSelectors = [
-                'button:has(svg)',
-                'div[role="button"]:has(svg)',
-                '[aria-label*="Play"]',
-                '[title*="Play"]'
-            ];
-            
-            for (const selector of genericButtonSelectors) {
-                const buttons = await page.locator(selector).all();
-                logger.debug(`[🐦 Twitter] Found ${buttons.length} elements matching ${selector}`);
-                
-                // Try clicking the first few buttons that might be play buttons
-                for (let i = 0; i < Math.min(buttons.length, 3); i++) {
-                    const button = buttons[i];
-                    const bbox = await button.boundingBox();
-                    if (bbox && bbox.width > 20 && bbox.height > 20) { // Reasonably sized button
-                        logger.debug(`[🐦 Twitter] Trying potential play button ${i+1}`);
-                        await page.screenshot({ path: path.join(screenshotDir, `potential-button-${i+1}.png`) });
-                        
-                        // Try clicking
-                        try {
-                            await button.click({ timeout: 5000 });
-                            logger.info(`[🐦 Twitter] Clicked potential play button ${i+1}`);
-                            await page.waitForTimeout(3000);
-                            
-                            // Check if we got any media requests after clicking
-                            if (networkRequests.some(req => 
-                                req.includes('.m3u8') || 
-                                req.includes('fastly') && req.includes('stream') ||
-                                req.includes('playlist'))) {
-                                playButton = button;
-                                break;
-                            }
-                        } catch (e) {
-                            logger.debug(`[🐦 Twitter] Failed to click potential button ${i+1}: ${e}`);
-                        }
-                    }
-                }
-                
-                if (playButton) break;
-            }
-        }
-        
-        if (!playButton) {
-            logger.warn('[🐦 Twitter] No Play recording button found after extensive search');
-            await page.screenshot({ path: path.join(screenshotDir, 'no-play-button-found.png') });
-            
-            // Try a direct browser debugger evaluation as last resort
+            logger.warn('[🐦 Twitter] No Play recording button found. Attempting JS click as fallback...');
+             await page.screenshot({ path: path.join(screenshotDir, 'no-play-button-found.png') });
             try {
-                logger.debug('[🐦 Twitter] Attempting JavaScript-based approach to find and click play button...');
-                
-                // Try to click using JS
                 await page.evaluate(() => {
-                    // Various ways to find play buttons via JS
-                    const possibleButtons = [
-                        // By text content
-                        ...Array.from(document.querySelectorAll('button')).filter(el => 
-                            el.textContent?.includes('Play') || el.textContent?.includes('play')),
-                        // By aria label
-                        ...Array.from(document.querySelectorAll('[aria-label*="Play" i]')),
-                        // By common play button attributes
-                        ...Array.from(document.querySelectorAll('[data-testid="play"]')),
-                        // SVG icons that might be play buttons
-                        ...Array.from(document.querySelectorAll('button svg, [role="button"] svg'))
-                            .map(svg => {
-                                const buttonElement = svg.closest('button') || svg.closest('[role="button"]');
-                                return buttonElement;
-                            })
-                            .filter(el => el !== null)
-                    ];
-                    
-                    // Click the first 3 possibilities
-                    for (let i = 0; i < Math.min(possibleButtons.length, 3); i++) {
-                        const btn = possibleButtons[i];
-                        if (btn) {
-                            console.log(`Clicking possible play button ${i+1}`);
-                            // Type assertion for HTMLElement which has click() method
-                            (btn as HTMLElement).click();
-                        }
-                    }
-                });
-                
-                await page.waitForTimeout(5000);
-                await page.screenshot({ path: path.join(screenshotDir, 'after-js-click-attempt.png') });
-            } catch (e) {
-                logger.error('[🐦 Twitter] JavaScript approach failed:', e);
-            }
-            
-            return { m3u8Url: null, originalTweetUrl: null };
-        }
-        
-        // Button found, proceed with clicking it
-        logger.info('[🐦 Twitter] "Play recording" button found. Clicking...');
-        if (playButton) {
+                     const buttons = [...document.querySelectorAll('[aria-label*="Play" i], button:contains("Play")')];
+                     if (buttons.length > 0) (buttons[0] as HTMLElement).click();
+                 });
+                 await page.waitForTimeout(3000);
+                 logger.info('[🐦 Twitter] JS click attempted.');
+            } catch(e) {
+                logger.error('[🐦 Twitter] JS click failed, cannot proceed.', e);
+                 throw new Error('Play button not found and JS click failed');
+             }
+        } else {
+            logger.info('[🐦 Twitter] "Play recording" button found. Clicking...');
             await playButton.click({ force: true, timeout: 10000 });
             logger.info('[🐦 Twitter] Play button clicked. Taking screenshot...');
-            
-            // Take a screenshot after clicking the button
             await page.waitForTimeout(2000);
             await page.screenshot({ path: path.join(screenshotDir, 'after-play-button-click.png') });
         }
         
-        // Clear network requests list and start collecting for the post-click period
-        networkRequests.length = 0;
-
-        // Wait for the M3U8 URL to be captured with increased timeout
+        // --- Wait for M3U8 --- 
         logger.debug('[🐦 Twitter] Waiting for M3U8 network request (up to 30s)...');
         try {
-            // Use a longer timeout for M3U8 capture
-            const m3u8CapturePromise = new Promise<string>((resolve, reject) => {
-                const timeoutId = setTimeout(() => {
-                    // Dump all network requests to the log to help debug
-                    logger.info(`[🐦 Twitter] 📊 Network activity after clicking Play (${networkRequests.length} requests):`);
-                    networkRequests.forEach((req, i) => {
-                        logger.info(`[🐦 Twitter] Request ${i+1}: ${req}`);
-                    });
-                    
-                    // Take another screenshot before failing
-                    if (page) {
-                        page.screenshot({ path: path.join(screenshotDir, 'before-m3u8-timeout.png') })
-                            .then(() => {
-                                reject(new Error('M3U8 capture timeout (30s)'));
-                            })
-                            .catch(() => {
-                                reject(new Error('M3U8 capture timeout (30s) - also failed to take screenshot'));
-                            });
-                    } else {
-                        reject(new Error('M3U8 capture timeout (30s) - page no longer available'));
-                    }
-                }, 30000);
-                
+            await new Promise<string>((resolve, reject) => {
+                const timeoutId = setTimeout(() => reject(new Error('M3U8 capture timeout (30s)')), 30000);
                 m3u8Promise.then(url => {
                     clearTimeout(timeoutId);
                     resolve(url);
-                });
+                }).catch(reject);
             });
-            
-            await m3u8CapturePromise;
-            
-             if (!capturedM3u8Url) {
-                  throw new Error("M3U8 URL not captured before timeout.");
-             }
-             logger.info('[🐦 Twitter] ✅ Successfully captured M3U8 URL.');
+            logger.info('[🐦 Twitter] M3U8 URL captured successfully.');
         } catch (waitError) {
-            logger.error('[🐦 Twitter] ❌ Error or timeout waiting for M3U8 request:', waitError);
-            await page.screenshot({ path: path.join(screenshotDir, 'failed-m3u8-capture.png') });
-
-            // Try to find links to tweet on the page before returning null
-        try {
-            const tweetLinkLocator = page.locator(LINK_TO_ORIGINAL_TWEET_SELECTOR).first();
-                if (await tweetLinkLocator.isVisible({ timeout: 2000 })) {
-                    foundOriginalTweetUrl = await tweetLinkLocator.getAttribute('href', { timeout: 2000 });
-                    logger.info(`[🐦 Twitter] Found a potential original tweet URL despite M3U8 failure: ${foundOriginalTweetUrl}`);
+             logger.warn(`[🐦 Twitter] Timed out or error waiting for M3U8: ${waitError}`);
+             await page.screenshot({ path: path.join(screenshotDir, 'm3u8-capture-timeout.png') });
+             // Fallback: Check network requests array directly just in case listener failed
+             const fallbackM3u8 = networkRequests.find(req => (req.includes('prod-fastly') && req.includes('.m3u8')) || req.includes('.m3u8?type=replay'));
+             if (fallbackM3u8) {
+                 const urlMatch = fallbackM3u8.split(' ')[1];
+                 logger.warn(`[🐦 Twitter] Found potential M3U8 in request log fallback: ${urlMatch}`);
+                 capturedM3u8Url = urlMatch;
+             } else {
+                  logger.error('[🐦 Twitter] M3U8 not found via listener or fallback log scan.');
              }
-        } catch (linkError) {
-                logger.warn('[🐦 Twitter] Additionally failed to extract original tweet URL:', linkError);
-            }
-            
-            // Double-check and log ALL network requests
-            logger.info('[🐦 Twitter] Dumping ALL network requests captured during session:');
-            networkRequests.forEach((req, i) => {
-                // Only log ones that might be relevant to streams
-                if (req.includes('playlist') || req.includes('stream') || 
-                    req.includes('audio') || req.includes('video') || 
-                    req.includes('pscp') || req.includes('m3u8') ||
-                    req.includes('fastly')) {
-                    logger.info(`[🐦 Twitter] Relevant request ${i+1}: ${req}`);
-                    
-                    // Check if we missed the URL in our patterns
-                    if (!capturedM3u8Url && (
-                        req.includes('.m3u8') || 
-                        (req.includes('fastly.net') && req.includes('stream')))) {
-                        capturedM3u8Url = req.split(' ')[1]; // Extract URL part
-                        logger.info(`[🐦 Twitter] ✅ Found potential M3U8 URL in request log: ${capturedM3u8Url}`);
-                    }
-                }
-            });
-            
-            // If we still don't have an M3U8 URL, return null
-            if (!capturedM3u8Url) {
-                return { m3u8Url: null, originalTweetUrl: foundOriginalTweetUrl };
-            }
         }
 
-        return { m3u8Url: capturedM3u8Url, originalTweetUrl: foundOriginalTweetUrl };
+        // --- Attempt to find original tweet URL (Best Effort) --- 
+        try {
+             const linkElement = page.locator(LINK_TO_ORIGINAL_TWEET_SELECTOR).first();
+             if (await linkElement.isVisible({timeout: 3000})) {
+                 const href = await linkElement.getAttribute('href');
+                 if (href && href.includes('/status/')) {
+                     foundOriginalTweetUrl = href.startsWith('/') ? `https://x.com${href}` : href;
+                     logger.info(`[🐦 Twitter] Found potential original tweet link: ${foundOriginalTweetUrl}`);
+                 }
+             }
+        } catch (e) {
+            logger.warn('[🐦 Twitter] Could not find original tweet link on Space page.');
+        }
+
+        if (!capturedM3u8Url) {
+            logger.error('[🐦 Twitter] ❌ Failed to capture M3U8 URL for the Space.');
+             await page.screenshot({ path: path.join(screenshotDir, 'space-page-m3u8-fail.png') });
+             // Write network log for debugging
+             fs.writeFileSync(path.join(screenshotDir, 'space-page-network.log'), networkRequests.join('\n'));
+             return { m3u8Url: null, originalTweetUrl: foundOriginalTweetUrl };
+        }
+
+        logger.info(`[🐦 Twitter] ✅ Successfully processed Space page: ${directSpaceUrl}`);
+        return {
+            m3u8Url: capturedM3u8Url,
+            originalTweetUrl: foundOriginalTweetUrl
+        };
+
     } catch (error) {
-        logger.error('[🐦 Twitter] ❌ Unexpected error in Space processing:', error);
-        if (page) {
-            await page.screenshot({ path: path.join(process.cwd(), 'debug-screenshots', 'unexpected-error.png') })
-                .catch(() => {}); // Ignore screenshot errors
-        }
-             return { m3u8Url: null, originalTweetUrl: null };
+        logger.error(`[🐦 Twitter] ❌ Error processing Space page ${directSpaceUrl}:`, error);
+         try {
+            await page.screenshot({ path: path.join(screenshotDir, 'space-page-processing-error.png') });
+            fs.writeFileSync(path.join(screenshotDir, 'space-page-network-error.log'), networkRequests.join('\n'));
+        } catch (e) { /* ignore screenshot/log error */ }
+        return { m3u8Url: null, originalTweetUrl: null }; // Return nulls on error
     } finally {
-        if (browser) {
-            logger.debug('[🐦 Twitter] Closing browser...');
-            await browser.close().catch(e => logger.warn('[🐦 Twitter] Error closing browser:', e));
-        }
+         // Detach listeners to prevent memory leaks
+         logger.debug('[🐦 Twitter] Detaching network listeners...');
+         page.off('request', requestListener);
+         page.off('response', responseListener);
+         await page.unroute(routePattern, routeHandler).catch(e => logger.warn('Error unrouting', e));
+         logger.debug('[🐦 Twitter] Listeners detached (getM3u8ForSpacePage).');
+         // DO NOT CLOSE BROWSER/CONTEXT/PAGE HERE
     }
 }
 
@@ -1307,12 +1067,13 @@ export async function findSpaceTweetFromProfile(username: string, spaceId: strin
 
 /**
  * Posts a reply to a tweet using Playwright browser automation
+ * @param page The logged-in Playwright page instance.
  * @param tweetUrl The URL of the tweet to reply to
  * @param replyText The text content of the reply
  * @returns True if reply was posted successfully, false otherwise
  */
-export async function postReplyToTweet(tweetUrl: string, replyText: string): Promise<boolean> {
-    logger.info(`[🐦 Twitter] Attempting to post reply to tweet: ${tweetUrl}`);
+export async function postReplyToTweet(page: Page, tweetUrl: string, replyText: string): Promise<boolean> {
+    logger.info(`[🐦 Twitter] Attempting to post reply to tweet: ${tweetUrl} using existing page.`);
     
     if (!tweetUrl) {
         logger.error(`[🐦 Twitter] Invalid tweet URL provided`);
@@ -1325,24 +1086,7 @@ export async function postReplyToTweet(tweetUrl: string, replyText: string): Pro
         fs.mkdirSync(screenshotsDir, { recursive: true });
     }
     
-    const browser = await chromium.launch({ 
-        headless: false, // Non-headless for debugging
-        slowMo: 100 
-    });
-    const context = await browser.newContext({ ...getDefaultBrowserContextOptions() });
-    const page = await context.newPage();
-    
     try {
-        // First login to Twitter
-        logger.info(`[🐦 Twitter] Logging into Twitter to post reply...`);
-        const loginSuccess = await loginToTwitter(page);
-        
-        if (!loginSuccess) {
-            logger.error(`[🐦 Twitter] Failed to login to Twitter. Cannot post reply.`);
-            await browser.close();
-            return false;
-        }
-        
         // Navigate to the tweet
         logger.info(`[🐦 Twitter] Navigating to tweet: ${tweetUrl}`);
         
@@ -1571,321 +1315,151 @@ export async function postReplyToTweet(tweetUrl: string, replyText: string): Pro
         return true;
     } catch (error) {
         logger.error(`[🐦 Twitter] Error posting reply to tweet: ${error}`);
-        await page.screenshot({ path: path.join(screenshotsDir, 'reply-attempt-error.png') });
+        if (page && !page.isClosed()) {
+             await page.screenshot({ path: path.join(screenshotsDir, 'reply-attempt-error.png') });
+        }
         return false;
     } finally {
-        await browser.close();
-        logger.info(`[🐦 Twitter] Browser closed. Reply operation completed.`);
+        logger.info(`[🐦 Twitter] Reply attempt finished for ${tweetUrl}.`);
     }
 } 
 
+// --- NEW FUNCTION ---
 /**
- * Sends a direct message to a Twitter user
- * @param username The Twitter username to send the DM to (without @)
- * @param messageText The text content of the direct message
- * @returns True if DM was sent successfully, false otherwise
+ * Scrapes the Twitter mentions page for recent mentions of the logged-in user.
+ * Assumes the page is already logged in.
+ * @param page The logged-in Playwright page instance.
+ * @returns {Promise<MentionInfo[]>} An array of found mentions.
  */
-export async function sendDirectMessage(username: string, messageText: string): Promise<boolean> {
-    logger.info(`[🐦 Twitter] Attempting to send DM to @${username}`);
-    
-    if (!username) {
-        logger.error(`[🐦 Twitter] Invalid username provided`);
-        return false;
+export async function scrapeMentions(page: Page): Promise<MentionInfo[]> {
+    const mentionsUrl = 'https://twitter.com/notifications/mentions';
+    const foundMentions: MentionInfo[] = [];
+    const screenshotDir = path.join(process.cwd(), 'debug-screenshots');
+     // Ensure screenshot directory exists
+     if (!fs.existsSync(screenshotDir)) {
+        fs.mkdirSync(screenshotDir, { recursive: true });
+        logger.info(`[🔔 Mention] Created screenshot directory: ${screenshotDir}`);
     }
-    
-    // Ensure screenshots directory exists
-    const screenshotsDir = path.join(process.cwd(), 'debug-screenshots');
-    if (!fs.existsSync(screenshotsDir)) {
-        fs.mkdirSync(screenshotsDir, { recursive: true });
-    }
-    
-    const browser = await chromium.launch({ 
-        headless: false, // Non-headless for debugging
-        slowMo: 100 
-    });
-    const context = await browser.newContext({ ...getDefaultBrowserContextOptions() });
-    const page = await context.newPage();
-    
+
+
+    logger.info(`[🔔 Mention] Navigating to mentions page: ${mentionsUrl}`);
     try {
-        // First login to Twitter
-        logger.info(`[🐦 Twitter] Logging into Twitter to send DM...`);
-        const loginSuccess = await loginToTwitter(page);
-        
-        if (!loginSuccess) {
-            logger.error(`[🐦 Twitter] Failed to login to Twitter. Cannot send DM.`);
-            await browser.close();
-            return false;
+        await page.goto(mentionsUrl, { waitUntil: 'networkidle', timeout: 45000 });
+        logger.info('[🔔 Mention] Mentions page loaded. Waiting for tweets...');
+        await page.waitForSelector(MENTION_TWEET_SELECTOR, { timeout: 15000 });
+        await page.waitForTimeout(3000); // Allow dynamic content to settle
+        await page.screenshot({ path: path.join(screenshotDir, 'mentions-page-loaded.png') });
+
+
+        logger.debug('[🔔 Mention] Locating mention tweets...');
+        const tweetLocators = await page.locator(MENTION_TWEET_SELECTOR).all();
+        logger.info(`[🔔 Mention] Found ${tweetLocators.length} potential mention tweets on the page.`);
+
+
+        if (tweetLocators.length === 0) {
+             logger.warn('[🔔 Mention] No tweets found on mentions page. Screenshot saved.');
+             await page.screenshot({ path: path.join(screenshotDir, 'mentions-page-no-tweets.png') });
+             return [];
         }
-        
-        // Navigate to Messages page
-        logger.info(`[🐦 Twitter] Navigating to direct messages page...`);
-        await page.goto('https://twitter.com/messages', { waitUntil: 'domcontentloaded', timeout: 60000 });
-        await page.waitForTimeout(3000);
-        
-        // Take screenshot
-        await page.screenshot({ path: path.join(screenshotsDir, 'dm-messages-page.png') });
-        
-        // Click "New message" button
-        logger.info(`[🐦 Twitter] Looking for "New message" button...`);
-        const newMessageButtonSelectors = [
-            '[data-testid="newDM"]',
-            'a[href="/messages/compose"]',
-            'div[aria-label="New message"]',
-            'a[aria-label="New message"]'
-        ];
-        
-        let newMessageButton = null;
-        for (const selector of newMessageButtonSelectors) {
-            const button = page.locator(selector).first();
-            if (await button.isVisible({ timeout: 2000 }).catch(() => false)) {
-                newMessageButton = button;
-                logger.info(`[🐦 Twitter] Found "New message" button with selector: ${selector}`);
-                break;
+
+
+        for (let i = 0; i < tweetLocators.length; i++) {
+            const tweetLocator = tweetLocators[i];
+            let tweetId: string | null = null;
+            let tweetUrl: string | null = null;
+            let username: string | null = null;
+            let text: string | null = null;
+
+
+            try {
+                // 1. Extract Tweet URL and ID
+                logger.debug(`[🔔 Mention] Processing tweet ${i+1}/${tweetLocators.length}: Extracting URL/ID...`);
+                const timeElement = tweetLocator.locator(MENTION_TIMESTAMP_LINK_SELECTOR).first();
+                if (await timeElement.isVisible({ timeout: 2000 })) {
+                    const linkElement = timeElement.locator('xpath=./ancestor::a[@href]');
+                    const href = await linkElement.getAttribute('href', { timeout: 2000 });
+                    if (href) {
+                        tweetUrl = `https://x.com${href}`;
+                        // Extract ID from URL (e.g., /status/12345 -> 12345)
+                        const match = href.match(/\/status\/(\d+)/);
+                        if (match && match[1]) {
+                            tweetId = match[1];
+                            logger.debug(`[🔔 Mention]   Extracted Tweet URL: ${tweetUrl}`);
+                            logger.debug(`[🔔 Mention]   Extracted Tweet ID: ${tweetId}`);
+                        } else {
+                             logger.warn(`[🔔 Mention]   Could not parse Tweet ID from href: ${href}`);
+                        }
+                    } else {
+                        logger.warn('[🔔 Mention]   Could not find href attribute on ancestor link of time element.');
+                    }
+                } else {
+                    logger.warn('[🔔 Mention]   Timestamp element not visible for this tweet.');
+                }
+
+
+                // 2. Extract Username
+                logger.debug(`[🔔 Mention]   Extracting username...`);
+                 // Select all spans within the user-name container
+                 const usernameSpans = await tweetLocator.locator(MENTION_USERNAME_SELECTOR).allTextContents();
+                 // Find the span that starts with '@'
+                 const handleSpan = usernameSpans.find(span => span.trim().startsWith('@'));
+                 if (handleSpan) {
+                     username = handleSpan.trim();
+                     logger.debug(`[🔔 Mention]   Extracted Username: ${username}`);
+                 } else {
+                     logger.warn(`[🔔 Mention]   Could not find username span starting with '@'. Spans found: ${usernameSpans.join(', ')}`);
+                 }
+
+
+                // 3. Extract Text
+                logger.debug(`[🔔 Mention]   Extracting tweet text...`);
+                const textElement = tweetLocator.locator(MENTION_TWEET_TEXT_SELECTOR).first();
+                if (await textElement.isVisible({ timeout: 2000 })) {
+                     text = await textElement.textContent({ timeout: 2000 });
+                     if (text) {
+                         text = text.trim(); // Clean up whitespace
+                         logger.debug(`[🔔 Mention]   Extracted Text (raw): ${text}`);
+                     } else {
+                         logger.warn('[🔔 Mention]   Tweet text element found but content is null/empty.');
+                     }
+                 } else {
+                      logger.warn('[🔔 Mention]   Tweet text element not visible for this tweet.');
+                 }
+
+
+                // 4. Add to results if valid
+                if (tweetId && tweetUrl && username && text) {
+                    logger.info(`[🔔 Mention] ✅ Successfully extracted mention: ID=${tweetId}, User=${username}`);
+                    foundMentions.push({ tweetId, tweetUrl, username, text });
+                } else {
+                    logger.warn(`[🔔 Mention] ⚠️ Failed to extract all required info for tweet index ${i}. Skipping.`);
+                     // Log details for debugging which part failed
+                     logger.warn(`[🔔 Mention]   Details: ID=${tweetId}, URL=${tweetUrl}, User=${username}, Text=${text ? 'Present' : 'Missing'}`);
+                     // Take a screenshot of the specific problematic tweet element
+                     try {
+                       await tweetLocator.screenshot({ path: path.join(screenshotDir, `mention-tweet-${i+1}-extraction-error.png`) });
+                       logger.warn(`[🔔 Mention]   Screenshot saved for problematic tweet ${i+1}.`);
+                     } catch (ssError) {
+                       logger.error(`[🔔 Mention]   Error taking screenshot for problematic tweet ${i+1}:`, ssError);
+                     }
+                }
+
+
+            } catch (extractError) {
+                logger.error(`[🔔 Mention] ❌ Error processing mention tweet index ${i}:`, extractError);
+                 await tweetLocator.screenshot({ path: path.join(screenshotDir, `mention-tweet-${i+1}-processing-error.png`) });
             }
+             await page.waitForTimeout(100); // Small delay between processing tweets
         }
-        
-        if (!newMessageButton) {
-            logger.error(`[🐦 Twitter] Could not find "New message" button`);
-            await page.screenshot({ path: path.join(screenshotsDir, 'no-new-message-button.png') });
-            return false;
-        }
-        
-        // Click the new message button
-        try {
-            await newMessageButton.click();
-            logger.info(`[🐦 Twitter] Clicked "New message" button`);
-        } catch (error) {
-            logger.error(`[🐦 Twitter] Error clicking "New message" button: ${error}`);
-            await page.screenshot({ path: path.join(screenshotsDir, 'new-message-click-error.png') });
-            return false;
-        }
-        
-        await page.waitForTimeout(2000);
-        await page.screenshot({ path: path.join(screenshotsDir, 'after-new-message-click.png') });
-        
-        // Look for search input field
-        logger.info(`[🐦 Twitter] Looking for recipient search input...`);
-        const searchInputSelectors = [
-            'input[aria-label="Search query"]',
-            'input[placeholder="Search people"]',
-            'input[role="combobox"]',
-            'input[data-testid="searchPeople"]'
-        ];
-        
-        let searchInput = null;
-        for (const selector of searchInputSelectors) {
-            const input = page.locator(selector).first();
-            if (await input.isVisible({ timeout: 2000 }).catch(() => false)) {
-                searchInput = input;
-                logger.info(`[🐦 Twitter] Found search input with selector: ${selector}`);
-                break;
-            }
-        }
-        
-        if (!searchInput) {
-            logger.error(`[🐦 Twitter] Could not find recipient search input`);
-            await page.screenshot({ path: path.join(screenshotsDir, 'no-search-input.png') });
-            return false;
-        }
-        
-        // Type the username into the search input
-        try {
-            await searchInput.click();
-            await searchInput.fill(`@${username}`);
-            logger.info(`[🐦 Twitter] Entered username @${username} in search field`);
-        } catch (error) {
-            logger.error(`[🐦 Twitter] Error entering username in search: ${error}`);
-            await page.screenshot({ path: path.join(screenshotsDir, 'search-input-error.png') });
-            return false;
-        }
-        
-        await page.waitForTimeout(2000);
-        await page.screenshot({ path: path.join(screenshotsDir, 'after-username-search.png') });
-        
-        // Look for and click the user in the search results
-        logger.info(`[🐦 Twitter] Looking for @${username} in search results...`);
-        
-        // Wait for search results to appear
-        await page.waitForTimeout(3000);
-        
-        const userSelectors = [
-            `div[role="option"]:has-text("@${username}")`,
-            `div[data-testid="typeaheadResult"]:has-text("@${username}")`,
-            `div[data-testid="TypeaheadUser"]:has-text("@${username}")`
-        ];
-        
-        let userResult = null;
-        for (const selector of userSelectors) {
-            const result = page.locator(selector).first();
-            if (await result.isVisible({ timeout: 2000 }).catch(() => false)) {
-                userResult = result;
-                logger.info(`[🐦 Twitter] Found user @${username} in search results with selector: ${selector}`);
-                break;
-            }
-        }
-        
-        if (!userResult) {
-            logger.error(`[🐦 Twitter] Could not find @${username} in search results`);
-            await page.screenshot({ path: path.join(screenshotsDir, 'user-not-found.png') });
-            return false;
-        }
-        
-        // Click on the user result
-        try {
-            await userResult.click();
-            logger.info(`[🐦 Twitter] Selected @${username} from search results`);
-        } catch (error) {
-            logger.error(`[🐦 Twitter] Error selecting user from results: ${error}`);
-            await page.screenshot({ path: path.join(screenshotsDir, 'user-select-error.png') });
-            return false;
-        }
-        
-        await page.waitForTimeout(2000);
-        
-        // Click the "Next" button to proceed
-        logger.info(`[🐦 Twitter] Looking for "Next" button...`);
-        const nextButtonSelectors = [
-            'div[data-testid="nextButton"]',
-            'div[role="button"]:has-text("Next")',
-            'span:has-text("Next")'
-        ];
-        
-        let nextButton = null;
-        for (const selector of nextButtonSelectors) {
-            const button = page.locator(selector).first();
-            if (await button.isVisible({ timeout: 2000 }).catch(() => false)) {
-                nextButton = button;
-                logger.info(`[🐦 Twitter] Found "Next" button with selector: ${selector}`);
-                break;
-            }
-        }
-        
-        if (!nextButton) {
-            logger.error(`[🐦 Twitter] Could not find "Next" button`);
-            await page.screenshot({ path: path.join(screenshotsDir, 'no-next-button.png') });
-            return false;
-        }
-        
-        try {
-            await nextButton.click();
-            logger.info(`[🐦 Twitter] Clicked "Next" button`);
-        } catch (error) {
-            logger.error(`[🐦 Twitter] Error clicking "Next" button: ${error}`);
-            await page.screenshot({ path: path.join(screenshotsDir, 'next-button-error.png') });
-            return false;
-        }
-        
-        await page.waitForTimeout(2000);
-        await page.screenshot({ path: path.join(screenshotsDir, 'dm-compose-page.png') });
-        
-        // Look for the DM textarea
-        logger.info(`[🐦 Twitter] Looking for DM text input...`);
-        const dmTextareaSelectors = [
-            'div[data-testid="dmComposerTextInput"]',
-            'div[role="textbox"][aria-label="Start a message"]',
-            'div[contenteditable="true"]',
-            'div[data-contents="true"]'
-        ];
-        
-        let dmTextarea = null;
-        for (const selector of dmTextareaSelectors) {
-            const textarea = page.locator(selector).first();
-            if (await textarea.isVisible({ timeout: 2000 }).catch(() => false)) {
-                dmTextarea = textarea;
-                logger.info(`[🐦 Twitter] Found DM text input with selector: ${selector}`);
-                break;
-            }
-        }
-        
-        if (!dmTextarea) {
-            logger.error(`[🐦 Twitter] Could not find DM text input`);
-            await page.screenshot({ path: path.join(screenshotsDir, 'no-dm-textarea.png') });
-            return false;
-        }
-        
-        // Type the message
-        try {
-            await dmTextarea.click();
-            await page.keyboard.type(messageText);
-            logger.info(`[🐦 Twitter] Successfully typed DM text: ${messageText.substring(0, 30)}...`);
-        } catch (error) {
-            logger.error(`[🐦 Twitter] Error typing DM text: ${error}`);
-            await page.screenshot({ path: path.join(screenshotsDir, 'dm-typing-error.png') });
-            return false;
-        }
-        
-        await page.waitForTimeout(2000);
-        await page.screenshot({ path: path.join(screenshotsDir, 'dm-composed.png') });
-        
-        // Look for the send button
-        const sendButtonSelectors = [
-            'div[data-testid="dmComposerSendButton"]',
-            'div[role="button"]:has-text("Send")',
-            'button:has-text("Send")',
-            'svg[aria-label="Send"]'
-        ];
-        
-        let sendButton = null;
-        for (const selector of sendButtonSelectors) {
-            const button = page.locator(selector).first();
-            if (await button.isVisible({ timeout: 2000 }).catch(() => false)) {
-                sendButton = button;
-                logger.info(`[🐦 Twitter] Found send button with selector: ${selector}`);
-                break;
-            }
-        }
-        
-        if (!sendButton) {
-            logger.error(`[🐦 Twitter] Could not find send button`);
-            await page.screenshot({ path: path.join(screenshotsDir, 'no-send-button.png') });
-            return false;
-        }
-        
-        // Click the send button
-        try {
-            await sendButton.click();
-            logger.info(`[🐦 Twitter] Clicked send button`);
-        } catch (error) {
-            logger.error(`[🐦 Twitter] Error clicking send button: ${error}`);
-            await page.screenshot({ path: path.join(screenshotsDir, 'send-button-error.png') });
-            return false;
-        }
-        
-        // Wait for the message to be sent
-        await page.waitForTimeout(3000);
-        await page.screenshot({ path: path.join(screenshotsDir, 'after-dm-sent.png') });
-        
-        // Check if message was sent successfully
-        const successfulSendIndicators = [
-            'div:has-text("Sent")',
-            'div[data-testid="toast"]',
-            // Look for our message text in the conversation
-            `div:has-text("${messageText.substring(0, 20)}")`
-        ];
-        
-        for (const selector of successfulSendIndicators) {
-            if (await page.locator(selector).isVisible({ timeout: 2000 }).catch(() => false)) {
-                logger.info(`[🐦 Twitter] ✅ DM to @${username} sent successfully (confirmed by indicator)`);
-                await browser.close();
-                return true;
-            }
-        }
-        
-        // If we didn't see explicit success but didn't encounter errors, assume success
-        logger.info(`[🐦 Twitter] DM to @${username} appears to have been sent (no explicit confirmation)`);
-        await browser.close();
-        return true;
-        
+
+
     } catch (error) {
-        logger.error(`[🐦 Twitter] Error sending DM to @${username}:`, error);
-        
-        try {
-            await page.screenshot({ path: path.join(screenshotsDir, 'dm-error.png') });
-        } catch (ssError) {
-            logger.error(`[🐦 Twitter] Failed to take screenshot of error:`, ssError);
-        }
-        
-        await browser.close();
-        return false;
+        logger.error(`[🔔 Mention] ❌ Failed to scrape mentions page:`, error);
+        await page.screenshot({ path: path.join(screenshotDir, 'mentions-page-error.png') });
     }
+
+
+    logger.info(`[🔔 Mention] Finished scraping. Found ${foundMentions.length} valid mentions.`);
+    return foundMentions;
 }
+// --- END NEW FUNCTION ---

@@ -1,0 +1,2691 @@
+now can i add a separate daemon process i can stat that will look for any mentions  of the TWITTER_USERNAME account.. if there are any mentiosn that say things like:
+"dub in english" or any one of X languages in this list:
+
+[
+    {
+        "code": "en",
+        "label": "English",
+        "production": true,
+        "regionalAccents": [
+            {
+                "code": "en",
+                "label": "English",
+                "production": true,
+                "nativeMatchingEnabled": true,
+                "sourceMatchingEnabled": true
+            }
+        ],
+        "allowedLanguages": [
+            {
+                "code": "es",
+                "production": true
+            },
+            {
+                "code": "ja",
+                "production": true
+            },
+            {
+                "code": "pt",
+                "production": true
+            },
+            {
+                "code": "de",
+                "production": true
+            },
+            {
+                "code": "fr",
+                "production": true
+            },
+            {
+                "code": "it",
+                "production": true
+            },
+            {
+                "code": "zh",
+                "production": true
+            },
+            {
+                "code": "en",
+                "production": false
+            },
+            {
+                "code": "nl",
+                "production": true
+            },
+            {
+                "code": "ar",
+                "production": true
+            },
+            {
+                "code": "ko",
+                "production": true
+            },
+            {
+                "code": "pl",
+                "production": true
+            },
+            {
+                "code": "sv",
+                "production": true
+            },
+            {
+                "code": "tr",
+                "production": true
+            },
+            {
+                "code": "ru",
+                "production": true
+            },
+            {
+                "code": "hi",
+                "production": true
+            },
+            {
+                "code": "uk",
+                "production": true
+            },
+            {
+                "code": "id",
+                "production": true
+            },
+            {
+                "code": "vi",
+                "production": true
+            },
+            {
+                "code": "th",
+                "production": true
+            },
+            {
+                "code": "da",
+                "production": true
+            },
+            {
+                "code": "ga",
+                "production": true
+            },
+            {
+                "code": "ms",
+                "production": true
+            },
+            {
+                "code": "yue",
+                "production": true
+            }
+        ]
+    },
+    {
+        "code": "es_la",
+        "label": "Spanish",
+        "production": true,
+        "regionalAccents": [
+            {
+                "code": "es_la",
+                "label": "Spanish - Latin",
+                "production": true,
+                "nativeMatchingEnabled": true,
+                "sourceMatchingEnabled": true
+            },
+            {
+                "code": "es_es",
+                "label": "Spanish - Castilian",
+                "production": true,
+                "nativeMatchingEnabled": true,
+                "sourceMatchingEnabled": false
+            }
+        ],
+        "allowedLanguages": [
+            {
+                "code": "en",
+                "production": true
+            },
+            {
+                "code": "es",
+                "production": true
+            },
+            {
+                "code": "ja",
+                "production": true
+            },
+            {
+                "code": "pt",
+                "production": true
+            },
+            {
+                "code": "nl",
+                "production": true
+            },
+            {
+                "code": "de",
+                "production": true
+            },
+            {
+                "code": "fr",
+                "production": true
+            },
+            {
+                "code": "it",
+                "production": true
+            },
+            {
+                "code": "zh",
+                "production": true
+            },
+            {
+                "code": "ar",
+                "production": true
+            },
+            {
+                "code": "ko",
+                "production": true
+            },
+            {
+                "code": "pl",
+                "production": true
+            },
+            {
+                "code": "sv",
+                "production": true
+            },
+            {
+                "code": "tr",
+                "production": true
+            },
+            {
+                "code": "ru",
+                "production": true
+            },
+            {
+                "code": "hi",
+                "production": true
+            },
+            {
+                "code": "uk",
+                "production": true
+            },
+            {
+                "code": "id",
+                "production": true
+            },
+            {
+                "code": "vi",
+                "production": true
+            },
+            {
+                "code": "th",
+                "production": true
+            },
+            {
+                "code": "da",
+                "production": true
+            },
+            {
+                "code": "ga",
+                "production": true
+            },
+            {
+                "code": "ms",
+                "production": true
+            },
+            {
+                "code": "yue",
+                "production": true
+            }
+        ]
+    },
+    {
+        "code": "nl",
+        "label": "Dutch",
+        "production": true,
+        "regionalAccents": [
+            {
+                "code": "nl",
+                "label": "Dutch",
+                "production": true,
+                "nativeMatchingEnabled": true,
+                "sourceMatchingEnabled": true
+            }
+        ],
+        "allowedLanguages": [
+            {
+                "code": "en",
+                "production": true
+            },
+            {
+                "code": "es",
+                "production": true
+            },
+            {
+                "code": "pt",
+                "production": true
+            },
+            {
+                "code": "de",
+                "production": true
+            },
+            {
+                "code": "nl",
+                "production": true
+            },
+            {
+                "code": "it",
+                "production": true
+            },
+            {
+                "code": "ja",
+                "production": true
+            },
+            {
+                "code": "zh",
+                "production": true
+            },
+            {
+                "code": "fr",
+                "production": true
+            },
+            {
+                "code": "ar",
+                "production": true
+            },
+            {
+                "code": "ko",
+                "production": true
+            },
+            {
+                "code": "pl",
+                "production": true
+            },
+            {
+                "code": "sv",
+                "production": true
+            },
+            {
+                "code": "tr",
+                "production": true
+            },
+            {
+                "code": "ru",
+                "production": true
+            },
+            {
+                "code": "hi",
+                "production": true
+            },
+            {
+                "code": "uk",
+                "production": true
+            },
+            {
+                "code": "id",
+                "production": true
+            },
+            {
+                "code": "vi",
+                "production": true
+            },
+            {
+                "code": "th",
+                "production": true
+            },
+            {
+                "code": "yue",
+                "production": true
+            }
+        ]
+    },
+    {
+        "code": "fr",
+        "label": "French",
+        "production": true,
+        "regionalAccents": [
+            {
+                "code": "fr",
+                "label": "French",
+                "production": true,
+                "nativeMatchingEnabled": true,
+                "sourceMatchingEnabled": true
+            },
+            {
+                "code": "fr_ca",
+                "label": "French - Canadian",
+                "production": true,
+                "nativeMatchingEnabled": true,
+                "sourceMatchingEnabled": false
+            }
+        ],
+        "allowedLanguages": [
+            {
+                "code": "en",
+                "production": true
+            },
+            {
+                "code": "es",
+                "production": true
+            },
+            {
+                "code": "pt",
+                "production": true
+            },
+            {
+                "code": "de",
+                "production": true
+            },
+            {
+                "code": "nl",
+                "production": true
+            },
+            {
+                "code": "it",
+                "production": true
+            },
+            {
+                "code": "ja",
+                "production": true
+            },
+            {
+                "code": "zh",
+                "production": true
+            },
+            {
+                "code": "ar",
+                "production": true
+            },
+            {
+                "code": "ko",
+                "production": true
+            },
+            {
+                "code": "pl",
+                "production": true
+            },
+            {
+                "code": "sv",
+                "production": true
+            },
+            {
+                "code": "tr",
+                "production": true
+            },
+            {
+                "code": "ru",
+                "production": true
+            },
+            {
+                "code": "hi",
+                "production": true
+            },
+            {
+                "code": "uk",
+                "production": true
+            },
+            {
+                "code": "id",
+                "production": true
+            },
+            {
+                "code": "vi",
+                "production": true
+            },
+            {
+                "code": "th",
+                "production": true
+            },
+            {
+                "code": "da",
+                "production": true
+            },
+            {
+                "code": "ga",
+                "production": true
+            },
+            {
+                "code": "ms",
+                "production": true
+            },
+            {
+                "code": "yue",
+                "production": true
+            }
+        ]
+    },
+    {
+        "code": "it",
+        "label": "Italian",
+        "production": true,
+        "regionalAccents": [
+            {
+                "code": "it",
+                "label": "Italian",
+                "production": true,
+                "nativeMatchingEnabled": true,
+                "sourceMatchingEnabled": true
+            }
+        ],
+        "allowedLanguages": [
+            {
+                "code": "en",
+                "production": true
+            },
+            {
+                "code": "es",
+                "production": true
+            },
+            {
+                "code": "pt",
+                "production": true
+            },
+            {
+                "code": "de",
+                "production": true
+            },
+            {
+                "code": "nl",
+                "production": true
+            },
+            {
+                "code": "fr",
+                "production": true
+            },
+            {
+                "code": "ja",
+                "production": true
+            },
+            {
+                "code": "zh",
+                "production": true
+            },
+            {
+                "code": "ar",
+                "production": true
+            },
+            {
+                "code": "ko",
+                "production": true
+            },
+            {
+                "code": "pl",
+                "production": true
+            },
+            {
+                "code": "sv",
+                "production": true
+            },
+            {
+                "code": "tr",
+                "production": true
+            },
+            {
+                "code": "ru",
+                "production": true
+            },
+            {
+                "code": "hi",
+                "production": true
+            },
+            {
+                "code": "uk",
+                "production": true
+            },
+            {
+                "code": "id",
+                "production": true
+            },
+            {
+                "code": "vi",
+                "production": true
+            },
+            {
+                "code": "th",
+                "production": true
+            },
+            {
+                "code": "da",
+                "production": true
+            },
+            {
+                "code": "ga",
+                "production": true
+            },
+            {
+                "code": "ms",
+                "production": true
+            },
+            {
+                "code": "yue",
+                "production": true
+            }
+        ]
+    },
+    {
+        "code": "de",
+        "label": "German",
+        "production": true,
+        "regionalAccents": [
+            {
+                "code": "de",
+                "label": "German",
+                "production": true,
+                "nativeMatchingEnabled": true,
+                "sourceMatchingEnabled": true
+            }
+        ],
+        "allowedLanguages": [
+            {
+                "code": "en",
+                "production": true
+            },
+            {
+                "code": "es",
+                "production": true
+            },
+            {
+                "code": "pt",
+                "production": true
+            },
+            {
+                "code": "it",
+                "production": true
+            },
+            {
+                "code": "nl",
+                "production": true
+            },
+            {
+                "code": "fr",
+                "production": true
+            },
+            {
+                "code": "ja",
+                "production": true
+            },
+            {
+                "code": "zh",
+                "production": true
+            },
+            {
+                "code": "ar",
+                "production": true
+            },
+            {
+                "code": "ko",
+                "production": true
+            },
+            {
+                "code": "pl",
+                "production": true
+            },
+            {
+                "code": "sv",
+                "production": true
+            },
+            {
+                "code": "tr",
+                "production": true
+            },
+            {
+                "code": "ru",
+                "production": true
+            },
+            {
+                "code": "hi",
+                "production": true
+            },
+            {
+                "code": "uk",
+                "production": true
+            },
+            {
+                "code": "id",
+                "production": true
+            },
+            {
+                "code": "vi",
+                "production": true
+            },
+            {
+                "code": "th",
+                "production": true
+            },
+            {
+                "code": "da",
+                "production": true
+            },
+            {
+                "code": "ga",
+                "production": true
+            },
+            {
+                "code": "ms",
+                "production": true
+            },
+            {
+                "code": "yue",
+                "production": true
+            }
+        ]
+    },
+    {
+        "code": "ar",
+        "label": "Arabic",
+        "production": true,
+        "regionalAccents": [
+            {
+                "code": "ar",
+                "label": "Arabic",
+                "production": true,
+                "nativeMatchingEnabled": true,
+                "sourceMatchingEnabled": true
+            },
+            {
+                "code": "ar_sa",
+                "label": "Arabic - Saudi Arabia",
+                "production": true,
+                "nativeMatchingEnabled": true,
+                "sourceMatchingEnabled": true
+            },
+            {
+                "code": "ar_eg",
+                "label": "Arabic - Egyptian",
+                "production": true,
+                "nativeMatchingEnabled": true,
+                "sourceMatchingEnabled": true
+            }
+        ],
+        "allowedLanguages": [
+            {
+                "code": "en",
+                "production": true
+            },
+            {
+                "code": "es",
+                "production": true
+            },
+            {
+                "code": "pt",
+                "production": true
+            },
+            {
+                "code": "de",
+                "production": true
+            },
+            {
+                "code": "nl",
+                "production": true
+            },
+            {
+                "code": "fr",
+                "production": true
+            },
+            {
+                "code": "ja",
+                "production": true
+            },
+            {
+                "code": "zh",
+                "production": true
+            },
+            {
+                "code": "it",
+                "production": true
+            },
+            {
+                "code": "ko",
+                "production": true
+            },
+            {
+                "code": "pl",
+                "production": true
+            },
+            {
+                "code": "sv",
+                "production": true
+            },
+            {
+                "code": "tr",
+                "production": true
+            },
+            {
+                "code": "ru",
+                "production": true
+            },
+            {
+                "code": "hi",
+                "production": true
+            },
+            {
+                "code": "uk",
+                "production": true
+            },
+            {
+                "code": "id",
+                "production": true
+            },
+            {
+                "code": "vi",
+                "production": true
+            },
+            {
+                "code": "th",
+                "production": true
+            },
+            {
+                "code": "da",
+                "production": true
+            },
+            {
+                "code": "ga",
+                "production": true
+            },
+            {
+                "code": "ms",
+                "production": true
+            },
+            {
+                "code": "yue",
+                "production": true
+            }
+        ]
+    },
+    {
+        "code": "ko",
+        "label": "Korean",
+        "production": true,
+        "regionalAccents": [
+            {
+                "code": "ko",
+                "label": "Korean",
+                "production": true,
+                "nativeMatchingEnabled": true,
+                "sourceMatchingEnabled": true
+            }
+        ],
+        "allowedLanguages": [
+            {
+                "code": "en",
+                "production": true
+            },
+            {
+                "code": "es",
+                "production": true
+            },
+            {
+                "code": "pt",
+                "production": true
+            },
+            {
+                "code": "de",
+                "production": true
+            },
+            {
+                "code": "nl",
+                "production": true
+            },
+            {
+                "code": "fr",
+                "production": true
+            },
+            {
+                "code": "it",
+                "production": true
+            },
+            {
+                "code": "ja",
+                "production": true
+            },
+            {
+                "code": "zh",
+                "production": true
+            },
+            {
+                "code": "ar",
+                "production": true
+            },
+            {
+                "code": "pl",
+                "production": true
+            },
+            {
+                "code": "sv",
+                "production": true
+            },
+            {
+                "code": "tr",
+                "production": true
+            },
+            {
+                "code": "ru",
+                "production": true
+            },
+            {
+                "code": "hi",
+                "production": true
+            },
+            {
+                "code": "uk",
+                "production": true
+            },
+            {
+                "code": "id",
+                "production": true
+            },
+            {
+                "code": "vi",
+                "production": true
+            },
+            {
+                "code": "th",
+                "production": true
+            },
+            {
+                "code": "da",
+                "production": true
+            },
+            {
+                "code": "ga",
+                "production": true
+            },
+            {
+                "code": "ms",
+                "production": true
+            },
+            {
+                "code": "yue",
+                "production": true
+            }
+        ]
+    },
+    {
+        "code": "ja",
+        "label": "Japanese",
+        "production": true,
+        "regionalAccents": [
+            {
+                "code": "ja",
+                "label": "Japanese",
+                "production": true,
+                "nativeMatchingEnabled": true,
+                "sourceMatchingEnabled": true
+            }
+        ],
+        "allowedLanguages": [
+            {
+                "code": "en",
+                "production": true
+            },
+            {
+                "code": "es",
+                "production": true
+            },
+            {
+                "code": "pt",
+                "production": true
+            },
+            {
+                "code": "de",
+                "production": true
+            },
+            {
+                "code": "nl",
+                "production": true
+            },
+            {
+                "code": "fr",
+                "production": true
+            },
+            {
+                "code": "it",
+                "production": true
+            },
+            {
+                "code": "zh",
+                "production": true
+            },
+            {
+                "code": "ar",
+                "production": true
+            },
+            {
+                "code": "ko",
+                "production": true
+            },
+            {
+                "code": "pl",
+                "production": true
+            },
+            {
+                "code": "sv",
+                "production": true
+            },
+            {
+                "code": "tr",
+                "production": true
+            },
+            {
+                "code": "ru",
+                "production": true
+            },
+            {
+                "code": "hi",
+                "production": true
+            },
+            {
+                "code": "uk",
+                "production": true
+            },
+            {
+                "code": "id",
+                "production": true
+            },
+            {
+                "code": "vi",
+                "production": true
+            },
+            {
+                "code": "th",
+                "production": true
+            },
+            {
+                "code": "da",
+                "production": true
+            },
+            {
+                "code": "ga",
+                "production": true
+            },
+            {
+                "code": "ms",
+                "production": true
+            },
+            {
+                "code": "yue",
+                "production": true
+            }
+        ]
+    },
+    {
+        "code": "hi",
+        "label": "Hindi",
+        "production": true,
+        "regionalAccents": [
+            {
+                "code": "hi",
+                "label": "Hindi",
+                "production": true,
+                "nativeMatchingEnabled": true,
+                "sourceMatchingEnabled": true
+            }
+        ],
+        "allowedLanguages": [
+            {
+                "code": "en",
+                "production": true
+            },
+            {
+                "code": "es",
+                "production": true
+            },
+            {
+                "code": "pt",
+                "production": true
+            },
+            {
+                "code": "ja",
+                "production": true
+            },
+            {
+                "code": "de",
+                "production": true
+            },
+            {
+                "code": "nl",
+                "production": true
+            },
+            {
+                "code": "fr",
+                "production": true
+            },
+            {
+                "code": "it",
+                "production": true
+            },
+            {
+                "code": "ar",
+                "production": true
+            },
+            {
+                "code": "ko",
+                "production": true
+            },
+            {
+                "code": "zh",
+                "production": true
+            },
+            {
+                "code": "pl",
+                "production": true
+            },
+            {
+                "code": "sv",
+                "production": true
+            },
+            {
+                "code": "tr",
+                "production": true
+            },
+            {
+                "code": "ru",
+                "production": true
+            },
+            {
+                "code": "uk",
+                "production": true
+            },
+            {
+                "code": "id",
+                "production": true
+            },
+            {
+                "code": "vi",
+                "production": true
+            },
+            {
+                "code": "th",
+                "production": true
+            },
+            {
+                "code": "da",
+                "production": true
+            },
+            {
+                "code": "ga",
+                "production": true
+            },
+            {
+                "code": "ms",
+                "production": true
+            },
+            {
+                "code": "yue",
+                "production": true
+            }
+        ]
+    },
+    {
+        "code": "zh",
+        "label": "Chinese",
+        "production": true,
+        "regionalAccents": [
+            {
+                "code": "zh",
+                "label": "Chinese",
+                "production": true,
+                "nativeMatchingEnabled": true,
+                "sourceMatchingEnabled": true
+            }
+        ],
+        "allowedLanguages": [
+            {
+                "code": "en",
+                "production": true
+            },
+            {
+                "code": "es",
+                "production": true
+            },
+            {
+                "code": "pt",
+                "production": true
+            },
+            {
+                "code": "ja",
+                "production": true
+            },
+            {
+                "code": "de",
+                "production": true
+            },
+            {
+                "code": "nl",
+                "production": true
+            },
+            {
+                "code": "fr",
+                "production": true
+            },
+            {
+                "code": "it",
+                "production": true
+            },
+            {
+                "code": "ar",
+                "production": true
+            },
+            {
+                "code": "ko",
+                "production": true
+            },
+            {
+                "code": "pl",
+                "production": true
+            },
+            {
+                "code": "sv",
+                "production": true
+            },
+            {
+                "code": "tr",
+                "production": true
+            },
+            {
+                "code": "ru",
+                "production": true
+            },
+            {
+                "code": "hi",
+                "production": true
+            },
+            {
+                "code": "uk",
+                "production": true
+            },
+            {
+                "code": "id",
+                "production": true
+            },
+            {
+                "code": "vi",
+                "production": true
+            },
+            {
+                "code": "th",
+                "production": true
+            },
+            {
+                "code": "da",
+                "production": true
+            },
+            {
+                "code": "ga",
+                "production": true
+            },
+            {
+                "code": "ms",
+                "production": true
+            },
+            {
+                "code": "yue",
+                "production": true
+            }
+        ]
+    },
+    {
+        "code": "pt_pt",
+        "label": "Portuguese - European",
+        "production": true,
+        "regionalAccents": [
+            {
+                "code": "pt_pt",
+                "label": "Portuguese - European",
+                "production": true,
+                "nativeMatchingEnabled": true,
+                "sourceMatchingEnabled": false
+            }
+        ],
+        "allowedLanguages": [
+            {
+                "code": "en",
+                "production": true
+            },
+            {
+                "code": "es",
+                "production": true
+            },
+            {
+                "code": "ja",
+                "production": true
+            },
+            {
+                "code": "de",
+                "production": true
+            },
+            {
+                "code": "nl",
+                "production": true
+            },
+            {
+                "code": "fr",
+                "production": true
+            },
+            {
+                "code": "it",
+                "production": true
+            },
+            {
+                "code": "zh",
+                "production": true
+            },
+            {
+                "code": "ar",
+                "production": true
+            },
+            {
+                "code": "ko",
+                "production": true
+            },
+            {
+                "code": "pl",
+                "production": true
+            },
+            {
+                "code": "sv",
+                "production": true
+            },
+            {
+                "code": "tr",
+                "production": true
+            },
+            {
+                "code": "ru",
+                "production": true
+            },
+            {
+                "code": "uk",
+                "production": true
+            },
+            {
+                "code": "id",
+                "production": true
+            },
+            {
+                "code": "vi",
+                "production": true
+            },
+            {
+                "code": "th",
+                "production": true
+            },
+            {
+                "code": "da",
+                "production": true
+            },
+            {
+                "code": "ga",
+                "production": true
+            },
+            {
+                "code": "ms",
+                "production": true
+            },
+            {
+                "code": "yue",
+                "production": true
+            }
+        ]
+    },
+    {
+        "code": "pt_br",
+        "label": "Portuguese - Brazilian",
+        "production": true,
+        "regionalAccents": [
+            {
+                "code": "pt_br",
+                "label": "Portuguese - Brazilian",
+                "production": true,
+                "nativeMatchingEnabled": true,
+                "sourceMatchingEnabled": true
+            }
+        ],
+        "allowedLanguages": [
+            {
+                "code": "en",
+                "production": true
+            },
+            {
+                "code": "es",
+                "production": true
+            },
+            {
+                "code": "ja",
+                "production": true
+            },
+            {
+                "code": "de",
+                "production": true
+            },
+            {
+                "code": "nl",
+                "production": true
+            },
+            {
+                "code": "fr",
+                "production": true
+            },
+            {
+                "code": "it",
+                "production": true
+            },
+            {
+                "code": "zh",
+                "production": true
+            },
+            {
+                "code": "ar",
+                "production": true
+            },
+            {
+                "code": "ko",
+                "production": true
+            },
+            {
+                "code": "pl",
+                "production": true
+            },
+            {
+                "code": "sv",
+                "production": true
+            },
+            {
+                "code": "tr",
+                "production": true
+            },
+            {
+                "code": "ru",
+                "production": true
+            },
+            {
+                "code": "uk",
+                "production": true
+            },
+            {
+                "code": "id",
+                "production": true
+            },
+            {
+                "code": "vi",
+                "production": true
+            },
+            {
+                "code": "th",
+                "production": true
+            },
+            {
+                "code": "da",
+                "production": true
+            },
+            {
+                "code": "ga",
+                "production": true
+            },
+            {
+                "code": "ms",
+                "production": true
+            },
+            {
+                "code": "yue",
+                "production": true
+            }
+        ]
+    },
+    {
+        "code": "pl",
+        "label": "Polish",
+        "production": true,
+        "regionalAccents": [
+            {
+                "code": "pl",
+                "label": "Polish",
+                "production": true,
+                "nativeMatchingEnabled": true,
+                "sourceMatchingEnabled": true
+            }
+        ],
+        "allowedLanguages": [
+            {
+                "code": "en",
+                "production": true
+            },
+            {
+                "code": "es",
+                "production": true
+            },
+            {
+                "code": "pt",
+                "production": true
+            },
+            {
+                "code": "de",
+                "production": true
+            },
+            {
+                "code": "nl",
+                "production": true
+            },
+            {
+                "code": "fr",
+                "production": true
+            },
+            {
+                "code": "it",
+                "production": true
+            },
+            {
+                "code": "ja",
+                "production": true
+            },
+            {
+                "code": "zh",
+                "production": true
+            },
+            {
+                "code": "ar",
+                "production": true
+            },
+            {
+                "code": "hi",
+                "production": true
+            },
+            {
+                "code": "sv",
+                "production": true
+            },
+            {
+                "code": "tr",
+                "production": true
+            },
+            {
+                "code": "ru",
+                "production": true
+            },
+            {
+                "code": "uk",
+                "production": true
+            },
+            {
+                "code": "id",
+                "production": true
+            },
+            {
+                "code": "vi",
+                "production": true
+            },
+            {
+                "code": "th",
+                "production": true
+            },
+            {
+                "code": "da",
+                "production": true
+            },
+            {
+                "code": "ga",
+                "production": true
+            },
+            {
+                "code": "ms",
+                "production": true
+            },
+            {
+                "code": "yue",
+                "production": true
+            }
+        ]
+    },
+    {
+        "code": "tr",
+        "label": "Turkish",
+        "production": true,
+        "regionalAccents": [
+            {
+                "code": "tr",
+                "label": "Turkish",
+                "production": true,
+                "nativeMatchingEnabled": true,
+                "sourceMatchingEnabled": true
+            }
+        ],
+        "allowedLanguages": [
+            {
+                "code": "en",
+                "production": true
+            },
+            {
+                "code": "es",
+                "production": true
+            },
+            {
+                "code": "pt",
+                "production": true
+            },
+            {
+                "code": "de",
+                "production": true
+            },
+            {
+                "code": "nl",
+                "production": true
+            },
+            {
+                "code": "fr",
+                "production": true
+            },
+            {
+                "code": "it",
+                "production": true
+            },
+            {
+                "code": "ja",
+                "production": true
+            },
+            {
+                "code": "zh",
+                "production": true
+            },
+            {
+                "code": "ar",
+                "production": true
+            },
+            {
+                "code": "hi",
+                "production": true
+            },
+            {
+                "code": "pl",
+                "production": true
+            },
+            {
+                "code": "sv",
+                "production": true
+            },
+            {
+                "code": "uk",
+                "production": true
+            },
+            {
+                "code": "id",
+                "production": true
+            },
+            {
+                "code": "vi",
+                "production": true
+            },
+            {
+                "code": "th",
+                "production": true
+            },
+            {
+                "code": "ru",
+                "production": true
+            },
+            {
+                "code": "da",
+                "production": true
+            },
+            {
+                "code": "ga",
+                "production": true
+            },
+            {
+                "code": "ms",
+                "production": true
+            },
+            {
+                "code": "yue",
+                "production": true
+            }
+        ]
+    },
+    {
+        "code": "sv",
+        "label": "Swedish",
+        "production": true,
+        "regionalAccents": [
+            {
+                "code": "sv",
+                "label": "Swedish",
+                "production": true,
+                "nativeMatchingEnabled": true,
+                "sourceMatchingEnabled": true
+            }
+        ],
+        "allowedLanguages": [
+            {
+                "code": "en",
+                "production": true
+            },
+            {
+                "code": "es",
+                "production": true
+            },
+            {
+                "code": "pt",
+                "production": true
+            },
+            {
+                "code": "de",
+                "production": true
+            },
+            {
+                "code": "nl",
+                "production": true
+            },
+            {
+                "code": "fr",
+                "production": true
+            },
+            {
+                "code": "it",
+                "production": true
+            },
+            {
+                "code": "ja",
+                "production": true
+            },
+            {
+                "code": "zh",
+                "production": true
+            },
+            {
+                "code": "ar",
+                "production": true
+            },
+            {
+                "code": "pl",
+                "production": true
+            },
+            {
+                "code": "tr",
+                "production": true
+            },
+            {
+                "code": "ru",
+                "production": true
+            },
+            {
+                "code": "hi",
+                "production": true
+            },
+            {
+                "code": "uk",
+                "production": true
+            },
+            {
+                "code": "id",
+                "production": true
+            },
+            {
+                "code": "vi",
+                "production": true
+            },
+            {
+                "code": "th",
+                "production": true
+            },
+            {
+                "code": "da",
+                "production": true
+            },
+            {
+                "code": "ga",
+                "production": true
+            },
+            {
+                "code": "ms",
+                "production": true
+            },
+            {
+                "code": "yue",
+                "production": true
+            }
+        ]
+    },
+    {
+        "code": "ru",
+        "label": "Russian",
+        "production": true,
+        "regionalAccents": [
+            {
+                "code": "ru",
+                "label": "Russian",
+                "production": true,
+                "nativeMatchingEnabled": true,
+                "sourceMatchingEnabled": true
+            }
+        ],
+        "allowedLanguages": [
+            {
+                "code": "en",
+                "production": true
+            },
+            {
+                "code": "es",
+                "production": true
+            },
+            {
+                "code": "pt",
+                "production": true
+            },
+            {
+                "code": "de",
+                "production": true
+            },
+            {
+                "code": "nl",
+                "production": true
+            },
+            {
+                "code": "fr",
+                "production": true
+            },
+            {
+                "code": "it",
+                "production": true
+            },
+            {
+                "code": "ja",
+                "production": true
+            },
+            {
+                "code": "zh",
+                "production": true
+            },
+            {
+                "code": "ar",
+                "production": true
+            },
+            {
+                "code": "hi",
+                "production": true
+            },
+            {
+                "code": "pl",
+                "production": true
+            },
+            {
+                "code": "sv",
+                "production": true
+            },
+            {
+                "code": "tr",
+                "production": true
+            },
+            {
+                "code": "uk",
+                "production": true
+            },
+            {
+                "code": "id",
+                "production": true
+            },
+            {
+                "code": "vi",
+                "production": true
+            },
+            {
+                "code": "th",
+                "production": true
+            },
+            {
+                "code": "da",
+                "production": true
+            },
+            {
+                "code": "ga",
+                "production": true
+            },
+            {
+                "code": "ms",
+                "production": true
+            },
+            {
+                "code": "yue",
+                "production": true
+            }
+        ]
+    },
+    {
+        "code": "uk",
+        "label": "Ukrainian",
+        "production": true,
+        "regionalAccents": [
+            {
+                "code": "uk",
+                "label": "Ukrainian",
+                "production": true,
+                "nativeMatchingEnabled": true,
+                "sourceMatchingEnabled": true
+            }
+        ],
+        "allowedLanguages": [
+            {
+                "code": "en",
+                "production": true
+            },
+            {
+                "code": "es",
+                "production": true
+            },
+            {
+                "code": "pt",
+                "production": true
+            },
+            {
+                "code": "de",
+                "production": true
+            },
+            {
+                "code": "nl",
+                "production": true
+            },
+            {
+                "code": "fr",
+                "production": true
+            },
+            {
+                "code": "it",
+                "production": true
+            },
+            {
+                "code": "ja",
+                "production": true
+            },
+            {
+                "code": "zh",
+                "production": true
+            },
+            {
+                "code": "ar",
+                "production": true
+            },
+            {
+                "code": "hi",
+                "production": true
+            },
+            {
+                "code": "pl",
+                "production": true
+            },
+            {
+                "code": "sv",
+                "production": true
+            },
+            {
+                "code": "tr",
+                "production": true
+            },
+            {
+                "code": "id",
+                "production": true
+            },
+            {
+                "code": "vi",
+                "production": true
+            },
+            {
+                "code": "th",
+                "production": true
+            },
+            {
+                "code": "ru",
+                "production": true
+            },
+            {
+                "code": "da",
+                "production": true
+            },
+            {
+                "code": "ga",
+                "production": true
+            },
+            {
+                "code": "ms",
+                "production": true
+            },
+            {
+                "code": "yue",
+                "production": true
+            }
+        ]
+    },
+    {
+        "code": "id",
+        "label": "Indonesian",
+        "production": true,
+        "regionalAccents": [
+            {
+                "code": "id",
+                "label": "Indonesian",
+                "production": true,
+                "nativeMatchingEnabled": true,
+                "sourceMatchingEnabled": true
+            }
+        ],
+        "allowedLanguages": [
+            {
+                "code": "en",
+                "production": true
+            },
+            {
+                "code": "es",
+                "production": true
+            },
+            {
+                "code": "pt",
+                "production": true
+            },
+            {
+                "code": "de",
+                "production": true
+            },
+            {
+                "code": "nl",
+                "production": true
+            },
+            {
+                "code": "fr",
+                "production": true
+            },
+            {
+                "code": "it",
+                "production": true
+            },
+            {
+                "code": "ja",
+                "production": true
+            },
+            {
+                "code": "zh",
+                "production": true
+            },
+            {
+                "code": "ar",
+                "production": true
+            },
+            {
+                "code": "hi",
+                "production": true
+            },
+            {
+                "code": "pl",
+                "production": true
+            },
+            {
+                "code": "sv",
+                "production": true
+            },
+            {
+                "code": "tr",
+                "production": true
+            },
+            {
+                "code": "uk",
+                "production": true
+            },
+            {
+                "code": "vi",
+                "production": true
+            },
+            {
+                "code": "th",
+                "production": true
+            },
+            {
+                "code": "ru",
+                "production": true
+            },
+            {
+                "code": "da",
+                "production": true
+            },
+            {
+                "code": "ga",
+                "production": true
+            },
+            {
+                "code": "ms",
+                "production": true
+            },
+            {
+                "code": "yue",
+                "production": true
+            }
+        ]
+    },
+    {
+        "code": "vi",
+        "label": "Vietnamese",
+        "production": true,
+        "regionalAccents": [
+            {
+                "code": "vi",
+                "label": "Vietnamese",
+                "production": true,
+                "nativeMatchingEnabled": true,
+                "sourceMatchingEnabled": true
+            }
+        ],
+        "allowedLanguages": [
+            {
+                "code": "en",
+                "production": true
+            },
+            {
+                "code": "es",
+                "production": true
+            },
+            {
+                "code": "pt",
+                "production": true
+            },
+            {
+                "code": "de",
+                "production": true
+            },
+            {
+                "code": "nl",
+                "production": true
+            },
+            {
+                "code": "fr",
+                "production": true
+            },
+            {
+                "code": "it",
+                "production": true
+            },
+            {
+                "code": "ja",
+                "production": true
+            },
+            {
+                "code": "zh",
+                "production": true
+            },
+            {
+                "code": "ar",
+                "production": true
+            },
+            {
+                "code": "hi",
+                "production": true
+            },
+            {
+                "code": "pl",
+                "production": true
+            },
+            {
+                "code": "sv",
+                "production": true
+            },
+            {
+                "code": "tr",
+                "production": true
+            },
+            {
+                "code": "hi",
+                "production": true
+            },
+            {
+                "code": "uk",
+                "production": true
+            },
+            {
+                "code": "id",
+                "production": true
+            },
+            {
+                "code": "th",
+                "production": true
+            },
+            {
+                "code": "ru",
+                "production": true
+            },
+            {
+                "code": "da",
+                "production": true
+            },
+            {
+                "code": "ga",
+                "production": true
+            },
+            {
+                "code": "ms",
+                "production": true
+            },
+            {
+                "code": "yue",
+                "production": true
+            }
+        ]
+    },
+    {
+        "code": "th",
+        "label": "Thai",
+        "production": true,
+        "regionalAccents": [
+            {
+                "code": "th",
+                "label": "Thai",
+                "production": true,
+                "nativeMatchingEnabled": true,
+                "sourceMatchingEnabled": true
+            }
+        ],
+        "allowedLanguages": [
+            {
+                "code": "en",
+                "production": true
+            },
+            {
+                "code": "es",
+                "production": true
+            },
+            {
+                "code": "pt",
+                "production": true
+            },
+            {
+                "code": "de",
+                "production": true
+            },
+            {
+                "code": "nl",
+                "production": true
+            },
+            {
+                "code": "fr",
+                "production": true
+            },
+            {
+                "code": "it",
+                "production": true
+            },
+            {
+                "code": "ja",
+                "production": true
+            },
+            {
+                "code": "zh",
+                "production": true
+            },
+            {
+                "code": "ar",
+                "production": true
+            },
+            {
+                "code": "hi",
+                "production": true
+            },
+            {
+                "code": "pl",
+                "production": true
+            },
+            {
+                "code": "sv",
+                "production": true
+            },
+            {
+                "code": "tr",
+                "production": true
+            },
+            {
+                "code": "hi",
+                "production": true
+            },
+            {
+                "code": "uk",
+                "production": true
+            },
+            {
+                "code": "id",
+                "production": true
+            },
+            {
+                "code": "vi",
+                "production": true
+            },
+            {
+                "code": "ru",
+                "production": true
+            },
+            {
+                "code": "da",
+                "production": true
+            },
+            {
+                "code": "ga",
+                "production": true
+            },
+            {
+                "code": "ms",
+                "production": true
+            },
+            {
+                "code": "yue",
+                "production": true
+            }
+        ]
+    },
+    {
+        "code": "da",
+        "label": "Danish",
+        "production": true,
+        "regionalAccents": [
+            {
+                "code": "da",
+                "label": "Danish",
+                "production": true,
+                "nativeMatchingEnabled": true,
+                "sourceMatchingEnabled": true
+            }
+        ],
+        "allowedLanguages": [
+            {
+                "code": "en",
+                "production": true
+            },
+            {
+                "code": "es",
+                "production": true
+            },
+            {
+                "code": "pt",
+                "production": true
+            },
+            {
+                "code": "de",
+                "production": true
+            },
+            {
+                "code": "nl",
+                "production": true
+            },
+            {
+                "code": "fr",
+                "production": true
+            },
+            {
+                "code": "it",
+                "production": true
+            },
+            {
+                "code": "ja",
+                "production": true
+            },
+            {
+                "code": "zh",
+                "production": true
+            },
+            {
+                "code": "ar",
+                "production": true
+            },
+            {
+                "code": "hi",
+                "production": true
+            },
+            {
+                "code": "pl",
+                "production": true
+            },
+            {
+                "code": "sv",
+                "production": true
+            },
+            {
+                "code": "tr",
+                "production": true
+            },
+            {
+                "code": "hi",
+                "production": true
+            },
+            {
+                "code": "uk",
+                "production": true
+            },
+            {
+                "code": "id",
+                "production": true
+            },
+            {
+                "code": "vi",
+                "production": true
+            },
+            {
+                "code": "ru",
+                "production": true
+            },
+            {
+                "code": "ga",
+                "production": true
+            },
+            {
+                "code": "ms",
+                "production": true
+            },
+            {
+                "code": "yue",
+                "production": true
+            }
+        ]
+    },
+    {
+        "code": "ga",
+        "label": "Irish",
+        "production": true,
+        "regionalAccents": [
+            {
+                "code": "ga",
+                "label": "Irish",
+                "production": true,
+                "nativeMatchingEnabled": true,
+                "sourceMatchingEnabled": true
+            }
+        ],
+        "allowedLanguages": [
+            {
+                "code": "en",
+                "production": true
+            },
+            {
+                "code": "es",
+                "production": true
+            },
+            {
+                "code": "pt",
+                "production": true
+            },
+            {
+                "code": "de",
+                "production": true
+            },
+            {
+                "code": "nl",
+                "production": true
+            },
+            {
+                "code": "fr",
+                "production": true
+            },
+            {
+                "code": "it",
+                "production": true
+            },
+            {
+                "code": "ja",
+                "production": true
+            },
+            {
+                "code": "zh",
+                "production": true
+            },
+            {
+                "code": "ar",
+                "production": true
+            },
+            {
+                "code": "hi",
+                "production": true
+            },
+            {
+                "code": "pl",
+                "production": true
+            },
+            {
+                "code": "sv",
+                "production": true
+            },
+            {
+                "code": "tr",
+                "production": true
+            },
+            {
+                "code": "hi",
+                "production": true
+            },
+            {
+                "code": "uk",
+                "production": true
+            },
+            {
+                "code": "id",
+                "production": true
+            },
+            {
+                "code": "vi",
+                "production": true
+            },
+            {
+                "code": "ru",
+                "production": true
+            },
+            {
+                "code": "da",
+                "production": true
+            },
+            {
+                "code": "ms",
+                "production": true
+            },
+            {
+                "code": "yue",
+                "production": true
+            }
+        ]
+    },
+    {
+        "code": "ms",
+        "label": "Malay",
+        "production": true,
+        "regionalAccents": [
+            {
+                "code": "ms",
+                "label": "Malay",
+                "production": true,
+                "nativeMatchingEnabled": true,
+                "sourceMatchingEnabled": true
+            }
+        ],
+        "allowedLanguages": [
+            {
+                "code": "en",
+                "production": true
+            },
+            {
+                "code": "es",
+                "production": true
+            },
+            {
+                "code": "pt",
+                "production": true
+            },
+            {
+                "code": "de",
+                "production": true
+            },
+            {
+                "code": "nl",
+                "production": true
+            },
+            {
+                "code": "fr",
+                "production": true
+            },
+            {
+                "code": "it",
+                "production": true
+            },
+            {
+                "code": "ja",
+                "production": true
+            },
+            {
+                "code": "zh",
+                "production": true
+            },
+            {
+                "code": "ar",
+                "production": true
+            },
+            {
+                "code": "hi",
+                "production": true
+            },
+            {
+                "code": "pl",
+                "production": true
+            },
+            {
+                "code": "sv",
+                "production": true
+            },
+            {
+                "code": "tr",
+                "production": true
+            },
+            {
+                "code": "hi",
+                "production": true
+            },
+            {
+                "code": "uk",
+                "production": true
+            },
+            {
+                "code": "id",
+                "production": true
+            },
+            {
+                "code": "vi",
+                "production": true
+            },
+            {
+                "code": "ru",
+                "production": true
+            },
+            {
+                "code": "da",
+                "production": true
+            },
+            {
+                "code": "ga",
+                "production": true
+            },
+            {
+                "code": "yue",
+                "production": true
+            }
+        ]
+    },
+    {
+        "code": "yue",
+        "label": "Cantonese",
+        "production": true,
+        "regionalAccents": [
+            {
+                "code": "yue",
+                "label": "Cantonese",
+                "production": true,
+                "nativeMatchingEnabled": true,
+                "sourceMatchingEnabled": true
+            }
+        ],
+        "allowedLanguages": [
+            {
+                "code": "en",
+                "production": true
+            },
+            {
+                "code": "es",
+                "production": true
+            },
+            {
+                "code": "pt",
+                "production": true
+            },
+            {
+                "code": "de",
+                "production": true
+            },
+            {
+                "code": "nl",
+                "production": true
+            },
+            {
+                "code": "fr",
+                "production": true
+            },
+            {
+                "code": "it",
+                "production": true
+            },
+            {
+                "code": "ja",
+                "production": true
+            },
+            {
+                "code": "zh",
+                "production": true
+            },
+            {
+                "code": "ar",
+                "production": true
+            },
+            {
+                "code": "ko",
+                "production": true
+            },
+            {
+                "code": "pl",
+                "production": true
+            },
+            {
+                "code": "sv",
+                "production": true
+            },
+            {
+                "code": "tr",
+                "production": true
+            },
+            {
+                "code": "ru",
+                "production": true
+            },
+            {
+                "code": "hi",
+                "production": true
+            },
+            {
+                "code": "uk",
+                "production": true
+            },
+            {
+                "code": "id",
+                "production": true
+            },
+            {
+                "code": "vi",
+                "production": true
+            },
+            {
+                "code": "th",
+                "production": true
+            },
+            {
+                "code": "da",
+                "production": true
+            },
+            {
+                "code": "ga",
+                "production": true
+            },
+            {
+                "code": "ms",
+                "production": true
+            }
+        ]
+    }
+]
+
+that ihen find the twitter space url and the twitter account that posted the tweet with the twitter space URL and then basically fire off the same main agent flow using just that data sort of like it one item  of the JSON file

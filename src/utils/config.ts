@@ -5,6 +5,10 @@ import path from 'path';
 // Using path.resolve ensures it finds .env in the project root
 dotenv.config({ path: path.resolve(process.cwd(), '.env') });
 
+// --- TEMPORARY DEBUG LOG ---
+console.log(`[DEBUG] Value of process.env.TWITTER_USERNAME after dotenv.config: '${process.env.TWITTER_USERNAME}'`);
+// --- END DEBUG LOG ---
+
 interface EnvConfig {
     SPEECHLAB_EMAIL: string;
     SPEECHLAB_PASSWORD: string;
@@ -22,7 +26,8 @@ interface EnvConfig {
     // Optional Twitter credentials
     TWITTER_USERNAME?: string;
     TWITTER_PASSWORD?: string;
-
+    // Browser configuration
+    BROWSER_HEADLESS?: boolean;
 }
 
 function validateConfig(env: NodeJS.ProcessEnv): EnvConfig {
@@ -51,6 +56,8 @@ function validateConfig(env: NodeJS.ProcessEnv): EnvConfig {
         process.exit(1);
     }
 
+    // Parse BROWSER_HEADLESS value as boolean (default to false if not provided)
+    const browserHeadless = env.BROWSER_HEADLESS ? env.BROWSER_HEADLESS.toLowerCase() === 'true' : false;
 
     return {
         SPEECHLAB_EMAIL: env.SPEECHLAB_EMAIL!,
@@ -68,6 +75,7 @@ function validateConfig(env: NodeJS.ProcessEnv): EnvConfig {
         AWS_REGION: env.AWS_REGION,
         TWITTER_USERNAME: env.TWITTER_USERNAME,
         TWITTER_PASSWORD: env.TWITTER_PASSWORD,
+        BROWSER_HEADLESS: browserHeadless,
     };
 }
 

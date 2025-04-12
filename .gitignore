@@ -7,10 +7,9 @@ yarn-error.log*
 lerna-debug.log*
 .pnpm-debug.log*
 
-temp_audio
-screenshots
 # Diagnostic reports (https://nodejs.org/api/report.html)
-report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
+report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json/
+
 
 # Runtime data
 pids
@@ -154,3 +153,15 @@ leaderboard_data_playwright.json # Ignore generated data file from Playwright sc
 # Debug screenshots
 debug-screenshots/
 error_reply_screenshot_*.png
+
+# Agent Specific Ignores
+/temp_audio/
+/screenshots/
+recordings/ # Ignore anywhere in the project
+received_audio/ # Ignore at the root
+*.mp4
+*.aac
+*.mp3
+*.m4a
+
+/processed_mentions.json
