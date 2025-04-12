@@ -24,37 +24,127 @@ export interface MentionInfo {
 // Make sure this is exported
 export async function findSpaceUrlOnPage(page: Page): Promise<string | null> {
     try {
-        // Look for Space links in tweet text
         const spaceUrlRegex = /https:\/\/(?:twitter|x)\.com\/i\/spaces\/([a-zA-Z0-9]+)/;
-        
-        // Get all text content from tweet elements
-        const tweetTexts = await page.locator('div[data-testid="tweetText"]').allTextContents();
-        
-        // Check each tweet text for Space URL
-        for (const text of tweetTexts) {
-            const match = text.match(spaceUrlRegex);
-            if (match) {
-                logger.info(`[🐦 Twitter Helper] Found Space URL in tweet text: ${match[0]}`);
-                return match[0];
+        const spaceUrlRegexShort = /\/i\/spaces\/([a-zA-Z0-9]+)/; // To match relative links
+        const playRecordingSelectors = [
+            'button[aria-label*="Play recording"]',
+            'button:has-text("Play recording")'
+        ];
+
+        logger.debug('[🐦 Helper] Iterating through visible tweet articles to find Space URL...');
+        const tweetArticles = await page.locator('article[data-testid="tweet"]').all();
+        logger.debug(`[🐦 Helper] Found ${tweetArticles.length} article elements.`);
+
+        for (let i = 0; i < tweetArticles.length; i++) {
+            const article = tweetArticles[i];
+            logger.debug(`[🐦 Helper] Checking article ${i+1}...`);
+
+            if (!await article.isVisible().catch(() => false)) {
+                logger.debug(`[🐦 Helper] Article ${i+1} is not visible, skipping.`);
+                continue;
             }
-        }
-        
-        // Also check for any Space links in the page
-        const spaceLinks = await page.locator('a[href*="/spaces/"]').all();
-        for (const link of spaceLinks) {
-            const href = await link.getAttribute('href');
-            if (href) {
-                const fullUrl = href.startsWith('http') ? href : `https://twitter.com${href}`;
-                if (spaceUrlRegex.test(fullUrl)) {
-                    logger.info(`[🐦 Twitter Helper] Found Space URL in link: ${fullUrl}`);
-                    return fullUrl;
+
+            // --- Priority Check: Does this article contain a "Play recording" button? ---
+            let hasPlayRecordingButton = false;
+            for (const selector of playRecordingSelectors) {
+                if (await article.locator(selector).isVisible({ timeout: 500 })) {
+                    logger.info(`[🐦 Helper] Article ${i+1} contains a 'Play recording' button (selector: ${selector}).`);
+                    hasPlayRecordingButton = true;
+                    break;
                 }
             }
+
+            // If it has the button, IMMEDIATELY search the ENTIRE PAGE for a /spaces/ link
+            if (hasPlayRecordingButton) {
+                logger.info(`[🐦 Helper] Play button found in article ${i+1}. Searching *entire page* for ANY Space link...`);
+                const allSpaceLinksOnPage = await page.locator('a[href*="/spaces/"]').all();
+                logger.debug(`[🐦 Helper] Found ${allSpaceLinksOnPage.length} potential space links on the page.`);
+                
+                for (const link of allSpaceLinksOnPage) {
+                    try {
+                        const href = await link.getAttribute('href');
+                        if (href) {
+                             if (spaceUrlRegex.test(href)) {
+                                logger.info(`[🐦 Helper] ✅ Found Space URL (href=${href}) anywhere on page while Play button visible.`);
+                                return href;
+                            } else if (spaceUrlRegexShort.test(href)) {
+                                const fullUrl = `https://twitter.com${href}`;
+                                logger.info(`[🐦 Helper] ✅ Found relative Space URL (href=${href}) anywhere on page while Play button visible, returning: ${fullUrl}`);
+                                return fullUrl;
+                            }
+                        }
+                    } catch (linkError) {
+                         logger.warn('[🐦 Helper] Error checking a page link href:', linkError);
+                    }
+                }
+                // If we found the play button but no /spaces/ link anywhere on the page, log warn and continue fallbacks
+                logger.warn(`[🐦 Helper] Article ${i+1} had Play button, but NO /spaces/ link found anywhere on the current page! Proceeding to fallbacks...`);
+            }
+            
+            // --- Fallback Checks (Run if no Play button OR if Play button found but no page-wide link) ---
+            
+            // Fallback 1: Check tweet text content
+            try {
+                 const tweetTextElement = article.locator('div[data-testid="tweetText"]').first();
+                 if (await tweetTextElement.isVisible({ timeout: 500 })) {
+                     const text = await tweetTextElement.textContent({ timeout: 1000 });
+                     if (text) {
+                         const match = text.match(spaceUrlRegex);
+                         if (match) {
+                             logger.info(`[🐦 Helper] Found Space URL in tweet text (article ${i+1}): ${match[0]}`);
+                             return match[0];
+                         }
+                     }
+                 }
+            } catch (e) { /* Ignore error */ }
+
+            // Fallback 2: Check card wrappers
+            try {
+                const spaceCards = await article.locator('div[data-testid="card.wrapper"]').all();
+                if (spaceCards.length > 0) {
+                    for (const card of spaceCards) {
+                        const cardLinks = await card.locator('a[href*="/spaces/"]').all();
+                        if (cardLinks.length > 0) {
+                            for (const link of cardLinks) {
+                                const href = await link.getAttribute('href');
+                                if (href) {
+                                    if (spaceUrlRegex.test(href)) {
+                                        logger.info(`[🐦 Helper] Found Space URL in card link (full, article ${i+1}): ${href}`);
+                                        return href;
+                                    } else if (spaceUrlRegexShort.test(href)) {
+                                        const fullUrl = `https://twitter.com${href}`;
+                                        logger.info(`[🐦 Helper] Found Space URL in card link (relative, article ${i+1}): ${fullUrl}`);
+                                        return fullUrl;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch(e) { /* Ignore error */ }
+
+            // Fallback 3: Check generic <a> links
+            try {
+                const allLinks = await article.locator('a[href*="/spaces/"]').all();
+                if (allLinks.length > 0) {
+                    for (const link of allLinks) {
+                        const href = await link.getAttribute('href');
+                        if (href) {
+                            const fullUrl = href.startsWith('http') ? href : `https://twitter.com${href}`;
+                            if (spaceUrlRegex.test(fullUrl)) {
+                                logger.info(`[🐦 Helper] Found Space URL in generic link (article ${i+1}): ${fullUrl}`);
+                                return fullUrl;
+                            }
+                        }
+                    }
+                 }
+            } catch (e) { /* Ignore error */ }
         }
-        
+
+        logger.debug('[🐦 Helper] No Space URL found in any visible articles using any method.');
         return null;
     } catch (error) {
-        logger.error(`[🐦 Twitter Helper] Error searching for Space URL on page:`, error);
+        logger.error(`[🐦 Helper] Error searching for Space URL on page:`, error);
         return null;
     }
 }
@@ -1658,3 +1748,143 @@ export function extractSpaceId(spaceUrl: string): string | null {
     return match ? match[1] : null;
 }
 // --- END HELPER FUNCTIONS ---
+
+// --- NEW HELPER: Click Play Button and Capture M3U8 ---
+/**
+ * Clicks the "Play recording" button within a specific tweet article 
+ * and captures the resulting M3U8 stream URL via network interception.
+ * @param page The Playwright page.
+ * @param articleLocator The Playwright Locator for the specific tweet article.
+ * @returns The captured M3U8 URL, or null if not found/error.
+ */
+export async function clickPlayButtonAndCaptureM3u8(page: Page, articleLocator: Locator): Promise<string | null> {
+    logger.info(`[🐦 Helper M3U8] Attempting to click Play button and capture M3U8 within a specific article...`);
+    const screenshotDir = path.join(process.cwd(), 'debug-screenshots');
+    let capturedM3u8Url: string | null = null;
+    const networkRequests: string[] = []; // Log requests for debugging
+
+    let resolveM3u8Promise: (url: string) => void;
+    const m3u8Promise = new Promise<string>((resolve) => {
+        resolveM3u8Promise = resolve;
+    });
+
+    // --- Define Network Listeners ---
+    const requestListener = (request: any) => {
+        const url = request.url();
+        networkRequests.push(`${request.method()} ${url}`);
+        // Simplify check - just look for .m3u8 anywhere for now
+        if (url.includes('.m3u8')) {
+            logger.info(`[🐦 Helper M3U8 Req] ✅✅ M3U8 URL detected (simplified check): ${url}`);
+            if (!capturedM3u8Url) {
+                capturedM3u8Url = url;
+                resolveM3u8Promise(url);
+            }
+        }
+         // Log other potentially relevant requests
+         if (url.includes('playlist') || url.includes('stream') || url.includes('AudioSpace') || url.includes('live_video')) {
+            logger.debug(`[🐦 Helper M3U8 Req] 🔍 Relevant request: ${request.method()} ${url}`);
+        }
+    };
+
+    const responseListener = async (response: any) => {
+        const url = response.url();
+        // If it's the live_video_stream API, try to parse its JSON response
+        if (url.includes('live_video_stream')) {
+            logger.info(`[🐦 Helper M3U8 Res] 💡 Received response from live_video_stream API: ${url}`);
+            try {
+                const responseBody = await response.json().catch(() => null);
+                if (responseBody) {
+                     logger.debug(`[🐦 Helper M3U8 Res] API Response Body: ${JSON.stringify(responseBody).substring(0, 500)}...`);
+                     const responseStr = JSON.stringify(responseBody);
+                     // Look for embedded m3u8 URLs within the JSON string
+                     const urlMatches = responseStr.match(/"(https:\/\/[^"]*?\.m3u8[^"]*?)"/g);
+                     if (urlMatches && urlMatches.length > 0) {
+                         const cleanUrl = urlMatches[0].replace(/"/g, ''); // Use the first one found
+                          if (cleanUrl && !capturedM3u8Url) {
+                             logger.info(`[🐦 Helper M3U8 Res] ✅✅ Extracted M3U8 from live_video_stream API response: ${cleanUrl}`);
+                             capturedM3u8Url = cleanUrl;
+                             resolveM3u8Promise(cleanUrl);
+                         }
+                     }
+                 }
+            } catch (e) { logger.warn(`[🐦 Helper M3U8 Res] Error processing API response JSON: ${e}`); }
+        }
+        // Also check direct M3U8 responses
+        else if (url.includes('.m3u8')) {
+             if (!capturedM3u8Url) {
+                 logger.info(`[🐦 Helper M3U8 Res] ✅✅ Found direct M3U8 response: ${url}`);
+                 capturedM3u8Url = url;
+                 resolveM3u8Promise(url);
+             }
+         }
+    };
+    
+    // Simplify route handler and pattern - primarily rely on listeners now
+    const routeHandler = (route: any) => { route.continue(); }; 
+    const routePattern = (url: URL) => url.toString().includes('.m3u8'); 
+    // --- End Network Listeners ---
+
+    try {
+        // Attach listeners
+        logger.debug('[🐦 Helper M3U8] Attaching network listeners (broader pattern)...');
+        page.on('request', requestListener);
+        page.on('response', responseListener);
+        await page.route(routePattern, routeHandler);
+
+        // Find and Click Play Button within the specific article
+        // ... (keep existing button finding logic) ...
+        const playButtonSelectors = [
+            'button[aria-label*="Play recording"]', 
+            'button:has-text("Play recording")'
+        ];
+        logger.info('[🐦 Helper M3U8] Looking for "Play recording" button inside the article...');
+        let playButton = null;
+        for (const selector of playButtonSelectors) {
+            const button = articleLocator.locator(selector).first(); // Locate within the article
+            if (await button.isVisible({ timeout: 2000 })) {
+                playButton = button;
+                logger.info(`[🐦 Helper M3U8] Found play button with selector: ${selector}`);
+                break;
+            }
+        }
+
+        if (!playButton) {
+            logger.error('[🐦 Helper M3U8] Play button not found within the provided article.');
+            await articleLocator.screenshot({ path: path.join(screenshotDir, 'article-no-play-button.png') });
+            return null; 
+        }
+        
+        logger.info('[🐦 Helper M3U8] Clicking Play button...');
+        await playButton.click({ force: true, timeout: 10000 });
+        await page.waitForTimeout(1000); // Small wait after click
+        await articleLocator.screenshot({ path: path.join(screenshotDir, 'article-after-play-click.png') });
+
+        // Wait for M3U8 capture - Increased timeout
+        logger.debug('[🐦 Helper M3U8] Waiting for M3U8 network request (up to 30s)...');
+        await new Promise<string>((resolve, reject) => {
+            const timeoutId = setTimeout(() => reject(new Error('M3U8 capture timeout (30s)')), 30000); // Increased timeout
+            m3u8Promise.then(url => {
+                clearTimeout(timeoutId);
+                resolve(url);
+            }).catch(reject);
+        });
+
+        logger.info(`[🐦 Helper M3U8] ✅ Successfully captured M3U8 URL: ${capturedM3u8Url}`);
+        return capturedM3u8Url;
+
+    } catch (error) {
+        logger.error(`[🐦 Helper M3U8] ❌ Error clicking Play or capturing M3U8:`, error);
+        await articleLocator.screenshot({ path: path.join(screenshotDir, 'article-play-capture-error.png') }).catch(()=>{});
+        // Log network requests on error
+        // fsPromises.writeFile(path.join(screenshotDir, 'article-play-capture-network.log'), networkRequests.join('\n')).catch(()=>{});
+        return null;
+    } finally {
+        // Detach listeners
+        logger.debug('[🐦 Helper M3U8] Detaching network listeners...');
+        page.off('request', requestListener);
+        page.off('response', responseListener);
+        await page.unroute(routePattern, routeHandler).catch(e => logger.warn('Error unrouting', e));
+        logger.debug('[🐦 Helper M3U8] Listeners detached.');
+    }
+}
+// --- END NEW HELPER ---

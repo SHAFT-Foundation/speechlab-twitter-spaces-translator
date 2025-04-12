@@ -6,20 +6,40 @@ import { chromium, Browser, Page, BrowserContext, Locator } from 'playwright';
 import { 
     scrapeMentions, 
     MentionInfo, 
-    getM3u8ForSpacePage,
     postReplyToTweet,
     initializeDaemonBrowser,
     extractSpaceUrl, 
-    extractSpaceId
+    extractSpaceId,
+    findSpaceUrlOnPage,
+    clickPlayButtonAndCaptureM3u8
 } from './services/twitterInteractionService';
 import { downloadAndUploadAudio } from './services/audioService';
 import { createDubbingProject, waitForProjectCompletion, generateSharingLink } from './services/speechlabApiService';
+import { detectLanguage, getLanguageName } from './utils/languageUtils';
 import { v4 as uuidv4 } from 'uuid';
 
-// --- Queue for Processing Mentions ---
-const mentionQueue: MentionInfo[] = [];
-let isProcessingQueue = false; // Flag to prevent concurrent worker runs
-// --- END Queue ---
+// --- Queues & Workers Data Structures ---
+const mentionQueue: MentionInfo[] = []; // Queue for incoming mentions
+const finalReplyQueue: { mentionInfo: MentionInfo, backendResult: BackendResult }[] = []; // Queue for final replies
+let isInitiatingProcessing = false; // Flag for browser task (initiation)
+let isPostingFinalReply = false;   // Flag for browser task (final reply)
+
+// Interface for data passed from initiation to backend
+interface InitiationResult {
+    m3u8Url: string;
+    spaceId: string;
+    spaceTitle: string | null;
+    mentionInfo: MentionInfo; // Pass original mention info
+    targetLanguageCode: string;
+    targetLanguageName: string;
+}
+// Interface for backend result
+interface BackendResult {
+    success: boolean;
+    sharingLink?: string;
+    projectId?: string;
+    error?: string;
+}
 
 const PROCESSED_MENTIONS_PATH = path.join(process.cwd(), 'processed_mentions.json');
 const POLLING_INTERVAL_MS = 60 * 1000; // Check every 60 seconds
@@ -415,506 +435,384 @@ async function markMentionAsProcessed(mentionId: string, processedMentions: Set<
 }
 
 /**
- * Helper function to find Space URL on the current loaded page
+ * Helper to find the article containing the Play Recording button
  */
-async function findSpaceUrlOnPage(page: Page): Promise<string | null> {
-    try {
-        // Look for Space links in tweet text
-        const spaceUrlRegex = /https:\/\/(?:twitter|x)\.com\/i\/spaces\/([a-zA-Z0-9]+)/;
-        
-        // Get all text content from tweet elements
-        const tweetTexts = await page.locator('div[data-testid="tweetText"]').allTextContents();
-        
-        // Check each tweet text for Space URL
-        for (const text of tweetTexts) {
-            const match = text.match(spaceUrlRegex);
-            if (match) {
-                logger.info(`[🔍 Thread] Found Space URL in tweet text: ${match[0]}`);
-                return match[0];
+async function findArticleWithPlayButton(page: Page): Promise<Locator | null> {
+    logger.debug('[🐦 Helper] Searching for article containing Play Recording button...');
+    const playRecordingSelectors = [
+        'button[aria-label*="Play recording"]',
+        'button:has-text("Play recording")'
+    ];
+    const tweetArticles = await page.locator('article[data-testid="tweet"]').all();
+
+    for (let i = 0; i < tweetArticles.length; i++) {
+        const article = tweetArticles[i];
+        if (!await article.isVisible().catch(() => false)) {
+             logger.debug(`[🐦 Helper] Article ${i + 1} is not visible, skipping.`);
+             continue;
+         }
+
+        for (const selector of playRecordingSelectors) {
+            if (await article.locator(selector).isVisible({ timeout: 500 })) {
+                logger.info(`[🐦 Helper] Found Play Recording button in article ${i + 1}.`);
+                return article; // Return the Locator for the article
             }
         }
-        
-        // Also check for any Space links in the page
-        const spaceLinks = await page.locator('a[href*="/spaces/"]').all();
-        for (const link of spaceLinks) {
-            const href = await link.getAttribute('href');
-            if (href) {
-                const fullUrl = href.startsWith('http') ? href : `https://twitter.com${href}`;
-                if (spaceUrlRegex.test(fullUrl)) {
-                    logger.info(`[🔍 Thread] Found Space URL in link: ${fullUrl}`);
-                    return fullUrl;
-                }
-            }
-        }
-        
-        return null;
-    } catch (error) {
-        logger.error(`[🔍 Thread] Error searching for Space URL on page:`, error);
-        return null;
     }
+    logger.warn('[🐦 Helper] Could not find any article with a Play Recording button.');
+    return null;
 }
 
+// --- NEW FUNCTION: Browser-dependent initiation steps --- 
 /**
- * Attempts to find a Space URL by navigating to the tweet and scrolling up.
- * @param page The Playwright page
- * @param tweetUrl The URL of the mention tweet
- * @returns The Space URL or null if not found
+ * Handles the initial browser interaction for a mention:
+ * - Navigates to the mention tweet.
+ * - Finds the playable Space article.
+ * - Clicks Play and captures the M3U8 URL.
+ * - Posts an acknowledgement reply.
+ * @returns Data needed for backend processing.
+ * @throws Error if initiation fails (error reply should be attempted internally).
  */
-async function findSpaceUrlInTweetThread(page: Page, tweetUrl: string): Promise<string | null> {
-    logger.info(`[🔍 Thread] Navigating to tweet to look for Space URL: ${tweetUrl}`);
-    
+async function initiateProcessing(mentionInfo: MentionInfo, page: Page): Promise<InitiationResult> {
+    logger.info(`[🚀 Initiate] Starting browser phase for ${mentionInfo.tweetId}`);
+    let articleWithPlayButton: Locator | null = null;
+
+    // Detect target language early
+    const targetLanguageCode = detectLanguage(mentionInfo.text);
+    const targetLanguageName = getLanguageName(targetLanguageCode);
+    logger.info(`[🚀 Initiate] Target language: ${targetLanguageName} (${targetLanguageCode})`);
+
+    // 1. Navigate & Find Article
     try {
-        // Navigate to the tweet
-        await page.goto(tweetUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
-        logger.info(`[🔍 Thread] Tweet page loaded. Looking for Space URL...`);
-        await page.screenshot({ path: path.join(SCREENSHOT_DIR, 'tweet-thread-loaded.png') });
-        
-        // Let page settle
+        logger.info(`[🚀 Initiate] Navigating to mention tweet: ${mentionInfo.tweetUrl}`);
+        await page.goto(mentionInfo.tweetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
         await page.waitForTimeout(3000);
-        
-        // First check if Space URL is visible on the current page
-        const spaceUrlOnPage = await findSpaceUrlOnPage(page);
-        if (spaceUrlOnPage) {
-            logger.info(`[🔍 Thread] Found Space URL on initial page load: ${spaceUrlOnPage}`);
-            return spaceUrlOnPage;
-        }
-        
-        // Scroll up to find parent tweets that might contain the Space URL
-        logger.info(`[🔍 Thread] No Space URL found initially. Scrolling up to find parent tweets...`);
-        
-        // Maximum scroll attempts
-        const MAX_SCROLL_UP = 10;
-        
-        for (let i = 0; i < MAX_SCROLL_UP; i++) {
-            logger.info(`[🔍 Thread] Scroll up attempt ${i+1}/${MAX_SCROLL_UP}`);
-            
-            // Scroll up
-            await page.evaluate(() => {
-                window.scrollBy(0, -window.innerHeight);
-            });
-            await page.waitForTimeout(1000);
-            
-            // Take screenshot every few scrolls
-            if (i % 2 === 0) {
-                await page.screenshot({ path: path.join(SCREENSHOT_DIR, `tweet-thread-scroll-${i}.png`) });
-            }
-            
-            // Check if we're at the top of the page
-            const atTop = await page.evaluate(() => {
-                return window.scrollY === 0;
-            });
-            
-            // Check for Space URL after scrolling
-            const spaceUrl = await findSpaceUrlOnPage(page);
-            if (spaceUrl) {
-                logger.info(`[🔍 Thread] Found Space URL after scrolling up: ${spaceUrl}`);
-                return spaceUrl;
-            }
-            
-            // If we're at the top, no need to continue scrolling
-            if (atTop) {
-                logger.info(`[🔍 Thread] Reached top of page. No Space URL found.`);
-                break;
+
+        articleWithPlayButton = await findArticleWithPlayButton(page);
+        if (!articleWithPlayButton) {
+            logger.info('[🚀 Initiate] Play button not immediately visible. Scrolling up...');
+            const MAX_SCROLL_UP = 5;
+            for (let i = 0; i < MAX_SCROLL_UP && !articleWithPlayButton; i++) {
+                await page.evaluate(() => window.scrollBy(0, -window.innerHeight));
+                await page.waitForTimeout(1500);
+                articleWithPlayButton = await findArticleWithPlayButton(page);
             }
         }
-        
-        // No Space URL found after scrolling
-        logger.warn(`[🔍 Thread] No Space URL found in the tweet thread after scrolling up.`);
-        
-        return null;
-    } catch (error) {
-        logger.error(`[🔍 Thread] Error finding Space URL in tweet thread:`, error);
-        return null;
-    }
-}
 
-/**
- * Extracts the tweet URL from a mention element
- * @param page The Playwright page
- * @param mention The mention element
- * @returns The full tweet URL or null if not found
- */
-async function extractTweetUrl(page: Page, mention: Locator): Promise<string | null> {
-    try {
-        // Find the tweet's permalink element
-        const timestampLink = mention.locator('a[href*="/status/"]').first();
-        if (!await timestampLink.isVisible({ timeout: 2000 }).catch(() => false)) {
-            logger.warn('[🧵 Extract] Could not find timestamp link in mention');
-            return null;
+        if (!articleWithPlayButton) {
+            const errMsg = `Could not find article with Play button for tweet ${mentionInfo.tweetId}.`;
+            logger.warn(`[🚀 Initiate] ${errMsg}`);
+            await postReplyToTweet(page, mentionInfo.tweetUrl,
+                `@${mentionInfo.username} Sorry, I couldn't find a playable Twitter Space associated with this tweet.`);
+            throw new Error(errMsg); // Throw to signal failure
         }
-        
-        // Get the href attribute
-        const href = await timestampLink.getAttribute('href');
-        if (!href) {
-            logger.warn('[🧵 Extract] Timestamp link has no href attribute');
-            return null;
-        }
-        
-        // Convert to full URL if it's a relative URL
-        const fullUrl = href.startsWith('http') ? href : `https://twitter.com${href}`;
-        logger.debug(`[🧵 Extract] Extracted tweet URL: ${fullUrl}`);
-        return fullUrl;
-    } catch (error) {
-        logger.error('[🧵 Extract] Error extracting tweet URL:', error);
-        return null;
-    }
-}
+        logger.info(`[🚀 Initiate] Found article containing Play button.`);
 
-/**
- * Extracts the username from a mention element
- * @param mention The mention element
- * @returns The username (without @) or null if not found
- */
-async function extractUsername(mention: Locator): Promise<string | null> {
-    try {
-        // Find the username element, which is usually in a group with role="link"
-        const usernameElement = mention.locator('div[data-testid="User-Name"] span').filter({ hasText: /@\w+/ }).first();
-        
-        if (!await usernameElement.isVisible({ timeout: 2000 }).catch(() => false)) {
-            logger.warn('[🧵 Extract] Could not find username element in mention');
-            return null;
-        }
-        
-        // Get the text content and extract username
-        const usernameText = await usernameElement.textContent();
-        if (!usernameText) {
-            logger.warn('[🧵 Extract] Username element has no text content');
-            return null;
-        }
-        
-        // Extract username without @ symbol
-        const username = usernameText.trim().replace('@', '');
-        logger.debug(`[🧵 Extract] Extracted username: ${username}`);
-        return username;
     } catch (error) {
-        logger.error('[🧵 Extract] Error extracting username:', error);
-        return null;
-    }
-}
-
-/**
- * Extracts the tweet ID from a tweet URL
- * @param tweetUrl The full tweet URL
- * @returns The tweet ID or null if not found
- */
-async function extractTweetId(tweetUrl: string): Promise<string | null> {
-    try {
-        // Use regex to extract the tweet ID from URL
-        const tweetIdRegex = /\/status\/(\d+)/;
-        const match = tweetUrl.match(tweetIdRegex);
-        
-        if (!match || !match[1]) {
-            logger.warn(`[🧵 Extract] Could not extract tweet ID from URL: ${tweetUrl}`);
-            return null;
+        logger.error(`[🚀 Initiate] Error during navigation/article finding for ${mentionInfo.tweetId}:`, error);
+        // Try to post error reply if possible (and if it wasn't the error above)
+        if (!(error instanceof Error && error.message.includes('Playable Space article not found'))) {
+            try {
+                 await postReplyToTweet(page, mentionInfo.tweetUrl,
+                    `@${mentionInfo.username} Sorry, I had trouble loading the tweet to find the Space.`);
+            } catch (replyError) { /* Ignore */ }
         }
-        
-        logger.debug(`[🧵 Extract] Extracted tweet ID: ${match[1]}`);
-        return match[1];
-    } catch (error) {
-        logger.error('[🧵 Extract] Error extracting tweet ID:', error);
-        return null;
+        throw error; // Re-throw original error
     }
-}
-
-/**
- * Processes a single mention.
- * @param page The Playwright page.
- * @param mention The mention element to process.
- * @param mentionIndex The index of the mention for logging.
- * @returns True if the mention was processed successfully, false otherwise.
- */
-async function processMention(
-    page: Page,
-    mention: Locator,
-    mentionIndex: number
-): Promise<boolean> {
-    logger.info(`[🧵 Mention] Processing mention ${mentionIndex}...`);
     
+    // 2. Extract Title (Best Effort)
+    let spaceTitle: string | null = null;
     try {
-        // Extract tweet URL and username early for potential replies
-        const tweetUrl = await extractTweetUrl(page, mention);
-        if (!tweetUrl) {
-            logger.warn(`[🧵 Mention] Could not extract tweet URL for mention ${mentionIndex}.`);
-            return false;
-        }
-        logger.info(`[🧵 Mention] Found tweet URL: ${tweetUrl}`);
-
-        const username = await extractUsername(mention);
-        if (!username) {
-            logger.warn(`[🧵 Mention] Could not extract username for mention ${mentionIndex}.`);
-            return false;
-        }
-        logger.info(`[🧵 Mention] Found username: ${username}`);
-
-        // Extract text from the mention
-        const mentionText = await mention.locator('div[data-testid="tweetText"]').textContent();
-        if (!mentionText) {
-            logger.warn(`[🧵 Mention] Could not extract text from mention ${mentionIndex}.`);
-            return false;
-        }
-        logger.info(`[🧵 Mention] Found mention text: ${mentionText}`);
+        logger.debug(`[🚀 Initiate] Attempting to extract Space title from article...`);
+        // Try common selectors for Space titles within cards/articles
+        const titleSelectors = [
+            // Specific testids if available
+            'div[data-testid="card.layoutLarge.title"] span', 
+            'div[data-testid*="AudioSpaceCardHeader"] span[aria-hidden="true"]', // Sometimes title is here
+            // More generic: A prominent span near the play button (might need refinement)
+            'div > span[dir="auto"]:not([aria-hidden="true"])' // Look for direct child span
+        ];
         
-        // First try to extract Space URL from mention text
-        let spaceUrl = extractSpaceUrl(mentionText);
-        
-        // If no Space URL in mention text, try to find it in the tweet thread
-    if (!spaceUrl) {
-            logger.info(`[🧵 Mention] No Space URL found in mention text. Will check the tweet thread for ${tweetUrl}.`);
-            spaceUrl = await findSpaceUrlInTweetThread(page, tweetUrl);
-            // Add clear logging after checking the thread
-            if (spaceUrl) {
-                logger.info(`[🧵 Mention] Found Space URL in thread after check: ${spaceUrl}`);
+        for (const selector of titleSelectors) {
+            logger.debug(`[🚀 Initiate] Trying title selector: ${selector}`);
+            const titleElement = articleWithPlayButton.locator(selector).first();
+            if (await titleElement.isVisible({ timeout: 500 })) {
+                const potentialTitle = await titleElement.textContent({ timeout: 1000 });
+                 if (potentialTitle && potentialTitle.trim().length > 0) {
+                    spaceTitle = potentialTitle.trim().substring(0, 100); // Limit length
+                    logger.info(`[🚀 Initiate] Extracted potential Space title using selector ${selector}: "${spaceTitle}"`);
+                    break; // Stop trying selectors once found
+                } else {
+                    logger.debug(`[🚀 Initiate] Selector ${selector} found element but text was empty.`);
+                }
             } else {
-                logger.warn(`[🧵 Mention] Still no Space URL found after checking thread for tweet ${tweetUrl}.`);
+                 logger.debug(`[🚀 Initiate] Selector ${selector} did not find visible element.`);
             }
         }
-        
-        if (!spaceUrl) {
-            logger.warn(`[🧵 Mention] No Space URL found in mention ${mentionIndex} or its thread. Skipping processing for this mention.`);
-            // Post a reply indicating no Space was found in this specific mention
-            await postReplyToTweet(page, tweetUrl, 
-                `@${username} Sorry, I couldn't find a Twitter Space link in this specific tweet or its recent thread.` // Use extracted username
-            );
-            return false; // Indicate failure to find URL for this mention
+
+        if (!spaceTitle) {
+             logger.warn('[🚀 Initiate] Could not extract potential Space title using known selectors.');
         }
-        
-        logger.info(`[🧵 Mention] Found Space URL: ${spaceUrl} associated with mention tweet ${tweetUrl}`);
-        
-        // Add mention to the queue for processing
-        const tweetId = (await extractTweetId(tweetUrl)) || `unknown_${Date.now()}`; // Provide a fallback ID
-        const mentionInfo: MentionInfo = {
-            tweetId,
-            tweetUrl,
-            username, // Already extracted
-            text: mentionText
-        };
-        
-        mentionQueue.push(mentionInfo);
-        logger.info(`[⚙️ Queue] Mention ${mentionInfo.tweetId} added. Queue size: ${mentionQueue.length}`);
-        
-        // Trigger the queue worker if it's not already running
-        if (!isProcessingQueue) {
-            runProcessingQueue(page).catch(err => {
-                logger.error('[🧵 Mention] Unhandled error in queue worker execution:', err);
-                isProcessingQueue = false; // Ensure flag is reset on error
-            });
+
+    } catch (titleError) {
+        logger.warn('[🚀 Initiate] Error during Space title extraction:', titleError);
+    }
+    // logger.info(`[🚀 Initiate] Potential Space title: "${spaceTitle || 'Not found'}"`); // Logged inside loop now
+
+    // 3. Click Play and capture M3U8
+    let m3u8Url: string | null = null;
+    try {
+        logger.info(`[🚀 Initiate] Clicking Play button and capturing M3U8...`);
+        m3u8Url = await clickPlayButtonAndCaptureM3u8(page, articleWithPlayButton);
+        if (!m3u8Url) {
+             const errMsg = `Failed to capture M3U8 URL for tweet ${mentionInfo.tweetId}.`;
+             logger.error(`[🚀 Initiate] ${errMsg}`);
+            await postReplyToTweet(page, mentionInfo.tweetUrl,
+                `@${mentionInfo.username} Sorry, I could find the Space but couldn't get its audio stream. It might be finished or protected.`);
+             throw new Error(errMsg);
         }
-        
-        return true;
+        logger.info(`[🚀 Initiate] Captured M3U8 URL.`);
     } catch (error) {
-        logger.error(`[🧵 Mention] Error processing mention ${mentionIndex}:`, error);
-        return false;
+         logger.error(`[🚀 Initiate] Error during M3U8 capture for ${mentionInfo.tweetId}:`, error);
+         try {
+             await postReplyToTweet(page, mentionInfo.tweetUrl,
+                `@${mentionInfo.username} Sorry, I encountered an error trying to access the Space audio.`);
+         } catch(replyError) { /* Ignore */ }
+         throw error;
+    }
+
+    // 4. Extract Space ID (Best Effort)
+    const spaceId = m3u8Url.match(/([a-zA-Z0-9_-]+)\/(?:chunk|playlist)/)?.[1] || `space_${mentionInfo.tweetId || uuidv4()}`;
+    logger.info(`[🚀 Initiate] Using Space ID: ${spaceId}`);
+
+    // 5. Post preliminary acknowledgement reply
+    try {
+        logger.info(`[🚀 Initiate] Posting preliminary acknowledgement reply...`);
+        const ackMessage = `@${mentionInfo.username} Received! I've started processing this Space into ${targetLanguageName}. Please check back here in ~10-15 minutes for the translated link.`;
+        const ackSuccess = await postReplyToTweet(page, mentionInfo.tweetUrl, ackMessage);
+        if (!ackSuccess) {
+            logger.warn(`[🚀 Initiate] Failed to post acknowledgement reply (non-critical).`);
+        }
+    } catch (ackError) {
+        logger.warn(`[🚀 Initiate] Error posting acknowledgement reply (non-critical):`, ackError);
+    }
+
+    logger.info(`[🚀 Initiate] Browser phase complete for ${mentionInfo.tweetId}. Returning data.`);
+    return {
+        m3u8Url,
+        spaceId,
+        spaceTitle,
+        mentionInfo, // Include original mention info
+        targetLanguageCode,
+        targetLanguageName,
+    };
+}
+
+// --- NEW FUNCTION: Backend Processing Function (No Browser) --- 
+/**
+ * Handles backend processing: download, upload, SpeechLab tasks.
+ * Does NOT interact with the browser page.
+ */
+async function performBackendProcessing(initData: InitiationResult): Promise<BackendResult> {
+    const { m3u8Url, spaceId, spaceTitle, targetLanguageCode, mentionInfo } = initData;
+    logger.info(`[⚙️ Backend] Starting backend processing for Space ID: ${spaceId}, Lang: ${targetLanguageCode}`);
+
+    try {
+        // 1. Download audio and upload to S3
+        logger.info(`[⚙️ Backend] Downloading/uploading audio for ${spaceId}...`);
+        const audioUploadResult = await downloadAndUploadAudio(m3u8Url, spaceId);
+        if (!audioUploadResult) {
+            throw new Error('Failed to download/upload Space audio');
+        }
+        logger.info(`[⚙️ Backend] Audio uploaded to S3: ${audioUploadResult}`);
+
+        // 2. Create SpeechLab project
+        const projectName = spaceTitle || `Twitter Space ${spaceId}`; 
+        const thirdPartyID = `${spaceId}-${targetLanguageCode}`;
+        logger.info(`[⚙️ Backend] Creating SpeechLab project: Name="${projectName}", Lang=${targetLanguageCode}, 3rdPartyID=${thirdPartyID}`);
+        const projectId = await createDubbingProject(
+            audioUploadResult, 
+            projectName, 
+            targetLanguageCode, 
+            thirdPartyID
+        );
+        if (!projectId) {
+            throw new Error('Failed to create SpeechLab project');
+        }
+        logger.info(`[⚙️ Backend] SpeechLab project created: ${projectId} (using thirdPartyID ${thirdPartyID})`);
+
+        // 3. Wait for project completion
+        logger.info(`[⚙️ Backend] Waiting for SpeechLab project completion (thirdPartyID: ${thirdPartyID})...`);
+        const projectCompleted = await waitForProjectCompletion(thirdPartyID); 
+        if (!projectCompleted) {
+            throw new Error(`SpeechLab project ${thirdPartyID} failed or timed out`);
+        }
+        logger.info(`[⚙️ Backend] SpeechLab project ${thirdPartyID} completed successfully.`);
+
+        // 4. Generate sharing link
+        logger.info(`[⚙️ Backend] Generating sharing link for project ID: ${projectId}...`);
+        const sharingLink = await generateSharingLink(projectId);
+        if (!sharingLink) {
+             throw new Error(`Failed to generate sharing link for project ${projectId}`);
+        }
+        logger.info(`[⚙️ Backend] Sharing link generated: ${sharingLink}`);
+
+        // Return success with link and project ID
+        return { success: true, sharingLink, projectId };
+
+    } catch (error: any) {
+        logger.error(`[⚙️ Backend] Error during backend processing for ${spaceId}:`, error);
+        return { success: false, error: error.message || 'Unknown backend error' };
     }
 }
 
+// --- Queues & Workers --- 
 /**
- * Processes a mention request from the queue.
- * @param mentionInfo Information about the mention to process
- * @param page The Playwright page
+ * Adds a completed backend job to the final reply queue and triggers the worker.
  */
-async function processMentionRequest(mentionInfo: MentionInfo, page: Page): Promise<void> {
-    logger.info(`[🎬 Processing] Starting to process mention from ${mentionInfo.username} (tweet ID: ${mentionInfo.tweetId})`);
+function addToFinalReplyQueue(mentionInfo: MentionInfo, backendResult: BackendResult) {
+    logger.info(`[↩️ Reply Queue] Adding result for ${mentionInfo.tweetId} to reply queue. Success: ${backendResult.success}`);
+    finalReplyQueue.push({ mentionInfo, backendResult });
+    // Triggering is handled by the main browser task loop
+}
+
+/**
+ * Processes the browser initiation steps for mentions (runs one at a time).
+ */
+async function runInitiationQueue(page: Page): Promise<void> {
+    if (isInitiatingProcessing || mentionQueue.length === 0) {
+        // logger.debug('[🚀 Initiate Queue] Worker skipped (already running or queue empty).')
+        return; // Already running or queue empty
+    }
+    if (!page || page.isClosed()) {
+        logger.error('[🚀 Initiate Queue] Page is closed! Cannot process initiation queue.');
+        isInitiatingProcessing = false;
+        return;
+    }
+
+    isInitiatingProcessing = true;
+    logger.info(`[🚀 Initiate Queue] Starting worker. Queue size: ${mentionQueue.length}`);
+
+    const mentionToProcess = mentionQueue.shift(); 
+    if (!mentionToProcess) {
+        isInitiatingProcessing = false;
+        logger.warn('[🚀 Initiate Queue] Worker started but queue was empty.');
+        return; // Should not happen, but safety check
+    }
+
+    logger.info(`[🚀 Initiate Queue] Processing mention ${mentionToProcess.tweetId}. Remaining: ${mentionQueue.length}`);
     
     try {
-        // Extract space URL from mention text
-        let spaceUrl = extractSpaceUrl(mentionInfo.text);
+        // Perform browser initiation steps
+        const initData = await initiateProcessing(mentionToProcess, page);
         
-        if (!spaceUrl) {
-            logger.info(`[🎬 Processing] No Space URL found in mention text. Checking original tweet thread...`);
-            
-            // Navigate to the tweet to check the thread
-            logger.info(`[🎬 Processing] Navigating to tweet: ${mentionInfo.tweetUrl}`);
-            await page.goto(mentionInfo.tweetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-            await page.waitForTimeout(3000);
-            
-            // Take a screenshot for debugging
-            const screenshotsDir = path.join(process.cwd(), 'debug-screenshots');
-            await page.screenshot({ path: path.join(screenshotsDir, `mention-thread-${mentionInfo.tweetId}.png`) });
-            
-            // Check if we're looking at a reply thread, and if so look for Space URL in the conversation
-            // First check the original tweet in the thread
-            logger.info(`[🎬 Processing] Checking for Space URL in the tweet thread...`);
-            
-            // Look for all tweets in the thread, including parent tweets
-            const tweets = await page.locator('article[data-testid="tweet"]').all();
-            logger.info(`[🎬 Processing] Found ${tweets.length} tweets in the thread`);
-            
-            // Check each tweet for a Space URL, starting from the oldest (top) tweets
-            for (const tweet of tweets) {
-                // Extract tweet text
-                const tweetTextElement = await tweet.locator('div[data-testid="tweetText"]').first();
-                if (!tweetTextElement) continue;
-                
-                const tweetText = await tweetTextElement.innerText().catch(() => "");
-                logger.info(`[🎬 Processing] Checking tweet text: "${tweetText.substring(0, 50)}..."`);
-                
-                // Check for Space URL in this tweet
-                const foundSpaceUrl = extractSpaceUrl(tweetText);
-                if (foundSpaceUrl) {
-                    logger.info(`[🎬 Processing] Found Space URL in thread: ${foundSpaceUrl}`);
-                    spaceUrl = foundSpaceUrl;
-                    break;
-                }
-                
-                // Also check for Space cards in the tweet
-                const spaceCards = await tweet.locator('div[data-testid="card.wrapper"] a[href*="/spaces/"]').all();
-                if (spaceCards.length > 0) {
-                    for (const card of spaceCards) {
-                        const href = await card.getAttribute('href');
-                        if (href && href.includes('/spaces/')) {
-                            logger.info(`[🎬 Processing] Found Space card in thread: ${href}`);
-                            spaceUrl = href;
-                            break;
-                        }
-                    }
-                }
-                
-                if (spaceUrl) break; // Exit the loop if we found a Space URL
-            }
-        }
+        // If initiation is successful, start backend processing asynchronously
+        logger.info(`[🚀 Initiate Queue] Initiation successful for ${mentionToProcess.tweetId}. Starting background backend task.`);
         
-        if (!spaceUrl) {
-            logger.warn(`[🎬 Processing] No Space URL found in mention or thread. Replying with error message.`);
-            await postReplyToTweet(page, mentionInfo.tweetUrl, 
-                `@${mentionInfo.username} I'm sorry but there is no X space in this tweet. Please tag me in a tweet that contains a Space URL.`);
-        return;
+        // No 'await' here - let it run in the background
+        performBackendProcessing(initData)
+            .then(backendResult => {
+                addToFinalReplyQueue(mentionToProcess, backendResult);
+            })
+            .catch(backendError => {
+                logger.error(`[💥 Backend ERROR] Uncaught error in background processing for ${mentionToProcess.tweetId}:`, backendError);
+                // Add a failure result to the reply queue so we can notify the user
+                addToFinalReplyQueue(mentionToProcess, { success: false, error: 'Backend processing failed unexpectedly' });
+            });
+            
+    } catch (initError) {
+        // Errors during initiateProcessing (including posting error replies) are logged within the function
+        logger.error(`[🚀 Initiate Queue] Initiation phase failed explicitly for ${mentionToProcess.tweetId}. Error should already be logged.`);
+        // Do not re-queue or add to reply queue if initiation failed, as an error reply was likely attempted.
     }
 
-        logger.info(`[🎬 Processing] Found Space URL: ${spaceUrl}`);
-        
-        // Extract space ID from URL
-    const spaceId = extractSpaceId(spaceUrl);
-    if (!spaceId) {
-            logger.warn(`[🎬 Processing] Could not extract Space ID from URL: ${spaceUrl}`);
-            await postReplyToTweet(page, mentionInfo.tweetUrl, 
-                `@${mentionInfo.username} I couldn't identify a valid Space ID in that URL. Please make sure you're sharing a valid X Space.`);
-        return;
-    }
-        logger.info(`[🎬 Processing] Space ID: ${spaceId}`);
-        
-        // Navigate to the space page to get the m3u8 URL
-        logger.info(`[🎬 Processing] Navigating to Space page to get audio stream...`);
-        const m3u8Result = await getM3u8ForSpacePage(spaceUrl, page);
-        
-        if (!m3u8Result || !m3u8Result.m3u8Url) {
-            logger.warn(`[🎬 Processing] Could not get m3u8 URL from Space page.`);
-            await postReplyToTweet(page, mentionInfo.tweetUrl, 
-                `Sorry @${mentionInfo.username}, I couldn't access that Space's audio stream. It might be ended or private.`);
-            return;
-        }
-        logger.info(`[🎬 Processing] Got m3u8 URL for stream`);
-        
-        // Download audio from the m3u8 URL and upload to S3
-        logger.info(`[🎬 Processing] Downloading and uploading Space audio...`);
-        const audioUploadResult = await downloadAndUploadAudio(m3u8Result.m3u8Url, spaceId);
-        
-        if (!audioUploadResult) {
-            logger.warn(`[🎬 Processing] Failed to download/upload Space audio.`);
-            await postReplyToTweet(page, mentionInfo.tweetUrl, 
-                `Sorry @${mentionInfo.username}, I couldn't download the Space's audio. It might be corrupted or unavailable.`);
-            return;
-        }
-        logger.info(`[🎬 Processing] Audio uploaded to S3: ${audioUploadResult}`);
-        
-        // Create a dubbing project in SpeechLab
-        logger.info(`[🎬 Processing] Creating SpeechLab dubbing project...`);
-        const projectCreationResult = await createDubbingProject(audioUploadResult, spaceId);
-        
-        if (!projectCreationResult) {
-            logger.warn(`[🎬 Processing] Failed to create SpeechLab project.`);
-            await postReplyToTweet(page, mentionInfo.tweetUrl, 
-                `Sorry @${mentionInfo.username}, I couldn't create a translation project for this Space. Please try again later.`);
-            return;
-        }
-        logger.info(`[🎬 Processing] SpeechLab project created: ${projectCreationResult}`);
-        
-        // Wait for project processing to complete
-        logger.info(`[🎬 Processing] Waiting for SpeechLab project to complete...`);
-        const projectCompleted = await waitForProjectCompletion(projectCreationResult);
-        
-        if (!projectCompleted) {
-            logger.warn(`[🎬 Processing] SpeechLab project failed to complete.`);
-            await postReplyToTweet(page, mentionInfo.tweetUrl, 
-                `Sorry @${mentionInfo.username}, the translation project for this Space failed to process. Please try again later.`);
-            return;
-        }
-        logger.info(`[🎬 Processing] SpeechLab project completed successfully`);
-        
-        // Generate sharing link
-        logger.info(`[🎬 Processing] Generating sharing link...`);
-        const sharingLink = await generateSharingLink(projectCreationResult);
-        
-        if (!sharingLink) {
-            logger.warn(`[🎬 Processing] Failed to generate sharing link.`);
-            await postReplyToTweet(page, mentionInfo.tweetUrl, 
-                `Sorry @${mentionInfo.username}, I couldn't generate a link to the translated Space. Please try again later.`);
-            return;
-        }
-        logger.info(`[🎬 Processing] Sharing link generated: ${sharingLink}`);
-        
-        // Post reply with the sharing link
-        logger.info(`[🎬 Processing] Posting reply with sharing link...`);
-        // Since we don't have access to audioUploadResult.durationMs anymore, we'll estimate 10 minutes as a fallback
-        // This is a simplification and might need to be addressed in a more robust way
-        const minutesDuration = 10; // Default to 10 minutes if unknown
-        await postReplyToTweet(page, mentionInfo.tweetUrl, 
-            `@${mentionInfo.username} I've translated this ${minutesDuration}-minute Space to English! Listen here: ${sharingLink}`);
-        
-        logger.info(`[🎬 Processing] Successfully completed processing for tweet ${mentionInfo.tweetId}`);
-    } catch (error) {
-        logger.error(`[🎬 Processing] Error processing mention:`, error);
-        try {
-            // Try to post an error reply
-            await postReplyToTweet(page, mentionInfo.tweetUrl, 
-                `Sorry @${mentionInfo.username}, I encountered an error processing this Space. Please try again later.`);
-        } catch (replyError) {
-            logger.error(`[🎬 Processing] Failed to post error reply:`, replyError);
-        }
-    }
+    logger.info(`[🚀 Initiate Queue] Finished browser initiation work for ${mentionToProcess.tweetId}.`);
+    isInitiatingProcessing = false; // Free up the flag for the next check
 }
 
-// --- Queue Worker --- 
 /**
- * Processes mentions from the queue one by one sequentially.
+ * Processes the final reply queue (runs one at a time).
  */
-async function runProcessingQueue(page: Page): Promise<void> {
-    if (isProcessingQueue) {
-        logger.debug('[⚙️ Queue] Processing already in progress. Skipping new worker start.');
-        return; // Worker already running
+async function runFinalReplyQueue(page: Page): Promise<void> {
+     if (isPostingFinalReply || finalReplyQueue.length === 0) {
+        // logger.debug('[↩️ Reply Queue] Worker skipped (already running or queue empty).');
+        return; // Already running or queue empty
+    }
+        if (!page || page.isClosed()) {
+        logger.error('[↩️ Reply Queue] Page is closed! Cannot process reply queue.');
+        isPostingFinalReply = false;
+        return;
     }
 
-    isProcessingQueue = true;
-    logger.info(`[⚙️ Queue] Starting processing worker. Queue size: ${mentionQueue.length}`);
+    isPostingFinalReply = true;
+    logger.info(`[↩️ Reply Queue] Starting worker. Queue size: ${finalReplyQueue.length}`);
 
-    while (mentionQueue.length > 0) {
-        const mentionToProcess = mentionQueue.shift(); // Get the next mention (FIFO)
-        if (!mentionToProcess) continue; // Should not happen, but safety check
+    const replyData = finalReplyQueue.shift(); 
+    if (!replyData) {
+        isPostingFinalReply = false;
+        logger.warn('[↩️ Reply Queue] Worker started but queue was empty.');
+        return; // Should not happen
+    }
+    
+    const { mentionInfo, backendResult } = replyData;
+    logger.info(`[↩️ Reply Queue] Processing final reply for ${mentionInfo.tweetId}. Backend Success: ${backendResult.success}`);
 
-        logger.info(`[⚙️ Queue] Processing mention ${mentionToProcess.tweetId} from queue. Remaining: ${mentionQueue.length}`);
-        
-        // Ensure page is usable before processing
-        if (!page || page.isClosed()) {
-            logger.error(`[⚙️ Queue] Page is closed! Cannot process mention ${mentionToProcess.tweetId}. Stopping worker.`);
-            mentionQueue.unshift(mentionToProcess); // Put it back for potential later retry if daemon recovers?
-            isProcessingQueue = false;
-            return; // Stop the worker if page dies
+    let finalMessage = '';
+    if (backendResult.success && backendResult.sharingLink) {
+        // Re-detect language for the message
+        const languageName = getLanguageName(detectLanguage(mentionInfo.text)); 
+        const estimatedDurationMinutes = 10; // Still using estimate
+        finalMessage = `@${mentionInfo.username} I've translated this ${estimatedDurationMinutes}-minute Space to ${languageName}! Listen here: ${backendResult.sharingLink}`;
+    } else {
+        // Use specific backend error or a generic one
+        const errorReason = backendResult.error || 'processing failed';
+         finalMessage = `@${mentionInfo.username} Sorry, the translation project for this Space failed (${errorReason}). Please try again later.`;
         }
 
         try {
-            await processMentionRequest(mentionToProcess, page); // Process sequentially
-        } catch (error) {
-            // Log error from processMentionRequest itself, but continue the queue
-            logger.error(`[⚙️ Queue] Error processing mention ${mentionToProcess.tweetId} from queue worker:`, error);
+        logger.info(`[↩️ Reply Queue] Posting final reply to ${mentionInfo.tweetUrl}...`);
+        const postSuccess = await postReplyToTweet(page, mentionInfo.tweetUrl, finalMessage);
+        if (postSuccess) {
+            logger.info(`[↩️ Reply Queue] Successfully posted final reply for ${mentionInfo.tweetId}.`);
+        } else {
+             logger.warn(`[↩️ Reply Queue] Failed to post final reply for ${mentionInfo.tweetId} (postReplyToTweet returned false).`);
+             // Optionally re-queue?? For now, we just log it.
+             // finalReplyQueue.unshift(replyData); 
         }
-        logger.info(`[⚙️ Queue] Finished processing mention ${mentionToProcess.tweetId}.`);
-         // Optional: Add a small delay between processing tasks?
-         // await page.waitForTimeout(1000);
+    } catch (replyError) {
+        logger.error(`[↩️ Reply Queue] CRITICAL: Error posting final reply for ${mentionInfo.tweetId}:`, replyError);
+        // Consider re-queueing here as well?
+        // finalReplyQueue.unshift(replyData); 
     }
 
-    isProcessingQueue = false;
-    logger.info('[⚙️ Queue] Processing worker finished (queue empty).');
+    logger.info(`[↩️ Reply Queue] Finished reply work for ${mentionInfo.tweetId}.`);
+    isPostingFinalReply = false; // Free up the flag
 }
-// --- END Queue Worker ---
+
+// --- Trigger Functions (Called by main loop to avoid deep recursion) ---
+function triggerInitiationWorker(page: Page | null) {
+    if (page && !page.isClosed() && !isInitiatingProcessing && mentionQueue.length > 0) {
+        logger.debug('[🚀 Initiate Queue Trigger] Triggering check...');
+        runInitiationQueue(page).catch(err => {
+             logger.error('[🚀 Initiate Queue Trigger] Unhandled error in worker execution:', err);
+             isInitiatingProcessing = false; // Reset flag on error
+        });
+    } else {
+        // logger.debug('[🚀 Initiate Queue Trigger] Worker not triggered (busy, empty, or page closed).');
+    }
+}
+
+function triggerFinalReplyWorker(page: Page | null) {
+     if (page && !page.isClosed() && !isPostingFinalReply && finalReplyQueue.length > 0) {
+         logger.debug('[↩️ Reply Queue Trigger] Triggering check...');
+         runFinalReplyQueue(page).catch(err => {
+             logger.error('[↩️ Reply Queue Trigger] Unhandled error in worker execution:', err);
+             isPostingFinalReply = false; // Reset flag on error
+         });
+    } else {
+        // logger.debug('[↩️ Reply Queue Trigger] Reply worker not triggered (busy, empty, or page closed).');
+    }
+}
 
 // --- Main Daemon Logic ---
 async function main() {
@@ -930,13 +828,16 @@ async function main() {
     let context: BrowserContext | null = null;
     let page: Page | null = null;
     let processedMentions: Set<string>;
-    let intervalId: NodeJS.Timeout | null = null; // Keep track of interval
+    let mainLoopIntervalId: NodeJS.Timeout | null = null; // Keep track of main polling interval
+    let browserTaskIntervalId: NodeJS.Timeout | null = null; // Keep track of browser task interval
 
     // Graceful shutdown handler
     const shutdown = async (signal: string) => {
         logger.info(`[😈 Daemon] Received ${signal}. Shutting down gracefully...`);
-        if (intervalId) clearInterval(intervalId);
-        intervalId = null; // Prevent further polling calls
+        if (mainLoopIntervalId) clearInterval(mainLoopIntervalId);
+        mainLoopIntervalId = null; // Prevent further polling calls
+        if (browserTaskIntervalId) clearInterval(browserTaskIntervalId);
+        browserTaskIntervalId = null; // Prevent further browser task calls
 
         try {
             if (page && !page.isClosed()) {
@@ -1054,125 +955,102 @@ async function main() {
                 throw new Error(`Twitter login failed after ${MAX_LOGIN_ATTEMPTS} attempts. Daemon cannot continue.`);
         }
         }
-        
+
         logger.info('[😈 Daemon] Twitter login confirmed. Ready to monitor mentions.');
 
+        // --- Main Polling Loop --- 
         logger.info(`[😈 Daemon] Starting mention polling loop (Interval: ${POLLING_INTERVAL_MS / 1000}s)`);
-
         const pollMentions = async () => {
-            // Check if shutdown has started
-            if (intervalId === null) {
-                logger.info('[😈 Daemon] Shutdown initiated, skipping poll cycle.');
+             if (!page || page.isClosed()) { 
+                 logger.error('[😈 Daemon Polling] Page closed. Stopping polling loop.');
+                 if (mainLoopIntervalId) clearInterval(mainLoopIntervalId);
+                 mainLoopIntervalId = null;
+                 if (browserTaskIntervalId) clearInterval(browserTaskIntervalId);
+                 browserTaskIntervalId = null;
+                 await shutdown('Polling Page Closed');
                 return; 
-            }
-             if (!page || page.isClosed()) {
-                 logger.error('[😈 Daemon] Page is closed or null. Cannot poll. Attempting recovery may be needed or shutdown required.');
-                // Consider stopping the interval or attempting recovery
-                 if (intervalId) clearInterval(intervalId); 
-                 intervalId = null;
-                 throw new Error('Polling page closed unexpectedly'); // Let main catch block handle cleanup
              }
-            logger.info('[😈 Daemon] Polling for new mentions...');
+            logger.info('[😈 Daemon Polling] Polling for new mentions...');
             try {
-                // Use the page that should already be logged in
                 const mentions = await scrapeMentions(page);
-                logger.info(`[😈 Daemon] Scraped ${mentions.length} mentions from page.`);
-
+                logger.info(`[😈 Daemon Polling] Scraped ${mentions.length} mentions.`);
                 let newMentionsFound = 0;
                 for (const mention of mentions) {
                     if (!processedMentions.has(mention.tweetId)) {
                         newMentionsFound++;
-                        logger.info(`[🔔 Mention] Found new mention: ID=${mention.tweetId}, User=${mention.username}, Text="${mention.text.substring(0, 50)}..."`);
-                        
-                        const spaceUrl = extractSpaceUrl(mention.text);
-                        
-                        if (spaceUrl) {
-                            logger.info(`[🔔 Mention]   Extracted Space URL: ${spaceUrl}. Adding to processing queue.`);
-                            // Trigger the processing workflow (asynchronously)
-                            // Make sure the page object is valid before passing
-                             // ADD TO QUEUE instead of calling directly
+                        logger.info(`[🔔 Mention] Found new mention: ID=${mention.tweetId}, User=${mention.username}`);
                              mentionQueue.push(mention);
-                             logger.info(`[⚙️ Queue] Mention ${mention.tweetId} added. Queue size: ${mentionQueue.length}`);
-                             // Trigger the queue worker if it's not already running
-                             if (page && !page.isClosed() && !isProcessingQueue) {
-                                 runProcessingQueue(page).catch(err => {
-                                      logger.error('[😈 Daemon] Unhandled error in queue worker execution:', err);
-                                      isProcessingQueue = false; // Ensure flag is reset on error
-                                  }); 
-                             } else if (!page || page.isClosed()) {
-                                 logger.error('[😈 Daemon] Page is closed, cannot start queue worker.');
-                             }
-                             
-                             // Mark as processed immediately only if processing was *started*
-                             // Decision: Mark as processed *after* successful processing? Or when added to queue?
-                             // Let's mark when added to queue to prevent retries if daemon restarts.
                              await markMentionAsProcessed(mention.tweetId, processedMentions);
-                        } else {
-                            logger.info(`[🔔 Mention]   No Twitter Space URL found in mention text. Adding to queue to check thread and potentially reply.`);
-                            // Instead of immediately marking as processed, add to queue to check thread
-                            mentionQueue.push(mention);
-                            logger.info(`[⚙️ Queue] Mention ${mention.tweetId} without Space URL added to queue for thread checking. Queue size: ${mentionQueue.length}`);
-                            
-                            // Trigger the queue worker if it's not already running
-                            if (page && !page.isClosed() && !isProcessingQueue) {
-                                runProcessingQueue(page).catch(err => {
-                                    logger.error('[😈 Daemon] Unhandled error in queue worker execution:', err);
-                                    isProcessingQueue = false; // Ensure flag is reset on error
-                                }); 
-                            } else if (!page || page.isClosed()) {
-                                logger.error('[😈 Daemon] Page is closed, cannot start queue worker.');
-                            }
-                            
-                            // Mark as processed after adding to queue
-                             await markMentionAsProcessed(mention.tweetId, processedMentions);
-                        }
-                    } else {
-                        // logger.debug(`[🔔 Mention] Skipping already processed mention: ID=${mention.tweetId}`);
-                    }
+                        logger.info(`[⚙️ Queue] Mention ${mention.tweetId} added to initiation queue. Queue size: ${mentionQueue.length}`);
+                    } 
                 }
-                 if (newMentionsFound === 0) {
-                    logger.info('[😈 Daemon] No new mentions found in this poll.');
-                }
-
+                 if (newMentionsFound > 0) {
+                    logger.info(`[😈 Daemon Polling] Added ${newMentionsFound} new mentions to the queue.`);
+                    // Trigger initiation worker check immediately after finding new mentions
+                    // The browser task loop will handle actually running it if idle
+                    // triggerInitiationWorker(page); 
+                 } else {
+                      logger.info('[😈 Daemon Polling] No new mentions found.');
+                 }
             } catch (error) {
-                logger.error('[😈 Daemon] Error during mention polling cycle:', error);
-                 if (page?.isClosed()) {
-                     logger.error('[😈 Daemon] Page closed during polling error. Stopping interval.');
-                     if (intervalId) clearInterval(intervalId); 
-                     intervalId = null;
-                     throw error; // Let main catch handle shutdown
-                 } else if (page) {
-                     logger.warn('[😈 Daemon] Attempting to recover page state after polling error...');
-                     try {
-                        // Use domcontentloaded instead of networkidle and shorter timeout
-                        await page.goto('https://twitter.com/home', { waitUntil: 'domcontentloaded', timeout: 15000 });
-                         logger.info('[😈 Daemon] Recovered page state by navigating home.');
-                     } catch (recoveryError) {
-                        logger.warn('[😈 Daemon] Failed first recovery attempt. Trying alternative approach...');
-                        try {
-                            // Try a different URL with even shorter timeout
-                            await page.goto('https://twitter.com', { waitUntil: 'domcontentloaded', timeout: 10000 });
-                            logger.info('[😈 Daemon] Recovered page state by navigating to Twitter main page.');
-                        } catch (altRecoveryError) {
-                            logger.error('[😈 Daemon] Failed all recovery attempts:', altRecoveryError);
-                         if (intervalId) clearInterval(intervalId); 
-                         intervalId = null;
-                         throw new Error('Failed to recover polling page'); // Let main catch handle shutdown
-                        }
+                logger.error('[😈 Daemon Polling] Error during mention polling cycle:', error);
+                 // Basic recovery attempt
+                 try {
+                     if (page && !page.isClosed()) {
+                         await page.goto('https://twitter.com/home', { waitUntil: 'domcontentloaded', timeout: 15000 });
+                         logger.info('[😈 Daemon Polling] Attempted recovery by navigating home.');
+                     } else {
+                         throw new Error('Page closed during polling error handling.');
                      }
+                 } catch (recoveryError) {
+                     logger.error('[😈 Daemon Polling] Recovery failed. Stopping polling.', recoveryError);
+                     await shutdown('Polling Recovery Failed');
                  }
             }
         };
 
+        // Initial poll, then set interval
         await pollMentions(); 
-        intervalId = setInterval(pollMentions, POLLING_INTERVAL_MS);
+        mainLoopIntervalId = setInterval(pollMentions, POLLING_INTERVAL_MS);
+
+        // --- Browser Task Worker Loop --- 
+        // Separate interval to trigger browser-based queue workers (initiation & final reply)
+        // This ensures they don't block the main polling loop and manage page access.
+        const BROWSER_TASK_INTERVAL_MS = 5000; // Check queues every 5 seconds
+        logger.info(`[😈 Daemon] Starting browser task worker loop (Interval: ${BROWSER_TASK_INTERVAL_MS / 1000}s)`);
+        browserTaskIntervalId = setInterval(() => {
+             logger.debug('[😈 Daemon Task Loop] Checking queues for browser tasks...');
+            if (!page || page.isClosed()) {
+                logger.error('[😈 Daemon Task Loop] Page is closed. Stopping task loop.');
+                if (browserTaskIntervalId) clearInterval(browserTaskIntervalId);
+                browserTaskIntervalId = null;
+                // Consider triggering shutdown
+                return;
+            }
+            
+            // Check flags: Prioritize initiating if possible, then replying
+            if (!isInitiatingProcessing && !isPostingFinalReply) { // Only trigger if browser is idle
+                if (mentionQueue.length > 0) {
+                    logger.debug('[😈 Daemon Task Loop] Triggering Initiation Queue check...');
+                    triggerInitiationWorker(page);
+                } else if (finalReplyQueue.length > 0) {
+                    logger.debug('[😈 Daemon Task Loop] Triggering Final Reply Queue check...');
+                    triggerFinalReplyWorker(page);
+                } else {
+                   // logger.debug('[😈 Daemon Task Loop] Browser idle, queues empty.');
+                }
+            } else {
+                 // logger.debug(`[😈 Daemon Task Loop] Browser busy (Initiating: ${isInitiatingProcessing}, Replying: ${isPostingFinalReply}). Skipping triggers.`);
+            }
+        }, BROWSER_TASK_INTERVAL_MS);
 
         logger.info('[😈 Daemon] Daemon initialization complete. Monitoring mentions...');
 
     } catch (error) {
         logger.error('[😈 Daemon] Daemon encountered fatal error during initialization or polling:', error);
         // Ensure cleanup happens on fatal error
-        if (intervalId) clearInterval(intervalId); 
+        if (mainLoopIntervalId) clearInterval(mainLoopIntervalId); 
+        if (browserTaskIntervalId) clearInterval(browserTaskIntervalId); 
         try {
              if (page && !page.isClosed()) await page.close(); 
         } catch (e) { logger.warn('[😈 Daemon] Error closing page on fatal error', e); }
@@ -1186,7 +1064,7 @@ async function main() {
     }
 
      // Keep alive only if interval is running
-     if (intervalId) {
+     if (mainLoopIntervalId || browserTaskIntervalId) {
          await new Promise(() => {}); // Keep alive indefinitely
      } else {
           logger.info('[😈 Daemon] Interval timer not set or cleared. Exiting.');

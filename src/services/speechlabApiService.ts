@@ -3,6 +3,7 @@ import { config } from '../utils/config';
 import logger from '../utils/logger';
 import path from 'path';
 import fs from 'fs';
+import fsPromises from 'fs/promises';
 
 const API_BASE_URL = 'https://translate-api.speechlab.ai';
 
@@ -147,31 +148,37 @@ async function getAuthToken(): Promise<string | null> {
 /**
  * Creates a dubbing project in SpeechLab.
  * @param publicAudioUrl The publicly accessible URL of the source audio file (e.g., S3 URL).
- * @param spaceName The name to use for the project and thirdPartyID.
+ * @param projectName The desired name for the project.
+ * @param targetLanguageCode The detected target language code (e.g., 'es').
+ * @param thirdPartyId The unique identifier for this job (e.g., spaceId-langCode).
  * @returns {Promise<string | null>} The projectId if successful, otherwise null.
  */
-export async function createDubbingProject(publicAudioUrl: string, spaceName: string): Promise<string | null> {
-    logger.info(`[🤖 SpeechLab] Attempting to create dubbing project for: ${spaceName}`);
+export async function createDubbingProject(
+    publicAudioUrl: string, 
+    projectName: string, 
+    targetLanguageCode: string, 
+    thirdPartyId: string 
+): Promise<string | null> {
+    logger.info(`[🤖 SpeechLab] Attempting to create dubbing project: Name="${projectName}", Lang=${targetLanguageCode}, 3rdPartyID=${thirdPartyId}`);
     const token = await getAuthToken();
     if (!token) {
         logger.error('[🤖 SpeechLab] ❌ Cannot create project: Failed to get authentication token.');
         return null;
     }
 
-    // Sanitize spaceName or use a default for API fields
-    const projectName = spaceName ? spaceName.substring(0, 100) : `Dubbed Space ${new Date().toISOString()}`; // Ensure reasonable length
-    const thirdPartyId = spaceName ? spaceName.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 50) : `id_${Date.now()}`; // Ensure valid characters/length
+    // Ensure projectName and thirdPartyId are reasonably sanitized/limited if not already
+    const finalProjectName = projectName.substring(0, 100);
+    const finalThirdPartyId = thirdPartyId.replace(/[^a-zA-Z0-9_\-]/g, '_').substring(0, 50);
 
     const payload: CreateDubPayload = {
-        name: projectName,
-        sourceLanguage: config.SOURCE_LANGUAGE,
-        targetLanguage: config.TARGET_LANGUAGE,
-        dubAccent: config.DUB_ACCENT,
+        name: finalProjectName,
+        sourceLanguage: config.SOURCE_LANGUAGE, // Keep source from config
+        targetLanguage: targetLanguageCode,     // Use detected target language
+        dubAccent: targetLanguageCode,          // Use language code as accent code (as requested)
         unitType: "whiteGlove",
         mediaFileURI: publicAudioUrl,
-        voiceMatchingMode: "source",
-        thirdPartyID: thirdPartyId,
-        // customizedVoiceMatchingSpeakers: [], // Keep empty as per spec
+        voiceMatchingMode: "source", // Or potentially make this configurable?
+        thirdPartyID: finalThirdPartyId,       // Use provided unique ID
     };
 
     logger.debug(`[🤖 SpeechLab] Create project payload: ${JSON.stringify(payload)}`);
@@ -183,16 +190,16 @@ export async function createDubbingProject(publicAudioUrl: string, spaceName: st
 
         const projectId = response.data?.projectId;
         if (projectId) {
-            logger.info(`[🤖 SpeechLab] ✅ Successfully created project. Project ID: ${projectId}`);
+            logger.info(`[🤖 SpeechLab] ✅ Successfully created project. Project ID: ${projectId} (ThirdPartyID: ${finalThirdPartyId})`);
             return projectId;
         } else {
-            logger.error('[🤖 SpeechLab] ❌ Project creation successful but projectId not found in response.');
+            logger.error(`[🤖 SpeechLab] ❌ Project creation API call successful but projectId not found in response.`);
              logger.debug(`[🤖 SpeechLab] Full create project response: ${JSON.stringify(response.data)}`);
             return null;
         }
 
     } catch (error) {
-        handleApiError(error, `project creation for ${projectName}`);
+        handleApiError(error, `project creation for ${finalProjectName} (3rdPartyID: ${finalThirdPartyId})`);
         return null;
     }
 }
@@ -251,30 +258,36 @@ export async function getProjectByThirdPartyID(thirdPartyID: string): Promise<{i
         const encodedThirdPartyID = encodeURIComponent(thirdPartyID);
         const url = `/v1/projects?sortBy=createdAt%3Aasc&limit=10&page=1&expand=true&thirdPartyIDs=${encodedThirdPartyID}`;
         
-        logger.debug(`[🤖 SpeechLab] 🔍 Fetching project status from API URL: ${url}`);
+        // Log the exact URL being requested for debugging
+        logger.debug(`[🤖 SpeechLab] 🔍 Fetching project status from API URL: ${API_BASE_URL}${url}`);
+        
         const response = await apiClient.get<GetProjectsResponse>(url, {
             headers: { 'Authorization': `Bearer ${token}` }
         });
 
-        // Write the full API response to a temporary file for debugging
-        const tempFilePath = path.join(process.cwd(), 'temp_api_response.json');
+        // Remove verbose logging of the raw API response
+        // logger.debug(`[🤖 SpeechLab] 📊 Raw API response: ${JSON.stringify(response.data)}`);
+
+        // Write the *summary* API response to a temporary file for debugging if needed
+        const tempFilePath = path.join(process.cwd(), 'temp_api_response_summary.json');
         try {
-            fs.writeFileSync(
+            fsPromises.writeFile(
                 tempFilePath,
                 JSON.stringify({
                     timestamp: new Date().toISOString(),
                     thirdPartyID: thirdPartyID,
-                    url: url,
-                    response: response.data
+                    requestUrl: `${API_BASE_URL}${url}`,
+                    responseStatus: response.status,
+                    responseTotalResults: response.data?.totalResults,
+                    responseFirstProjectId: response.data?.results?.[0]?.id,
+                    responseFirstProjectStatus: response.data?.results?.[0]?.job?.status
                 }, null, 2)
             );
-            logger.info(`[🤖 SpeechLab] 📝 Wrote API response to ${tempFilePath}`);
+            logger.info(`[🤖 SpeechLab] 📝 Wrote API response summary to ${tempFilePath}`);
         } catch (writeError) {
-            logger.error(`[🤖 SpeechLab] ❌ Failed to write API response to file:`, writeError);
+            logger.error(`[🤖 SpeechLab] ❌ Failed to write API response summary to file:`, writeError);
         }
 
-        // Log the raw response to help with debugging
-        logger.debug(`[🤖 SpeechLab] 📊 Raw API response: ${JSON.stringify(response.data)}`);
 
         // Check if we got projects back and that there is at least one
         if (response.data?.results && response.data.results.length > 0) {
@@ -286,7 +299,7 @@ export async function getProjectByThirdPartyID(thirdPartyID: string): Promise<{i
             // Extract status and determine progress
             const status = project.job?.status || "UNKNOWN";
             // If status is COMPLETE, set progress to 100, otherwise default to 0 (no progress field in API)
-            const progress = status === "COMPLETE" ? 100 : (status === "PROCESSING" ? 50 : 0);
+            const progress = status === "COMPLETE" ? 100 : (status === "PROCESSING" ? 50 : 0); 
             
             // Enhanced logging with more details
             logger.info(`[🤖 SpeechLab] ✅ Found project with ID: ${project.id} for thirdPartyID: ${thirdPartyID}`);
@@ -300,52 +313,14 @@ export async function getProjectByThirdPartyID(thirdPartyID: string): Promise<{i
             };
         } else {
             // More detailed warning when no projects are found
-            logger.warn(`[🤖 SpeechLab] ⚠️ No projects found for thirdPartyID: ${thirdPartyID}`);
+            logger.warn(`[🤖 SpeechLab] ⚠️ No projects found matching thirdPartyID: ${thirdPartyID}`);
             if (response.data?.totalResults !== undefined) {
-                logger.warn(`[🤖 SpeechLab] API returned ${response.data.totalResults} total projects`);
+                logger.warn(`[🤖 SpeechLab] API reported ${response.data.totalResults} total results for this query.`);
             }
-            
-            // Write an error log file with more detailed information
-            const errorLogPath = path.join(process.cwd(), 'project_not_found.json');
-            try {
-                fs.writeFileSync(
-                    errorLogPath,
-                    JSON.stringify({
-                        timestamp: new Date().toISOString(),
-                        error: "No projects found",
-                        thirdPartyID: thirdPartyID,
-                        url: url,
-                        apiResponse: response.data,
-                        total: response.data?.totalResults
-                    }, null, 2)
-                );
-                logger.info(`[🤖 SpeechLab] 📝 Wrote error details to ${errorLogPath}`);
-            } catch (writeError) {
-                logger.error(`[🤖 SpeechLab] ❌ Failed to write error log:`, writeError);
-            }
-            
             return null;
         }
     } catch (error) {
         handleApiError(error, `getting project status for thirdPartyID: ${thirdPartyID}`);
-        
-        // Write error details to file
-        try {
-            const errorPath = path.join(process.cwd(), 'api_error.json');
-            fs.writeFileSync(
-                errorPath,
-                JSON.stringify({
-                    timestamp: new Date().toISOString(),
-                    thirdPartyID: thirdPartyID,
-                    error: error instanceof Error ? error.message : String(error),
-                    stack: error instanceof Error ? error.stack : undefined
-                }, null, 2)
-            );
-            logger.info(`[🤖 SpeechLab] 📝 Wrote API error details to ${errorPath}`);
-        } catch (writeError) {
-            logger.error(`[🤖 SpeechLab] ❌ Failed to write error details:`, writeError);
-        }
-        
         return null;
     }
 }
