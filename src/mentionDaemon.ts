@@ -11,7 +11,8 @@ import {
     extractSpaceUrl, 
     extractSpaceId,
     findSpaceUrlOnPage,
-    clickPlayButtonAndCaptureM3u8
+    clickPlayButtonAndCaptureM3u8,
+    extractSpaceTitleFromModal
 } from './services/twitterInteractionService';
 import { downloadAndUploadAudio } from './services/audioService';
 import { createDubbingProject, waitForProjectCompletion, generateSharingLink } from './services/speechlabApiService';
@@ -520,7 +521,7 @@ async function initiateProcessing(mentionInfo: MentionInfo, page: Page): Promise
         throw error; // Re-throw original error
     }
     
-    // 2. Extract Title (Best Effort)
+    // 2. Extract Title from Article (First attempt, before clicking Play)
     let spaceTitle: string | null = null;
     try {
         logger.debug(`[🚀 Initiate] Attempting to extract Space title from article...`);
@@ -530,7 +531,8 @@ async function initiateProcessing(mentionInfo: MentionInfo, page: Page): Promise
             'div[data-testid="card.layoutLarge.title"] span', 
             'div[data-testid*="AudioSpaceCardHeader"] span[aria-hidden="true"]', // Sometimes title is here
             // More generic: A prominent span near the play button (might need refinement)
-            'div > span[dir="auto"]:not([aria-hidden="true"])' // Look for direct child span
+            'div > span[dir="auto"]:not([aria-hidden="true"])', // Look for direct child span
+            'span[data-testid="card.layoutSmall.media.title"]' // Added for small card layout
         ];
         
         for (const selector of titleSelectors) {
@@ -540,7 +542,7 @@ async function initiateProcessing(mentionInfo: MentionInfo, page: Page): Promise
                 const potentialTitle = await titleElement.textContent({ timeout: 1000 });
                  if (potentialTitle && potentialTitle.trim().length > 0) {
                     spaceTitle = potentialTitle.trim().substring(0, 100); // Limit length
-                    logger.info(`[🚀 Initiate] Extracted potential Space title using selector ${selector}: "${spaceTitle}"`);
+                    logger.info(`[🚀 Initiate] Extracted potential Space title from article using selector ${selector}: "${spaceTitle}"`);
                     break; // Stop trying selectors once found
                 } else {
                     logger.debug(`[🚀 Initiate] Selector ${selector} found element but text was empty.`);
@@ -551,13 +553,12 @@ async function initiateProcessing(mentionInfo: MentionInfo, page: Page): Promise
         }
 
         if (!spaceTitle) {
-             logger.warn('[🚀 Initiate] Could not extract potential Space title using known selectors.');
+             logger.warn('[🚀 Initiate] Could not extract Space title from article using known selectors.');
         }
 
     } catch (titleError) {
-        logger.warn('[🚀 Initiate] Error during Space title extraction:', titleError);
+        logger.warn('[🚀 Initiate] Error during Space title extraction from article:', titleError);
     }
-    // logger.info(`[🚀 Initiate] Potential Space title: "${spaceTitle || 'Not found'}"`); // Logged inside loop now
 
     // 3. Click Play and capture M3U8
     let m3u8Url: string | null = null;
@@ -572,6 +573,22 @@ async function initiateProcessing(mentionInfo: MentionInfo, page: Page): Promise
              throw new Error(errMsg);
         }
         logger.info(`[🚀 Initiate] Captured M3U8 URL.`);
+        
+        // 4. Now try to extract title from modal (takes precedence over article title)
+        try {
+            logger.info('[🚀 Initiate] Attempting to extract Space title from modal after clicking Play...');
+            const modalTitle = await extractSpaceTitleFromModal(page);
+            if (modalTitle) {
+                logger.info(`[🚀 Initiate] Successfully extracted Space title from modal: "${modalTitle}"`);
+                // Modal title takes precedence
+                spaceTitle = modalTitle;
+            } else {
+                logger.warn('[🚀 Initiate] Could not extract Space title from modal, will use article title if available.');
+            }
+        } catch (modalTitleError) {
+            logger.warn('[🚀 Initiate] Error extracting Space title from modal:', modalTitleError);
+            // Continue with article title if modal extraction fails
+        }
     } catch (error) {
          logger.error(`[🚀 Initiate] Error during M3U8 capture for ${mentionInfo.tweetId}:`, error);
          try {
@@ -581,11 +598,18 @@ async function initiateProcessing(mentionInfo: MentionInfo, page: Page): Promise
          throw error;
     }
 
-    // 4. Extract Space ID (Best Effort)
+    // 5. Extract Space ID (Best Effort)
     const spaceId = m3u8Url.match(/([a-zA-Z0-9_-]+)\/(?:chunk|playlist)/)?.[1] || `space_${mentionInfo.tweetId || uuidv4()}`;
     logger.info(`[🚀 Initiate] Using Space ID: ${spaceId}`);
+    
+    // Log final title status
+    if (spaceTitle) {
+        logger.info(`[🚀 Initiate] Final Space title for processing: "${spaceTitle}"`);
+    } else {
+        logger.warn(`[🚀 Initiate] No Space title could be extracted, will use generic name in processing.`);
+    }
 
-    // 5. Post preliminary acknowledgement reply
+    // 6. Post preliminary acknowledgement reply
     try {
         logger.info(`[🚀 Initiate] Posting preliminary acknowledgement reply...`);
         const ackMessage = `@${mentionInfo.username} Received! I've started processing this Space into ${targetLanguageName}. Please check back here in ~10-15 minutes for the translated link.`;
@@ -884,79 +908,43 @@ async function main() {
         logger.info('[😈 Daemon] Browser and context initialized successfully.');
         logger.info(`[😈 Daemon] Twitter credentials - Username: ${config.TWITTER_USERNAME ? '✓ Set' : '❌ Missing'}, Password: ${config.TWITTER_PASSWORD ? '✓ Set' : '❌ Missing'}`);
 
-        // Check if we're already logged in from saved state
-        logger.info('[😈 Daemon] Checking if already logged in from saved state...');
+        let isLoggedIn: boolean | undefined = undefined; // Declare variable here
+
+        // Check if we're already logged in from saved state using a more reliable target page
+        logger.info('[😈 Daemon] Checking if already logged in via /notifications page...');
         try {
-            // Use a shorter timeout and domcontentloaded instead of networkidle
-            await page.goto('https://twitter.com/home', { waitUntil: 'domcontentloaded', timeout: 15000 });
-            logger.info('[😈 Daemon] Successfully navigated to Twitter home page.');
-        } catch (navError) {
-            logger.warn('[😈 Daemon] Timeout or error navigating to Twitter home. Will try to check login status anyway.');
-            // Try to navigate to a different Twitter URL as fallback
-            try {
-                await page.goto('https://twitter.com', { waitUntil: 'domcontentloaded', timeout: 10000 });
-                logger.info('[😈 Daemon] Successfully navigated to Twitter main page as fallback.');
-            } catch (fallbackNavError) {
-                logger.warn('[😈 Daemon] Also failed to navigate to Twitter main page. Will still try to check login status.');
-            }
-        }
-        
-        // Check for login success indicators
-        const successIndicators = [
-            '[data-testid="AppTabBar_Home_Link"]', 
-            'a[href="/home"]',
-            '[data-testid="SideNav_NewTweet_Button"]',
-            '[data-testid="primaryColumn"]'
-        ];
-        
-        let isLoggedIn = false;
-        for (const selector of successIndicators) {
-            if (await page.locator(selector).first().isVisible({ timeout: 3000 }).catch(() => false)) {
-                logger.info(`[😈 Daemon] ✅ Already logged in from saved state! (indicator: ${selector})`);
-                await page.screenshot({ path: path.join(SCREENSHOT_DIR, 'daemon-already-logged-in.png') });
+            // Navigate to notifications - wait for DOM content, not full network idle
+            await page.goto('https://twitter.com/notifications', { waitUntil: 'domcontentloaded', timeout: 25000 }); 
+            logger.info('[😈 Daemon] Successfully navigated to /notifications page for login check.');
+            await page.waitForTimeout(2000); // Extra wait for rendering
+
+            // Check if the primary content column is visible (should contain notifications)
+            const primaryColumnSelector = '[data-testid="primaryColumn"]';
+             logger.debug(`[😈 Daemon] Checking login indicator: ${primaryColumnSelector}`);
+            if (await page.locator(primaryColumnSelector).first().isVisible({ timeout: 7000 })) { // Increased timeout
+                logger.info(`[😈 Daemon] ✅ Already logged in from saved state! (Verified via /notifications)`);
                 isLoggedIn = true;
-                break;
+                await page.screenshot({ path: path.join(SCREENSHOT_DIR, 'daemon-login-check-notifications-success.png') });
+            } else {
+                logger.warn('[😈 Daemon] ❌ Login check failed: Primary column not visible on /notifications.');
+                isLoggedIn = false;
+                await page.screenshot({ path: path.join(SCREENSHOT_DIR, 'daemon-login-check-notifications-fail.png') });
             }
+        } catch (navError) {
+            logger.warn('[😈 Daemon] Timeout or error navigating to /notifications for login check. Assuming not logged in.', navError);
+            try { // Best effort screenshot on error
+                 await page.screenshot({ path: path.join(SCREENSHOT_DIR, 'daemon-login-check-notifications-nav-error.png') });
+            } catch {}
+            isLoggedIn = false; // Explicitly set false on navigation error
         }
+       
         
-        // Only attempt login if not already logged in
-        if (!isLoggedIn) {
-            logger.info('[😈 Daemon] Not logged in from saved state. Attempting login process...');
-            
-            // Try login with retries
-            let loginSuccess = false;
-            const MAX_LOGIN_ATTEMPTS = 3;
-            
-            for (let attempt = 1; attempt <= MAX_LOGIN_ATTEMPTS; attempt++) {
-                logger.info(`[😈 Daemon] Login attempt ${attempt}/${MAX_LOGIN_ATTEMPTS}...`);
-                loginSuccess = await loginToTwitterDaemon(page);
-                
-                if (loginSuccess) {
-                    logger.info(`[😈 Daemon] Login successful on attempt ${attempt}!`);
-                    break;
-                } else if (attempt < MAX_LOGIN_ATTEMPTS) {
-                    logger.warn(`[😈 Daemon] Login attempt ${attempt} failed. Waiting 5 seconds before retry...`);
-                    await page.waitForTimeout(5000);
-                    
-                    // Try navigating back to login page for the next attempt
-                    try {
-                        logger.info('[😈 Daemon] Navigating back to login page for retry...');
-                        await page.goto('https://twitter.com/i/flow/login', { 
-                            waitUntil: 'networkidle', 
-                            timeout: 30000 
-                        });
-                    } catch (navError) {
-                        logger.error('[😈 Daemon] Error navigating to login page for retry:', navError);
-                    }
-                }
-            }
-            
-        if (!loginSuccess) {
-                throw new Error(`Twitter login failed after ${MAX_LOGIN_ATTEMPTS} attempts. Daemon cannot continue.`);
-        }
+        // NEW: Throw error if cookie check failed
+        if (isLoggedIn !== true) {
+             throw new Error('Cookie-based login check failed. Please ensure valid cookies exist in cookies/twitter-cookies.json. Daemon cannot continue.');
         }
 
-        logger.info('[😈 Daemon] Twitter login confirmed. Ready to monitor mentions.');
+        logger.info('[😈 Daemon] Twitter login confirmed via cookies. Ready to monitor mentions.');
 
         // --- Main Polling Loop --- 
         logger.info(`[😈 Daemon] Starting mention polling loop (Interval: ${POLLING_INTERVAL_MS / 1000}s)`);

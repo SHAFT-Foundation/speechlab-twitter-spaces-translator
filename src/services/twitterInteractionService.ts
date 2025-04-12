@@ -4,6 +4,7 @@ import { config } from '../utils/config'; // For potential credentials later
 import * as path from 'path'; // Added import for path module
 import * as fs from 'fs'; // Added import for fs module
 import * as fsPromises from 'fs/promises'; // Use promises API for fs
+import { v4 as uuidv4 } from 'uuid';
 
 // Define the expected structure for the result
 export interface SpaceInfo {
@@ -1716,7 +1717,13 @@ export async function initializeDaemonBrowser(): Promise<{ browser: Browser, con
     // Add null check for context before returning
     if (!context) {
         logger.error('[😈 Daemon Browser] Failed to create browser context!');
-        await browser.close(); // Close the browser if context creation failed
+        // Ensure browser close is awaited properly
+        try {
+            await browser.close();
+            logger.info('[😈 Daemon Browser] Closed browser due to context creation failure.');
+        } catch (closeError) {
+            logger.error('[😈 Daemon Browser] Error closing browser after context failure:', closeError);
+        }
         throw new Error('Failed to initialize browser context');
     }
     
@@ -1829,10 +1836,11 @@ export async function clickPlayButtonAndCaptureM3u8(page: Page, articleLocator: 
         logger.debug('[🐦 Helper M3U8] Attaching network listeners (broader pattern)...');
         page.on('request', requestListener);
         page.on('response', responseListener);
-        await page.route(routePattern, routeHandler);
+        // Using a simpler route matching based on URL string inclusion for broader compatibility
+        await page.route('**/*.m3u8*', routeHandler);
+        await page.route('**/live_video_stream/**', routeHandler); // Also allow API calls through
 
         // Find and Click Play Button within the specific article
-        // ... (keep existing button finding logic) ...
         const playButtonSelectors = [
             'button[aria-label*="Play recording"]', 
             'button:has-text("Play recording")'
@@ -1883,8 +1891,189 @@ export async function clickPlayButtonAndCaptureM3u8(page: Page, articleLocator: 
         logger.debug('[🐦 Helper M3U8] Detaching network listeners...');
         page.off('request', requestListener);
         page.off('response', responseListener);
-        await page.unroute(routePattern, routeHandler).catch(e => logger.warn('Error unrouting', e));
+        // Unroute both patterns
+        await page.unroute('**/*.m3u8*', routeHandler).catch(e => logger.warn('Error unrouting m3u8', e));
+        await page.unroute('**/live_video_stream/**', routeHandler).catch(e => logger.warn('Error unrouting live_video_stream', e));
         logger.debug('[🐦 Helper M3U8] Listeners detached.');
     }
 }
 // --- END NEW HELPER ---
+
+/**
+ * Extracts the Space title from the modal/player that appears after clicking the Play Recording button.
+ * Prioritizes specific container selectors and the data-testid="tweetText" structure.
+ * Includes fallback strategies for robustness.
+ *
+ * @param page The Playwright page object
+ * @returns The extracted Space title or null if not found
+ */
+export async function extractSpaceTitleFromModal(page: Page): Promise<string | null> {
+    logger.info('[🐦 Helper Title] Attempting to extract Space title from modal...');
+    // Define screenshot/log paths relative to process CWD, assuming they exist or are created elsewhere
+    const screenshotDir = path.join(process.cwd(), 'debug-screenshots');
+    const LOG_DIR = path.join(process.cwd(), 'logs');
+
+    try {
+        // Wait for *some* indicator of the player/modal content
+        logger.info('[🐦 Helper Title] Waiting up to 10s for modal/player indicators to appear...');
+        const modalIndicatorSelector =
+            'div[data-testid*="audioPlayer"], ' +
+            'div[aria-label*="Audio"], ' +
+            'div[data-testid*="audioSpaceDetailView"], ' +
+            'div:has-text("tuned in"), ' +
+            'div:has-text("Speakers")';
+        await page.waitForSelector(modalIndicatorSelector, { state: 'visible', timeout: 10000 });
+        logger.info('[🐦 Helper Title] Modal/player indicators are visible.');
+        await page.waitForTimeout(1000); // Stability wait
+
+        // Locate the specific player/modal container
+        let container: any | null = null;
+        const potentialContainerSelectors = [
+            'div[data-testid="SpaceDockExpanded"]', // **** PRIORITIZE THIS ****
+            'div[data-testid="audioSpaceDetailView"]',
+            'div[data-testid*="audioPlayer"]',
+            'div[aria-label*="Audio banner"]',
+            'div[role="dialog"]', // Keep dialog as fallback
+        ];
+
+        for(const selector of potentialContainerSelectors) {
+            logger.debug(`[🐦 Helper Title] Trying container selector: ${selector}`);
+            const element = page.locator(selector).first();
+            if (await element.isVisible({ timeout: 500 })) {
+                const textContent = await element.textContent({ timeout: 500 }) || '';
+                // Check for multiple confirmation texts
+                if (textContent.includes('tuned in') || textContent.includes('Speaker') || textContent.includes('Listener') || textContent.includes('MEMECOIN') || textContent.includes('Playing')) {
+                    logger.info(`[🐦 Helper Title] Found specific Space container using selector: ${selector}`);
+                    container = element;
+                    // Log container HTML for debugging
+                    try {
+                        const containerHtml = await container.innerHTML();
+                        logger.debug(`[🐦 Helper Title] Container HTML (first 500 chars): ${containerHtml.substring(0, 500)}`);
+                    } catch (e) {logger.warn('Could not get container HTML');}
+                    break;
+                } else {
+                    logger.debug(`[🐦 Helper Title] Container found with ${selector}, but missing confirmation text.`);
+                }
+            }
+        }
+
+        if (!container) {
+            logger.error('[🐦 Helper Title] Could not locate a reliable modal/player container.');
+            await page.screenshot({ path: path.join(screenshotDir, 'modal-container-not-found.png') });
+            return null;
+        }
+
+        logger.info('[🐦 Helper Title] Located container, taking screenshot...');
+        await container.screenshot({ path: path.join(screenshotDir, 'modal-container-found.png') });
+
+        // --- Search for Title WITHIN the container --- 
+
+        // Strategy 0: Use the structure identified from user's HTML snippet
+        logger.info('[🐦 Helper Title] FOCUS STRATEGY: Checking data-testid=tweetText span within container...');
+        try {
+            const tweetTextSpan = container.locator('div[data-testid="tweetText"] span').first();
+            if (await tweetTextSpan.isVisible({ timeout: 2000 })) { // Increased timeout
+                const text = await tweetTextSpan.textContent();
+                const trimmedText = text?.trim();
+                // Use a more general check first, then refine if needed
+                if (trimmedText && trimmedText.length > 3) { 
+                     // Check if it resembles the specific known title format, but be flexible
+                    if (trimmedText.includes('MEMECOIN COMMUNITY')) {
+                         logger.info(`[🐦 Helper Title] SUCCESS: Found title via tweetText span (specific match): "${trimmedText}"`);
+                         return trimmedText;
+                    } else {
+                        // Maybe it's a different title, log it but potentially return it if no other strategy works
+                         logger.warn(`[🐦 Helper Title] tweetText span found, but doesn't match expected "MEMECOIN COMMUNITY": "${trimmedText}"`);
+                         // We might want to return this as a fallback later, but for now, we prioritize exact match
+                    }
+                } else {
+                    logger.warn(`[🐦 Helper Title] tweetText span visible, but text content too short: "${trimmedText}"`);
+                }
+            } else {
+                logger.warn('[🐦 Helper Title] tweetText span was not visible within the container.');
+            }
+        } catch (e) { 
+             logger.error('[🐦 Helper Title] Error checking tweetText span:', e);
+        }
+        
+        // --- ADD BACK OTHER STRATEGIES AS FALLBACKS --- 
+
+        // Fallback Strategy 1: Target specific, reliable heading selectors within the container
+        logger.debug('[🐦 Helper Title] Fallback Strategy 1: Checking specific heading selectors within container...');
+        const specificHeadingSelectors = [
+            'h2[aria-level="2"]', 
+            'h1'
+        ];
+        for (const selector of specificHeadingSelectors) { 
+            try {
+                const element = container.locator(selector).first(); 
+                if (await element.isVisible({ timeout: 500 })) { 
+                    const text = await element.textContent({ timeout: 1000 }); 
+                    const trimmedText = text?.trim();
+                    if (trimmedText && trimmedText.length > 3 && !trimmedText.includes('keyboard shortcuts') && !trimmedText.includes('ago') && !trimmedText.includes('Listeners')) {
+                        logger.info(`[🐦 Helper Title] Fallback SUCCESS: Found title via container heading selector "${selector}": "${trimmedText}"`); 
+                        return trimmedText;
+                    }
+                }
+            } catch (e) { logger.debug(`[🐦 Helper Title] Error trying container heading selector ${selector}: ${e}`); } 
+        }
+
+        // Fallback Strategy 2: Improve "Tuned In" logic within the container
+        logger.debug('[🐦 Helper Title] Fallback Strategy 2: Looking near "tuned in" text within container...');
+        try { 
+            const timeElement = container.getByText(/tuned in/i).first(); 
+            if (await timeElement.isVisible({ timeout: 1000 })) {
+                const parentContainer = timeElement.locator('xpath=ancestor::div[contains(@style, "display: flex")] | ancestor::div[contains(@dir, "auto")]').first();
+                if (await parentContainer.isVisible({timeout: 500})){
+                    const containerText = await parentContainer.textContent();
+                    const lines = containerText?.split('\n').map((line: string) => line.trim()).filter(Boolean) || []; 
+                    const tunedInIndex = lines.findIndex((line: string) => /tuned in/i.test(line)); 
+                     if (tunedInIndex !== -1 && tunedInIndex + 1 < lines.length) {
+                        const potentialTitle = lines[tunedInIndex + 1];
+                        if (potentialTitle && potentialTitle.length > 3 && !/^\d+$/.test(potentialTitle) && !potentialTitle.includes('ago') && !potentialTitle.includes(':')) {
+                             logger.info(`[🐦 Helper Title] Fallback SUCCESS: Extracted potential title (line after tuned in): "${potentialTitle}"`);
+                             return potentialTitle;
+                         }
+                    }
+                    const headingInContainer = parentContainer.locator('h1, h2, span[role="heading"]').first();
+                    if(await headingInContainer.isVisible({timeout: 200})){
+                         const headingText = await headingInContainer.textContent();
+                         if (headingText && headingText.trim().length > 3) {
+                             logger.info(`[🐦 Helper Title] Fallback SUCCESS: Extracted potential title (heading near tuned in): "${headingText.trim()}"`);
+                             return headingText.trim();
+                         }
+                    }
+                }
+            }
+        } catch(e) { logger.debug('[🐦 Helper Title] Error in Fallback Strategy 2 (tuned in)', e); }
+
+        // Fallback Strategy 4 (ALL CAPS)
+        logger.debug('[🐦 Helper Title] Fallback Strategy 4: Checking for ALL CAPS text within container...');
+        try {
+            const textElements = await container.locator('span').all();
+            for (const element of textElements) {
+                if (await element.isVisible({ timeout: 200 })) {
+                     const text = await element.textContent();
+                     const trimmed = text?.trim();
+                     if (trimmed && trimmed.length > 5 && trimmed === trimmed.toUpperCase() && !/^\d+$/.test(trimmed) && !trimmed.includes('JOIN') && !trimmed.includes('LIVE') && !trimmed.includes('ENDED')) {
+                         logger.info(`[🐦 Helper Title] Fallback SUCCESS: Found potential ALL CAPS title in container: "${trimmed}"`);
+                         return trimmed;
+                     }
+                 }
+            }
+        } catch (error) {
+            logger.debug(`[🐦 Helper Title] Error trying to find all-caps title in container: ${error}`);
+        }
+
+
+        logger.warn('[🐦 Helper Title] Could not extract Space title using any strategy.');
+        return null; // Added missing return null
+    } catch (error) {
+        logger.error('[🐦 Helper Title] Error during title extraction process:', error);
+        // Ensure screenshot path is handled correctly if screenshotDir isn't globally available in service file
+        try { await page.screenshot({ path: path.join(process.cwd(), 'debug-screenshots', 'modal-title-extraction-error.png') }); } catch {}
+        return null;
+    }
+}
+
+
