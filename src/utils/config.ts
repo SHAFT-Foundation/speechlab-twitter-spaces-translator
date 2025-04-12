@@ -26,6 +26,7 @@ interface EnvConfig {
     // Optional Twitter credentials
     TWITTER_USERNAME?: string;
     TWITTER_PASSWORD?: string;
+    TWITTER_EMAIL?: string;
     // Browser configuration
     BROWSER_HEADLESS?: boolean;
 }
@@ -75,6 +76,7 @@ function validateConfig(env: NodeJS.ProcessEnv): EnvConfig {
         AWS_REGION: env.AWS_REGION,
         TWITTER_USERNAME: env.TWITTER_USERNAME,
         TWITTER_PASSWORD: env.TWITTER_PASSWORD,
+        TWITTER_EMAIL: env.TWITTER_EMAIL,
         BROWSER_HEADLESS: browserHeadless,
     };
 }

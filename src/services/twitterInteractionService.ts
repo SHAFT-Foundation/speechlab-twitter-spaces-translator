@@ -1344,10 +1344,24 @@ export async function scrapeMentions(page: Page): Promise<MentionInfo[]> {
 
     logger.info(`[🔔 Mention] Navigating to mentions page: ${mentionsUrl}`);
     try {
-        await page.goto(mentionsUrl, { waitUntil: 'networkidle', timeout: 45000 });
+        // Use domcontentloaded instead of networkidle and a shorter timeout
+        await page.goto(mentionsUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
         logger.info('[🔔 Mention] Mentions page loaded. Waiting for tweets...');
-        await page.waitForSelector(MENTION_TWEET_SELECTOR, { timeout: 15000 });
-        await page.waitForTimeout(3000); // Allow dynamic content to settle
+        
+        // Wait for selectors with more reasonable timeouts
+        const hasTweets = await page.locator(MENTION_TWEET_SELECTOR).first().isVisible({ timeout: 10000 })
+            .catch(() => false);
+        
+        if (!hasTweets) {
+            logger.warn('[🔔 Mention] No tweets visible after initial load. Taking screenshot and continuing anyway.');
+            await page.screenshot({ path: path.join(screenshotDir, 'mentions-page-no-visible-tweets.png') });
+            // Allow a bit more time for dynamic content to load
+            await page.waitForTimeout(5000);
+        } else {
+            // Wait a moment for more tweets to load
+            await page.waitForTimeout(3000);
+        }
+        
         await page.screenshot({ path: path.join(screenshotDir, 'mentions-page-loaded.png') });
 
 
@@ -1429,7 +1443,7 @@ export async function scrapeMentions(page: Page): Promise<MentionInfo[]> {
 
                 // 4. Add to results if valid
                 if (tweetId && tweetUrl && username && text) {
-                    logger.info(`[🔔 Mention] ✅ Successfully extracted mention: ID=${tweetId}, User=${username}`);
+                    logger.info(`[�� Mention] ✅ Successfully extracted mention: ID=${tweetId}, User=${username}`);
                     foundMentions.push({ tweetId, tweetUrl, username, text });
                 } else {
                     logger.warn(`[🔔 Mention] ⚠️ Failed to extract all required info for tweet index ${i}. Skipping.`);
