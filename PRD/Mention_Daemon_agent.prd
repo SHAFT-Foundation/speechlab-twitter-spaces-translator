@@ -2689,3 +2689,124 @@ now can i add a separate daemon process i can stat that will look for any mentio
 ]
 
 that ihen find the twitter space url and the twitter account that posted the tweet with the twitter space URL and then basically fire off the same main agent flow using just that data sort of like it one item  of the JSON file
+
+## Implementation Details
+
+The mention daemon has been successfully implemented with the following key features:
+
+### Authentication
+- Persists Twitter login session using a cookie file to avoid requiring login on every restart
+- Cookie file is stored at `cookies/twitter-cookies.json` relative to the workspace
+- Falls back to manual login if cookies are expired or invalid
+
+### Mention Detection & Processing
+- Polls Twitter for mentions of the configured TWITTER_USERNAME
+- Extracts mention text, tweet URL, username, and tweet ID
+- Maintains a queue of mentions to be processed
+- Tracks processing status in `processed_mentions.json` (pending, success, failed)
+- Retries mentions with "pending" or "failed" status on daemon restart
+
+### Space URL Detection & Audio Extraction
+- First attempts to extract Space URL from the mention text using regex pattern `https?:\/\/(?:twitter\.com|x\.com)\/i\/spaces\/[\w\d]+`
+- If not found, navigates to the mention tweet and attempts to find it by scrolling up the thread:
+  - Uses `page.goto(tweetUrl)` with `waitUntil: 'domcontentloaded'` to load the mention tweet
+  - Iteratively scrolls up the page using `window.scrollBy(0, -window.innerHeight)` up to 10 attempts
+  - After each scroll, waits for content to load with `page.waitForTimeout(1000)` and takes screenshots
+  - Checks for Space content in visible tweets after each scroll using custom detection logic
+- When a tweet with Space content is found (identified by "Play recording" button):
+  - Identifies articles containing Space content using `article` elements with text matching "Play recording"
+  - Finds the specific Play button using `getByRole('button', { name: 'Play recording' })` within the article
+  - Uses `{ force: true }` with the click to bypass potential actionability issues
+  - Sets up network interception before clicking using:
+    ```typescript
+    const m3u8PromiseResolvers: any = {};
+    const m3u8Promise = new Promise((resolve, reject) => {
+      m3u8PromiseResolvers.resolve = resolve;
+      m3u8PromiseResolvers.reject = reject;
+    });
+    
+    // Listen for all network requests containing .m3u8
+    page.on('request', request => {
+      const url = request.url();
+      if (url.includes('.m3u8')) {
+        logger.debug(`[🎵 M3U8] Found potential M3U8 URL: ${url}`);
+        m3u8PromiseResolvers.resolve(url);
+      }
+    });
+    ```
+  - Clicks the "Play recording" button and waits for the m3u8 request up to 30 seconds
+  - Falls back to checking API responses if direct m3u8 request isn't detected:
+    ```typescript
+    page.on('response', async response => {
+      const url = response.url();
+      if (url.includes('/api/1.1/live_video_stream/status/')) {
+        try {
+          const responseJson = await response.json();
+          // Extract m3u8 URL from the JSON response if present
+          // ...
+        } catch (e) {}
+      }
+    });
+    ```
+
+### Space Title Extraction
+- Uses a multi-stage approach to extract the Space title:
+  1. First attempt before clicking Play:
+     - Checks for title within `div[data-testid="card.layoutLarge.media.title"]` or `span[data-testid="card.layoutSmall.media.title"]`
+     - Looks for text directly within the article that matches known Space title patterns
+  2. If no title found, clicks Play button and tries again:
+     - Waits for player modal/popup with `page.waitForTimeout(2000)`
+     - Looks for title in heading elements: `h1, h2[aria-level="2"], span[role="heading"]`
+     - Specifically targets `h2[aria-level="2"]` which often contains the title after playback starts
+     - Example: `const titleElement = page.locator('h2[aria-level="2"]').first();`
+  3. Uses text content pattern matching as fallback:
+     - Searches for text fragments matching Space naming conventions
+     - Searches for capitalized phrases that could represent titles
+- Handles failures with specific error handling:
+  - Takes screenshots at each attempt for debugging
+  - Logs detailed failures including which selectors were attempted
+  - Throws a specific titled error (`[TITLE_EXTRACTION_FAILED]`) if extraction fails
+  - Treats title extraction failure as a critical error for that specific job but allows daemon to continue
+
+### Network Request Interception & Audio Extraction
+- Uses Playwright's network interception to capture the m3u8 audio stream URL:
+  ```typescript
+  // Set up interception for .m3u8 files
+  await page.route('**/*.m3u8*', route => {
+    const url = route.request().url();
+    logger.debug(`[🎵 M3U8] Intercepted M3U8 request: ${url}`);
+    capturedM3u8Url = url;
+    route.continue(); // Allow the request to proceed
+  });
+  ```
+- Once m3u8 URL is captured, uses FFmpeg to download the audio stream:
+  ```typescript
+  const outputPath = path.join(process.cwd(), 'downloads', `${spaceId}.mp3`);
+  const ffmpegCommand = `ffmpeg -i "${m3u8Url}" -c copy -bsf:a aac_adtstoasc "${outputPath}"`;
+  ```
+- Handles various audio formats and quality levels in the m3u8 playlist
+- Implements timeouts and retry logic for the audio download process
+- Uploads the downloaded audio to S3 with proper metadata including Space ID and title
+
+### Language Detection
+- Analyzes mention text to detect requested target language 
+- Uses a comprehensive mapping of language names, codes, and aliases
+- Supports formats like "dub in english", "translate to spanish", or direct mentions of language names
+- Defaults to English if no specific language is detected
+- Extracts regional accent codes where applicable (e.g., es_la vs es_es)
+
+### Concurrent Processing
+- Browser tasks (navigation, clicking, posting replies) are performed sequentially
+- Backend processing (download, upload, SpeechLab API calls) runs concurrently
+- This architecture allows multiple long-running SpeechLab jobs to execute in parallel
+- Uses separate queues for mention initiation and final replies
+
+### User Communication
+- Posts an immediate acknowledgment reply when a valid Space is found
+- Posts a final reply with the translation link when processing completes
+- Posts appropriate error messages if processing fails
+
+### Error Handling & Recovery
+- Gracefully handles failures at each step of the process
+- Marks mentions with appropriate status in the persistent JSON file
+- Screenshots key steps for debugging purposes in `debug-screenshots` directory
