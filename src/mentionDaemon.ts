@@ -698,74 +698,80 @@ async function performBackendProcessing(initData: InitiationResult): Promise<Bac
         }
         logger.info(`[⚙️ Backend] SpeechLab project ${thirdPartyID} completed successfully.`);
 
-        // 4. Find and Download DUBBED MP3 Audio
-        const outputAudio = completedProject.translations?.[0]?.dub?.[0]?.medias?.find(d => 
-            d.category === 'audio' && 
-            d.format === 'mp3' && 
-            d.operationType === 'OUTPUT'
-        );
-
-        if (outputAudio?.presignedURL) {
-            logger.info(`[⚙️ Backend] Found DUBBED MP3 URL: ${outputAudio.presignedURL}`);
-            const audioFilename = `${thirdPartyID}_dubbed.mp3`; // Distinguish from original
-            const destinationAudioPath = path.join(TEMP_AUDIO_DIR, audioFilename);
-            downloadedAudioPath = destinationAudioPath; // Store path for cleanup
+        // --- Step 4 & 5: Download Dubbed Audio and Convert to Video (Conditional) --- 
+        if (config.POST_REPLY_WITH_VIDEO) {
+            logger.info('[⚙️ Backend] POST_REPLY_WITH_VIDEO is TRUE. Attempting video generation...');
             
-            logger.info(`[⚙️ Backend] Attempting to download dubbed audio to ${destinationAudioPath}...`);
-            const downloadSuccess = await downloadFile(outputAudio.presignedURL, destinationAudioPath);
-            
-            if (!downloadSuccess) {
-                 logger.warn(`[⚙️ Backend] Failed to download DUBBED audio file. Cannot generate video.`);
-                 downloadedAudioPath = undefined; // Ensure cleanup doesn't run
-                 // Continue without video generation
-            } else {
-                logger.info(`[⚙️ Backend] Successfully downloaded DUBBED audio: ${downloadedAudioPath}`);
+            // Find and Download DUBBED MP3 Audio
+            const outputAudio = completedProject.translations?.[0]?.dub?.[0]?.medias?.find(d => 
+                d.category === 'audio' && 
+                d.format === 'mp3' && 
+                d.operationType === 'OUTPUT'
+            );
 
-                // 5. Convert Downloaded MP3 + Placeholder Image to MP4
-                // Check for placeholder image existence
-                 try {
-                    await fs.access(PLACEHOLDER_IMAGE_PATH);
-                 } catch (imgError) {
-                     logger.error(`[⚙️ Backend] Placeholder image NOT FOUND at: ${PLACEHOLDER_IMAGE_PATH}. Cannot generate video.`);
-                     // Continue without video generation, but keep the downloaded audio path for potential later use/debug
-                     throw new Error('Placeholder image not found for video generation'); // Or handle more gracefully
-                 }
+            if (outputAudio?.presignedURL) {
+                logger.info(`[⚙️ Backend] Found DUBBED MP3 URL: ${outputAudio.presignedURL}`);
+                const audioFilename = `${thirdPartyID}_dubbed.mp3`;
+                const destinationAudioPath = path.join(TEMP_AUDIO_DIR, audioFilename);
+                downloadedAudioPath = destinationAudioPath; // Store for potential cleanup on error
+                
+                logger.info(`[⚙️ Backend] Attempting to download dubbed audio to ${destinationAudioPath}...`);
+                const downloadSuccess = await downloadFile(outputAudio.presignedURL, destinationAudioPath);
+                
+                if (!downloadSuccess) {
+                     logger.warn(`[⚙️ Backend] Failed to download DUBBED audio file. Skipping video generation.`);
+                     downloadedAudioPath = undefined; 
+                } else {
+                    logger.info(`[⚙️ Backend] Successfully downloaded DUBBED audio: ${downloadedAudioPath}`);
 
-                const videoFilename = `${thirdPartyID}.mp4`;
-                const destinationVideoPath = path.join(TEMP_VIDEO_DIR, videoFilename);
-                generatedVideoPath = destinationVideoPath; // Store path for return and cleanup
+                    // Convert Downloaded MP3 + Placeholder Image to MP4
+                     try {
+                        await fs.access(PLACEHOLDER_IMAGE_PATH);
+                     } catch (imgError) {
+                         logger.error(`[⚙️ Backend] Placeholder image NOT FOUND at: ${PLACEHOLDER_IMAGE_PATH}. Skipping video generation.`);
+                         // Keep downloadedAudioPath for cleanup in finally block
+                         throw new Error('Placeholder image not found for video generation'); 
+                     }
 
-                logger.info(`[⚙️ Backend] Attempting to convert ${downloadedAudioPath} + ${PLACEHOLDER_IMAGE_PATH} to ${destinationVideoPath} using ffmpeg...`);
-                const escapedImagePath = `"${PLACEHOLDER_IMAGE_PATH}"`;
-                const escapedAudioPath = `"${downloadedAudioPath}"`;
-                const escapedVideoPath = `"${generatedVideoPath}"`;
+                    const videoFilename = `${thirdPartyID}.mp4`; // Final video name
+                    const destinationVideoPath = path.join(TEMP_VIDEO_DIR, videoFilename);
+                    generatedVideoPath = destinationVideoPath; 
 
-                const ffmpegCommand = `ffmpeg -loop 1 -y -i ${escapedImagePath} -i ${escapedAudioPath} -vf "scale=w=-2:h=194" -c:v libx264 -c:a aac -b:a 192k -pix_fmt yuv420p -shortest ${escapedVideoPath}`;
-                logger.debug(`[⚙️ Backend] Executing ffmpeg command: ${ffmpegCommand}`);
+                    logger.info(`[⚙️ Backend] Attempting to convert ${downloadedAudioPath} + ${PLACEHOLDER_IMAGE_PATH} to ${destinationVideoPath} using ffmpeg...`);
+                    const escapedImagePath = `"${PLACEHOLDER_IMAGE_PATH}"`;
+                    const escapedAudioPath = `"${downloadedAudioPath}"`;
+                    const escapedVideoPath = `"${generatedVideoPath}"`;
+                    // Use AAC audio encoding and CRF 28 for video
+                    const ffmpegCommand = `ffmpeg -loop 1 -y -i ${escapedImagePath} -i ${escapedAudioPath} -vf "scale=w=-2:h=194" -c:v libx264 -preset veryfast -crf 28 -c:a aac -b:a 128k -pix_fmt yuv420p -shortest ${escapedVideoPath}`;
+                    logger.debug(`[⚙️ Backend] Executing ffmpeg command: ${ffmpegCommand}`);
 
-                try {
-                    const { stdout, stderr } = await execPromise(ffmpegCommand);
-                    if (stderr && !stderr.toLowerCase().includes('success')) { 
-                        logger.warn(`[⚙️ Backend FFMPEG STDERR]:\n${stderr}`);
+                    try {
+                        const { stdout, stderr } = await execPromise(ffmpegCommand);
+                        if (stderr && !stderr.toLowerCase().includes('success')) { 
+                            logger.warn(`[⚙️ Backend FFMPEG STDERR]:\n${stderr}`);
+                        }
+                        if (stdout) {
+                            logger.debug(`[⚙️ Backend FFMPEG STDOUT]:\n${stdout}`);
+                        }
+                        await fs.access(generatedVideoPath); 
+                        logger.info(`[⚙️ Backend] ✅ Successfully generated video: ${generatedVideoPath}`);
+                    } catch (ffmpegError: any) {
+                        logger.error(`[⚙️ Backend] ❌ FFMPEG execution failed:`, ffmpegError);
+                        logger.error(`[⚙️ Backend] FFMPEG STDERR: ${ffmpegError.stderr}`);
+                        logger.error(`[⚙️ Backend] FFMPEG STDOUT: ${ffmpegError.stdout}`);
+                        generatedVideoPath = undefined; // Don't return path if conversion failed
+                        logger.warn('[⚙️ Backend] Proceeding without generated video.');
                     }
-                    if (stdout) {
-                        logger.debug(`[⚙️ Backend FFMPEG STDOUT]:\n${stdout}`);
-                    }
-                    await fs.access(generatedVideoPath); // Verify creation
-                    logger.info(`[⚙️ Backend] ✅ Successfully generated video: ${generatedVideoPath}`);
-                } catch (ffmpegError: any) {
-                    logger.error(`[⚙️ Backend] ❌ FFMPEG execution failed:`, ffmpegError);
-                    logger.error(`[⚙️ Backend] FFMPEG STDERR: ${ffmpegError.stderr}`);
-                    logger.error(`[⚙️ Backend] FFMPEG STDOUT: ${ffmpegError.stdout}`);
-                    generatedVideoPath = undefined; // Don't return path if conversion failed
-                    // Continue without video
                 }
+            } else {
+                logger.warn(`[⚙️ Backend] Could not find DUBBED MP3 audio output URL. Skipping video generation.`);
             }
         } else {
-            logger.warn(`[⚙️ Backend] Could not find DUBBED MP3 audio output URL in project details.`);
+             logger.info('[⚙️ Backend] POST_REPLY_WITH_VIDEO is FALSE. Skipping video generation.');
+             generatedVideoPath = undefined;
         }
 
-        // 6. Generate sharing link (regardless of video generation)
+        // 6. Generate sharing link 
         logger.info(`[⚙️ Backend] Generating sharing link for project ID: ${projectId}...`);
         const sharingLink = await generateSharingLink(projectId);
         if (!sharingLink) {
