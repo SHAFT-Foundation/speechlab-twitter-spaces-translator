@@ -27,7 +27,7 @@ async function testTwitterLogin() {
         // Initialize browser with very slow motion for debugging
         console.log('Launching browser in non-headless mode with slow motion...');
         browser = await chromium.launch({
-            headless: false,
+            headless: config.BROWSER_HEADLESS ?? false,
             slowMo: 500, // Very slow for debugging
         });
         

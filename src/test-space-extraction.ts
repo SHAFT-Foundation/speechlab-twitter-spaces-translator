@@ -3,6 +3,7 @@ import path from 'path';
 import fs from 'fs/promises';
 import dotenv from 'dotenv';
 import winston from 'winston';
+import { config } from './utils/config'; // Import config
 
 // Configure environment
 dotenv.config();
@@ -94,7 +95,7 @@ async function testSpaceExtraction() {
   try {
     // Initialize browser
     logger.info('Launching browser...');
-    browser = await chromium.launch({ headless: false }); // Non-headless for visibility
+    browser = await chromium.launch({ headless: config.BROWSER_HEADLESS ?? false }); // Use config setting
     
     // Create context and load cookies
     logger.info('Creating browser context...');
