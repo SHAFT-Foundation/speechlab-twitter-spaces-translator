@@ -1337,11 +1337,9 @@ export async function postReplyToTweet(
         if (mediaPath) {
             logger.info(`[🐦 Twitter] Attempting to attach media: ${mediaPath}`);
             try {
-                // Locate the hidden file input
                 const fileInputSelector = 'input[type="file"][data-testid="fileInput"]';
-                const fileInput = page.locator(fileInputSelector).first(); // Usually only one
+                const fileInput = page.locator(fileInputSelector).first(); 
                 
-                // Check if file exists before attempting upload
                  if (!fs.existsSync(mediaPath)) {
                      logger.error(`[🐦 Twitter] Media file not found at path: ${mediaPath}`);
                      throw new Error('Media file not found');
@@ -1351,36 +1349,45 @@ export async function postReplyToTweet(
                 await fileInput.setInputFiles(mediaPath);
                 logger.info(`[🐦 Twitter] File input set. Waiting for media upload/processing...`);
                 
-                // Wait for upload/processing - This is TRICKY and needs refinement!
-                // Strategy 1: Wait for progress bar to disappear (if one exists)
-                const progressBarSelector = '[role="progressbar"]';
+                // --- NEW UPLOAD WAIT STRATEGY --- 
+                // Wait for the main reply button to potentially become enabled after upload processing
+                const replySubmitButtonSelector = '[data-testid="tweetButton"]'; // Use the primary submit button selector
+                logger.info(`[🐦 Twitter] Waiting up to 3 minutes for reply button (${replySubmitButtonSelector}) to be enabled after media attach...`);
                 try {
-                    logger.debug(`[🐦 Twitter] Waiting for progress bar (${progressBarSelector}) to disappear...`);
-                    await page.locator(progressBarSelector).waitFor({ state: 'hidden', timeout: 120000 }); // Wait up to 2 minutes
-                    logger.info(`[🐦 Twitter] Progress bar disappeared.`);
-                } catch (e) {
-                    logger.warn(`[🐦 Twitter] Progress bar did not disappear within timeout, or wasn't found. Proceeding cautiously.`);
-                }
+                    const submitButton = page.locator(replySubmitButtonSelector).first();
+                    // Wait for it to be visible first
+                    await submitButton.waitFor({ state: 'visible', timeout: 15000 }); 
+                    
+                    // Now wait for the button to NOT be disabled
+                    await page.waitForFunction((selector) => {
+                        const button = document.querySelector(selector);
+                        return button && !button.hasAttribute('disabled');
+                    }, replySubmitButtonSelector, { timeout: 180000 }); // Wait up to 3 minutes
 
-                // Strategy 2: Wait for media preview/thumbnail to be visible
-                const mediaPreviewSelector = 'div[data-testid*="media"] img, div[data-testid*="preview"] img'; // Example selectors
-                 try {
-                     logger.debug(`[🐦 Twitter] Waiting for media preview (${mediaPreviewSelector}) to appear...`);
-                     await page.locator(mediaPreviewSelector).first().waitFor({ state: 'visible', timeout: 60000 }); // Wait up to 1 min
-                     logger.info(`[🐦 Twitter] Media preview appeared.`);
-                 } catch (e) {
-                     logger.warn(`[🐦 Twitter] Media preview did not appear within timeout. Upload might have failed or UI changed.`);
-                     // Consider this non-fatal for now, but it might cause the post to fail later
+                    logger.info(`[🐦 Twitter] Reply button is enabled. Assuming media processed.`);
+                } catch (waitError) {
+                     logger.error(`[🐦 Twitter] ❌ Reply button did not become enabled within timeout after attaching media. Upload likely failed or got stuck.`, waitError);
+                     await page.screenshot({ path: path.join(screenshotsDir, 'reply-media-upload-timeout.png') });
+                     throw new Error('Media upload timed out or failed'); 
                  }
-                
-                await page.waitForTimeout(3000); // Extra safety wait after potential processing
-                await page.screenshot({ path: path.join(screenshotsDir, 'reply-media-attached.png') });
-                logger.info(`[🐦 Twitter] Media attachment process complete (or timed out).`);
+                 // --- END NEW UPLOAD WAIT STRATEGY ---
+
+                // Remove old progress/preview waits
+                /*
+                const progressBarSelector = '[role="progressbar"]';
+                // ... (old progress bar logic removed) ...
+                const mediaPreviewSelector = 'div[data-testid*="media"] img, div[data-testid*="preview"] img';
+                // ... (old media preview logic removed) ...
+                */
+                                
+                await page.waitForTimeout(1000); // Small safety wait
+                await page.screenshot({ path: path.join(screenshotsDir, 'reply-media-attached-final.png') });
+                logger.info(`[🐦 Twitter] Media attachment process seems complete.`);
 
             } catch (uploadError) {
                 logger.error(`[🐦 Twitter] Error attaching media:`, uploadError);
                 await page.screenshot({ path: path.join(screenshotsDir, 'reply-media-upload-error.png') });
-                return false; // Fail if media attachment goes wrong
+                return false; 
             }
         }
 
