@@ -937,7 +937,7 @@ export async function findSpaceTweetFromProfile(username: string, spaceId: strin
     logger.info(`[🔍 Profile Search] Starting search for tweets embedding Space ${spaceId} on @${username}'s profile`);
     
     const browser = await chromium.launch({ 
-        headless: true, // Force headless mode for server environments
+        headless: config.BROWSER_HEADLESS ?? false, // Use config setting
         slowMo: 100 
     });
     const context = await browser.newContext({ ...getDefaultBrowserContextOptions() });

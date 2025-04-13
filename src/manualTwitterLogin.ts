@@ -29,7 +29,7 @@ async function manualTwitterLogin() {
         // Launch browser with slow motion for easier interaction
         console.log('\nLaunching browser for manual login...');
         browser = await chromium.launch({
-            headless: false,
+            headless: config.BROWSER_HEADLESS ?? false,
             slowMo: 100 // Slight slow-down
         });
         

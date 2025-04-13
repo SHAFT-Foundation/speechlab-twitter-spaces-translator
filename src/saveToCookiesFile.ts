@@ -1,6 +1,7 @@
 import { chromium } from 'playwright';
 import * as fs from 'fs';
 import * as path from 'path';
+import { config } from './utils/config'; // Import config
 
 /**
  * Very simple script to manually save Twitter cookies after logging in
@@ -23,7 +24,7 @@ async function simpleSaveCookies() {
   console.log('\nLaunching browser...');
   
   const browser = await chromium.launch({
-    headless: false
+    headless: config.BROWSER_HEADLESS ?? false // Use config setting
   });
   
   const context = await browser.newContext();

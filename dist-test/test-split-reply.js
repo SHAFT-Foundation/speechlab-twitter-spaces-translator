@@ -59,7 +59,7 @@ function postSplitReply(tweetUrl) {
                 case 0:
                     logger_1.default.info("[\uD83E\uDDEA Test] Posting split reply to tweet: ".concat(tweetUrl));
                     return [4 /*yield*/, playwright_1.chromium.launch({
-                            headless: false,
+                            headless: process.env.BROWSER_HEADLESS ? process.env.BROWSER_HEADLESS.toLowerCase() === 'true' : false,
                             args: ['--no-sandbox']
                         })];
                 case 1:
