@@ -202,9 +202,8 @@ export async function createDubbingProject(
         return null;
     }
 
-    // Ensure projectName and thirdPartyId are reasonably sanitized/limited if not already
+    // Ensure projectName is reasonably limited
     const finalProjectName = projectName.substring(0, 100);
-    const finalThirdPartyId = thirdPartyId.replace(/[^a-zA-Z0-9_\-]/g, '_').substring(0, 50);
 
     const payload: CreateDubPayload = {
         name: finalProjectName,
@@ -214,7 +213,7 @@ export async function createDubbingProject(
         unitType: "whiteGlove",
         mediaFileURI: publicAudioUrl,
         voiceMatchingMode: "source", 
-        thirdPartyID: finalThirdPartyId,       // Use the sanitized and passed thirdPartyId
+        thirdPartyID: thirdPartyId,       // Use the ID passed directly into the function
     };
 
     logger.debug(`[🤖 SpeechLab] Create project payload: ${JSON.stringify(payload)}`);
@@ -226,7 +225,7 @@ export async function createDubbingProject(
 
         const projectId = response.data?.projectId;
         if (projectId) {
-            logger.info(`[🤖 SpeechLab] ✅ Successfully created project. Project ID: ${projectId} (ThirdPartyID: ${finalThirdPartyId})`);
+            logger.info(`[🤖 SpeechLab] ✅ Successfully created project. Project ID: ${projectId} (ThirdPartyID: ${thirdPartyId})`);
             return projectId;
         } else {
             logger.error(`[🤖 SpeechLab] ❌ Project creation API call successful but projectId not found in response.`);
@@ -235,7 +234,7 @@ export async function createDubbingProject(
         }
 
     } catch (error) {
-        handleApiError(error, `project creation for ${finalProjectName} (3rdPartyID: ${finalThirdPartyId})`);
+        handleApiError(error, `project creation for ${finalProjectName} (3rdPartyID: ${thirdPartyId})`);
         return null;
     }
 }
