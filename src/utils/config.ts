@@ -27,8 +27,18 @@ interface EnvConfig {
     TWITTER_USERNAME?: string;
     TWITTER_PASSWORD?: string;
     TWITTER_EMAIL?: string;
+    // Required Twitter API v2 credentials
+    TWITTER_API_KEY: string;
+    TWITTER_API_SECRET: string;
+    TWITTER_ACCESS_TOKEN: string;
+    TWITTER_ACCESS_SECRET: string;
+    // Optional: Bearer token if needed for specific v2 endpoints
+    TWITTER_BEARER_TOKEN?: string;
     // Browser configuration
     BROWSER_HEADLESS?: boolean;
+    // Feature Flags
+    POST_REPLY_WITH_VIDEO: boolean;
+    USE_TWITTER_API_FOR_REPLY: boolean;
 }
 
 function validateConfig(env: NodeJS.ProcessEnv): EnvConfig {
@@ -42,6 +52,11 @@ function validateConfig(env: NodeJS.ProcessEnv): EnvConfig {
         'DELAY_BETWEEN_PROFILES_MS',
         'LOG_LEVEL',
         'TEST_PROFILE_URL',
+        // Add new required Twitter API keys
+        'TWITTER_API_KEY',
+        'TWITTER_API_SECRET',
+        'TWITTER_ACCESS_TOKEN',
+        'TWITTER_ACCESS_SECRET'
     ];
 
     for (const key of requiredKeys) {
@@ -51,7 +66,8 @@ function validateConfig(env: NodeJS.ProcessEnv): EnvConfig {
         }
     }
 
-    const delayMs = parseInt(env.DELAY_BETWEEN_PROFILES_MS!, 10);
+    // --- Parse Optional Flags with Defaults ---
+    const delayMs = parseInt(env.DELAY_BETWEEN_PROFILES_MS || '300000', 10);
     if (isNaN(delayMs)) {
         console.error(`❌ Invalid non-numeric value for DELAY_BETWEEN_PROFILES_MS: ${env.DELAY_BETWEEN_PROFILES_MS}`);
         process.exit(1);
@@ -59,6 +75,12 @@ function validateConfig(env: NodeJS.ProcessEnv): EnvConfig {
 
     // Parse BROWSER_HEADLESS value as boolean (default to false if not provided)
     const browserHeadless = env.BROWSER_HEADLESS ? env.BROWSER_HEADLESS.toLowerCase() === 'true' : false;
+
+    // Default POST_REPLY_WITH_VIDEO to false if not set or invalid
+    const postReplyWithVideo = env.POST_REPLY_WITH_VIDEO ? env.POST_REPLY_WITH_VIDEO.toLowerCase() === 'true' : false;
+    
+    // Default USE_TWITTER_API_FOR_REPLY to false if not set or invalid
+    const useTwitterApiForReply = env.USE_TWITTER_API_FOR_REPLY ? env.USE_TWITTER_API_FOR_REPLY.toLowerCase() === 'true' : false;
 
     return {
         SPEECHLAB_EMAIL: env.SPEECHLAB_EMAIL!,
@@ -70,14 +92,25 @@ function validateConfig(env: NodeJS.ProcessEnv): EnvConfig {
         DELAY_BETWEEN_PROFILES_MS: delayMs,
         LOG_LEVEL: env.LOG_LEVEL!,
         TEST_PROFILE_URL: env.TEST_PROFILE_URL!,
-        // Optional values
+        // Optional AWS credentials
         AWS_ACCESS_KEY_ID: env.AWS_ACCESS_KEY_ID,
         AWS_SECRET_ACCESS_KEY: env.AWS_SECRET_ACCESS_KEY,
         AWS_REGION: env.AWS_REGION,
+        // Optional Twitter Login credentials
         TWITTER_USERNAME: env.TWITTER_USERNAME,
         TWITTER_PASSWORD: env.TWITTER_PASSWORD,
         TWITTER_EMAIL: env.TWITTER_EMAIL,
+        // Required Twitter API
+        TWITTER_API_KEY: env.TWITTER_API_KEY!,
+        TWITTER_API_SECRET: env.TWITTER_API_SECRET!,
+        TWITTER_ACCESS_TOKEN: env.TWITTER_ACCESS_TOKEN!,
+        TWITTER_ACCESS_SECRET: env.TWITTER_ACCESS_SECRET!,
+        TWITTER_BEARER_TOKEN: env.TWITTER_BEARER_TOKEN,
+        // Browser config
         BROWSER_HEADLESS: browserHeadless,
+        // Add new flags
+        POST_REPLY_WITH_VIDEO: postReplyWithVideo,
+        USE_TWITTER_API_FOR_REPLY: useTwitterApiForReply,
     };
 }
 

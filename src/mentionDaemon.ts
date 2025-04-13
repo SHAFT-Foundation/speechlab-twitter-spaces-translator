@@ -21,6 +21,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { downloadFile } from './utils/fileUtils';
 import { exec } from 'child_process';
 import util from 'util';
+import { postTweetReplyWithMediaApi } from './services/twitterApiService';
 
 const execPromise = util.promisify(exec);
 
@@ -856,91 +857,104 @@ async function runInitiationQueue(page: Page): Promise<void> {
 /**
  * Processes the final reply queue (runs one at a time).
  */
-async function runFinalReplyQueue(page: Page): Promise<void> {
-     if (isPostingFinalReply || finalReplyQueue.length === 0) {
-        // logger.debug('[↩️ Reply Queue] Worker skipped (already running or queue empty).');
-        return; // Already running or queue empty
+async function runFinalReplyQueue(page: Page): Promise<void> { 
+    if (isPostingFinalReply || finalReplyQueue.length === 0) {
+        return; 
     }
-        if (!page || page.isClosed()) {
-        logger.error('[↩️ Reply Queue] Page is closed! Cannot process reply queue.');
+    // Keep page check for Playwright path
+    if (!config.USE_TWITTER_API_FOR_REPLY && (!page || page.isClosed())) {
+        logger.error('[↩️ Reply Queue] Playwright Page is closed! Cannot process Playwright reply queue.');
         isPostingFinalReply = false;
         return;
-    }
+    } 
 
     isPostingFinalReply = true;
-    logger.info(`[↩️ Reply Queue] Starting worker. Queue size: ${finalReplyQueue.length}`);
+    const postMethod = config.USE_TWITTER_API_FOR_REPLY ? 'API' : 'Playwright';
+    logger.info(`[↩️ Reply Queue] Starting ${postMethod}-based reply worker. Queue size: ${finalReplyQueue.length}`);
 
     const replyData = finalReplyQueue.shift(); 
     if (!replyData) {
         isPostingFinalReply = false;
         logger.warn('[↩️ Reply Queue] Worker started but queue was empty.');
-        return; // Should not happen
+        return;
     }
     
     const { mentionInfo, backendResult } = replyData;
     logger.info(`[↩️ Reply Queue] Processing final reply for ${mentionInfo.tweetId}. Backend Success: ${backendResult.success}`);
 
     let finalMessage = '';
-    let mediaPath: string | undefined = undefined;
+    // Determine media path ONLY if the flag is true and backend succeeded
+    let mediaPathToAttach: string | undefined = 
+        config.POST_REPLY_WITH_VIDEO && backendResult.success ? backendResult.generatedVideoPath : undefined;
 
+    // Construct the message based on success and link availability
     if (backendResult.success) {
         const languageName = getLanguageName(detectLanguage(mentionInfo.text)); 
-        const estimatedDurationMinutes = 10; // Still using estimate
-
+        const estimatedDurationMinutes = 10; // Placeholder
         if (backendResult.sharingLink) {
-            finalMessage = `@${mentionInfo.username} I've translated this ${estimatedDurationMinutes}-minute Space to ${languageName}! Listen here: ${backendResult.sharingLink}`;
+            finalMessage = `@${mentionInfo.username} I've translated this Space to ${languageName}! Listen/Watch here: ${backendResult.sharingLink}`;
         } else {
-            // Case where project succeeded but link generation failed
-            finalMessage = `@${mentionInfo.username} I've translated this ${estimatedDurationMinutes}-minute Space to ${languageName}! Processing finished, but link generation failed.`;
-            logger.warn(`[↩️ Reply Queue] Posting reply for ${mentionInfo.tweetId} without sharing link.`);
+            finalMessage = `@${mentionInfo.username} I've translated this Space to ${languageName}! Processing finished, but link generation failed.`;
         }
-        // Assign video path if it exists
-        mediaPath = backendResult.generatedVideoPath;
-        if (mediaPath) {
-            logger.info(`[↩️ Reply Queue] Will attempt to attach video: ${mediaPath}`);
+        if (mediaPathToAttach) {
+            logger.info(`[↩️ Reply Queue] Will attempt to attach generated video: ${mediaPathToAttach}`);
+        } else {
+             logger.info(`[↩️ Reply Queue] Video attachment disabled by config or video not available.`);
         }
     } else {
-        // Use specific backend error or a generic one
         const errorReason = backendResult.error || 'processing failed';
          finalMessage = `@${mentionInfo.username} Sorry, the translation project for this Space failed (${errorReason}). Please try again later.`;
+         mediaPathToAttach = undefined; // Ensure no media attached on failure
     }
 
-    // PATH to the video to attach (if it was generated)
-    const videoPathToAttach = backendResult.success ? mediaPath : undefined;
-    
+    // --- Posting Logic --- 
+    let postSuccess = false;
     try {
-        logger.info(`[↩️ Reply Queue] Posting final reply to ${mentionInfo.tweetUrl}...`);
-        const postSuccess = await postReplyToTweet(page, mentionInfo.tweetUrl, finalMessage, videoPathToAttach);
-        
-        if (postSuccess) {
-            logger.info(`[↩️ Reply Queue] Successfully posted final reply for ${mentionInfo.tweetId}.`);
-            // Clean up GENERATED video file if it was posted
-            if (videoPathToAttach) {
-                logger.info(`[↩️ Reply Queue] Cleaning up generated video file: ${videoPathToAttach}`);
-                await fs.unlink(videoPathToAttach).catch(err => logger.warn(`[↩️ Reply Queue] Failed to delete temp video ${videoPathToAttach}:`, err));
-            }
-            // --- ALSO CLEAN UP DOWNLOADED AUDIO --- 
-            // We need the audio path even on success to clean it up.
-            // We'll assume it might exist if videoPathToAttach existed OR if backend succeeded but video didn't generate
-            // A cleaner way would be to pass both paths in BackendResult, but this avoids interface changes for now.
-            if (backendResult.success) {
-                 const audioFilename = `${mentionInfo.tweetId}_dubbed.mp3`; // Reconstruct filename (needs thirdPartyID ideally)
-                 // PROBLEM: thirdPartyID isn't available here easily. Need to rethink cleanup or pass audio path.
-                 // For now, we cannot reliably clean up the audio here without modifying BackendResult more.
-                 logger.warn('[↩️ Reply Queue] Skipping cleanup of downloaded audio - path reconstruction unreliable here.');
-            }
-            // ------------------------------------
+        if (config.USE_TWITTER_API_FOR_REPLY) {
+            // --- Use API --- 
+            logger.info(`[↩️ Reply Queue] Posting final reply via API to tweet ID ${mentionInfo.tweetId}...`);
+            postSuccess = await postTweetReplyWithMediaApi(
+                finalMessage,
+                mentionInfo.tweetId, 
+                mediaPathToAttach // Pass path (or undefined if flag is false/video missing)
+            );
         } else {
-             logger.warn(`[↩️ Reply Queue] Failed to post final reply for ${mentionInfo.tweetId}.`);
-             // Don't delete files if post failed
+            // --- Use Playwright --- 
+            logger.info(`[↩️ Reply Queue] Posting final reply via Playwright to tweet URL ${mentionInfo.tweetUrl}...`);
+            postSuccess = await postReplyToTweet(
+                page, 
+                mentionInfo.tweetUrl, 
+                finalMessage, 
+                mediaPathToAttach // Pass path (or undefined if flag is false/video missing)
+            );
+        }
+        
+        // --- Handling Post Result & Cleanup --- 
+        if (postSuccess) {
+            logger.info(`[↩️ Reply Queue] Successfully posted final reply via ${postMethod} for ${mentionInfo.tweetId}.`);
+            // Clean up GENERATED video file if it was successfully posted
+            if (mediaPathToAttach) { // Only cleanup if we had a path to begin with
+                logger.info(`[↩️ Reply Queue] Cleaning up generated video file: ${mediaPathToAttach}`);
+                await fs.unlink(mediaPathToAttach).catch(err => logger.warn(`[↩️ Reply Queue] Failed to delete temp video ${mediaPathToAttach}:`, err));
+            }
+            // TODO: Audio cleanup still needs better handling (needs path passed from backend)
+            logger.warn('[↩️ Reply Queue] Cleanup of downloaded temp audio file is currently skipped.');
+
+        } else {
+             logger.warn(`[↩️ Reply Queue] Failed to post final ${postMethod} reply for ${mentionInfo.tweetId}.`);
+             // If posting failed, files are NOT deleted by this logic (they might be by the finally block in performBackendProcessing if that errored earlier)
         }
     } catch (replyError) {
-        logger.error(`[↩️ Reply Queue] CRITICAL: Error posting final reply for ${mentionInfo.tweetId}:`, replyError);
-         // Don't delete files if post failed
+        logger.error(`[↩️ Reply Queue] CRITICAL: Error posting final ${postMethod} reply for ${mentionInfo.tweetId}:`, replyError);
+         // If posting failed, files are NOT deleted by this logic
+    } finally {
+        // This finally block runs regardless of post success/failure
+        // We should only attempt cleanup here if postSuccess was true, handled above.
+        // The primary cleanup for downloaded audio / generated video on backend *error* 
+        // should be in the catch block of performBackendProcessing.
+        logger.info(`[↩️ Reply Queue] Finished ${postMethod} reply work for ${mentionInfo.tweetId}.`);
+        isPostingFinalReply = false; 
     }
-
-    logger.info(`[↩️ Reply Queue] Finished reply work for ${mentionInfo.tweetId}.`);
-    isPostingFinalReply = false; // Free up the flag
 }
 
 // --- Trigger Functions (Called by main loop to avoid deep recursion) ---
