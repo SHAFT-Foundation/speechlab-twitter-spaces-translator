@@ -425,7 +425,7 @@ export async function initializeBrowser(): Promise<{ browser: Browser; context: 
     logger.info('Initializing browser for Twitter interactions');
     // For debugging, use non-headless by default
     const browser = await chromium.launch({
-        headless: config.BROWSER_HEADLESS ?? false,
+        headless: config.BROWSER_HEADLESS ?? true,
         args: ['--disable-blink-features=AutomationControlled'],
     });
     logger.info(`Browser launched in ${config.BROWSER_HEADLESS ? 'headless' : 'non-headless'} mode`);
@@ -855,7 +855,7 @@ export async function findTweetEmbeddingSpace(spaceUrl: string): Promise<string 
     logger.info(`[🔍 Tweet Finder] Starting search for tweet embedding Space: ${spaceUrl}`);
     
     const browser = await chromium.launch({ 
-        headless: false, // Non-headless for debugging
+        headless: true, // Force headless mode for server environments
         slowMo: 100 
     });
     const context = await browser.newContext({ ...getDefaultBrowserContextOptions() });
@@ -937,7 +937,7 @@ export async function findSpaceTweetFromProfile(username: string, spaceId: strin
     logger.info(`[🔍 Profile Search] Starting search for tweets embedding Space ${spaceId} on @${username}'s profile`);
     
     const browser = await chromium.launch({ 
-        headless: false, // Non-headless for debugging
+        headless: true, // Force headless mode for server environments
         slowMo: 100 
     });
     const context = await browser.newContext({ ...getDefaultBrowserContextOptions() });
@@ -1692,7 +1692,7 @@ export async function initializeDaemonBrowser(): Promise<{ browser: Browser, con
     }
     
     // Use non-headless mode for debugging
-    const isHeadless = false; // Force non-headless mode for debugging
+    const isHeadless = true; // Force headless mode for server environments
     logger.info(`[😈 Daemon Browser] Launching browser (Headless: ${isHeadless})`);
     const browser = await chromium.launch({ 
         headless: isHeadless, 
