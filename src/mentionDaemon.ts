@@ -652,7 +652,10 @@ async function performBackendProcessing(initData: InitiationResult): Promise<Bac
 
         // 2. Create SpeechLab project
         const projectName = spaceTitle || `Twitter Space ${spaceId}`; 
-        const thirdPartyID = `${spaceId}-${targetLanguageCode}`;
+        // Sanitize project name for use in ID (replace spaces, remove unsafe chars)
+        const sanitizedProjectName = projectName.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
+        // Construct the thirdPartyID using the sanitized project name and language code
+        const thirdPartyID = `${sanitizedProjectName}-${targetLanguageCode}`;
         logger.info(`[⚙️ Backend] Creating SpeechLab project: Name="${projectName}", Lang=${targetLanguageCode}, 3rdPartyID=${thirdPartyID}`);
         const projectId = await createDubbingProject(
             audioUploadResult, 
