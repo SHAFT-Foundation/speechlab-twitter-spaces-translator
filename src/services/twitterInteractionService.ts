@@ -1975,17 +1975,20 @@ export async function extractSpaceTitleFromModal(page: Page): Promise<string | n
             if (await tweetTextSpan.isVisible({ timeout: 2000 })) { // Increased timeout
                 const text = await tweetTextSpan.textContent();
                 const trimmedText = text?.trim();
-                // Use a more general check first, then refine if needed
+                // Use a more general check first
                 if (trimmedText && trimmedText.length > 3) { 
-                     // Check if it resembles the specific known title format, but be flexible
+                    // Check if it resembles the specific known title format, but be flexible
+                    // REMOVED HARDCODED CHECK - Rely on the selector finding the right element
+                    logger.info(`[🐦 Helper Title] SUCCESS: Found title via tweetText span: "${trimmedText}"`);
+                    return trimmedText; 
+                    /* Previous check removed:
                     if (trimmedText.includes('MEMECOIN COMMUNITY')) {
                          logger.info(`[🐦 Helper Title] SUCCESS: Found title via tweetText span (specific match): "${trimmedText}"`);
                          return trimmedText;
                     } else {
-                        // Maybe it's a different title, log it but potentially return it if no other strategy works
                          logger.warn(`[🐦 Helper Title] tweetText span found, but doesn't match expected "MEMECOIN COMMUNITY": "${trimmedText}"`);
-                         // We might want to return this as a fallback later, but for now, we prioritize exact match
                     }
+                    */
                 } else {
                     logger.warn(`[🐦 Helper Title] tweetText span visible, but text content too short: "${trimmedText}"`);
                 }

@@ -672,11 +672,17 @@ async function performBackendProcessing(initData: InitiationResult): Promise<Bac
         }
         logger.info(`[⚙️ Backend] SpeechLab project created: ${projectId} (using thirdPartyID ${thirdPartyID})`);
 
-        // 3. Wait for project completion
+        // 3. Wait for project completion with increased timeout and interval
         logger.info(`[⚙️ Backend] Waiting for SpeechLab project completion (thirdPartyID: ${thirdPartyID})...`);
-        const projectCompleted = await waitForProjectCompletion(thirdPartyID); 
+        const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
+        const FIVE_MINUTES_MS = 5 * 60 * 1000;
+        const projectCompleted = await waitForProjectCompletion(
+            thirdPartyID, 
+            SIX_HOURS_MS,      // Max wait time: 6 hours
+            FIVE_MINUTES_MS    // Check interval: 5 minutes
+        );
         if (!projectCompleted) {
-            throw new Error(`SpeechLab project ${thirdPartyID} failed or timed out`);
+            throw new Error(`SpeechLab project ${thirdPartyID} failed or timed out after 6 hours`);
         }
         logger.info(`[⚙️ Backend] SpeechLab project ${thirdPartyID} completed successfully.`);
 

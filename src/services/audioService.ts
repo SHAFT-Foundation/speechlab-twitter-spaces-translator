@@ -31,13 +31,13 @@ function ensureTempDirExists(): void {
  */
 function runFfmpegDownload(m3u8Url: string, outputFilePath: string): Promise<void> {
     return new Promise((resolve, reject) => {
-        // Define arguments, removing `-bsf:a aac_adtstoasc` for now as it might cause issues with `-c copy`
         const ffmpegArgs = [
-            '-protocol_whitelist', 'file,http,https,tcp,tls,crypto', // Ensure necessary protocols are allowed
-            '-i', m3u8Url,     // Input URL 
-            '-c', 'copy',      // Copy codec (no re-encoding)
-            '-y',              // Overwrite output file if it exists
-            outputFilePath     // Output file path
+            '-protocol_whitelist', 'file,http,https,tcp,tls,crypto',
+            '-i', m3u8Url,
+            '-c', 'copy', 
+            '-bsf:a', 'aac_adtstoasc',
+            '-y',
+            outputFilePath
         ];
 
         // Log the full ffmpeg command prominently
@@ -196,12 +196,12 @@ async function uploadToS3(localFilePath: string, s3Key: string): Promise<string>
             // This can be more reliable for avoiding EPIPE errors
             const fileBuffer = fs.readFileSync(localFilePath);
             
-            // Use the correct content type for MP4 files
+            // Use the correct content type for AAC files
             const uploadParams: PutObjectCommandInput = {
                 Bucket: config.AWS_S3_BUCKET,
                 Key: s3Key,
                 Body: fileBuffer,
-                ContentType: 'video/mp4', // Updated content type for MP4 container
+                ContentType: 'audio/aac', // Set content type to audio/aac
             };
 
             logger.debug(`[🎧 Audio] 📋 Uploading to bucket: ${config.AWS_S3_BUCKET}`);
@@ -245,18 +245,18 @@ async function uploadToS3(localFilePath: string, s3Key: string): Promise<string>
 export async function downloadAndUploadAudio(m3u8Url: string, spaceName?: string | null): Promise<string | null> {
     ensureTempDirExists();
     const uniqueId = uuidv4();
-    // Sanitize spaceName for filename or use uuid if name is unavailable/invalid
     const sanitizedNamePart = spaceName ? spaceName.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 50) : uniqueId;
-    const outputFilename = `${sanitizedNamePart}_${uniqueId}.mp4`; // Using MP4 container instead of AAC
+    const outputFilename = `${sanitizedNamePart}_${uniqueId}.aac`;
     const localFilePath = path.join(TEMP_DIR, outputFilename);
-    const s3Key = `twitter-space-audio/${outputFilename}`; // Store in a specific "folder" in S3
+    const s3Key = `twitter-space-audio/${outputFilename}`;
 
     logger.info(`[🎧 Audio] 🔄 Processing Twitter Space "${spaceName || 'Unnamed Space'}"`);
+    logger.info(`[🎧 Audio] Output filename: ${outputFilename}`);
     logger.info(`[🎧 Audio] Download queue initialized`);
 
     try {
         // Step 1: Download using ffmpeg
-        logger.info(`[🎧 Audio] 🔽 Step 1/3: Downloading audio stream...`);
+        logger.info(`[�� Audio] 🔽 Step 1/3: Downloading audio stream...`);
         const downloadStartTime = Date.now();
         await runFfmpegDownload(m3u8Url, localFilePath);
         const downloadEndTime = Date.now();
