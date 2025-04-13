@@ -22,6 +22,7 @@ import { downloadFile } from './utils/fileUtils';
 import { exec } from 'child_process';
 import util from 'util';
 import { postTweetReplyWithMediaApi } from './services/twitterApiService';
+import { uploadLocalFileToS3 } from './services/audioService';
 
 const execPromise = util.promisify(exec);
 
@@ -43,11 +44,12 @@ interface InitiationResult {
 // Interface for backend result
 interface BackendResult {
     success: boolean;
-    sharingLink?: string;
+    sharingLink?: string;   // Link to SpeechLab project page
+    publicMp3Url?: string;  // Link to the uploaded dubbed MP3 on S3
     projectId?: string;
     error?: string;
     // Path to the FINAL generated video file
-    generatedVideoPath?: string; 
+    // generatedVideoPath?: string; 
 }
 
 const PROCESSED_MENTIONS_PATH = path.join(process.cwd(), 'processed_mentions.json');
@@ -582,7 +584,7 @@ async function initiateProcessing(mentionInfo: MentionInfo, page: Page): Promise
                 `@${mentionInfo.username} Sorry, I could find the Space but couldn't get its audio stream. It might be finished or protected.`);
              throw new Error(errMsg);
         }
-        logger.info(`[🚀 Initiate] Captured M3U8 URL.`);
+        logger.info(`[�� Initiate] Captured M3U8 URL.`);
         
         // 4. Now try to extract title from modal
         try {
@@ -651,21 +653,22 @@ async function initiateProcessing(mentionInfo: MentionInfo, page: Page): Promise
  */
 async function performBackendProcessing(initData: InitiationResult): Promise<BackendResult> {
     const { m3u8Url, spaceId, spaceTitle, targetLanguageCode, mentionInfo } = initData;
-    const TEMP_AUDIO_DIR = path.join(process.cwd(), 'temp_audio'); // Use main temp audio dir
-    const TEMP_VIDEO_DIR = path.join(process.cwd(), 'temp_video'); // Use main temp video dir
-    const PLACEHOLDER_IMAGE_PATH = path.join(process.cwd(), 'placeholder.jpg'); // Assumed path
+    const TEMP_AUDIO_DIR = path.join(process.cwd(), 'temp_audio'); 
+    // Remove video dir if not generating video
+    // const TEMP_VIDEO_DIR = path.join(process.cwd(), 'temp_video'); 
+    // const PLACEHOLDER_IMAGE_PATH = path.join(process.cwd(), 'placeholder.jpg');
 
     logger.info(`[⚙️ Backend] Starting backend processing for Space ID: ${spaceId}, Lang: ${targetLanguageCode}`);
 
     let downloadedAudioPath: string | undefined = undefined;
-    let generatedVideoPath: string | undefined = undefined;
+    // let generatedVideoPath: string | undefined = undefined;
+    let publicMp3Url: string | undefined = undefined;
 
     try {
-        // Ensure necessary directories exist
         await fs.mkdir(TEMP_AUDIO_DIR, { recursive: true });
-        await fs.mkdir(TEMP_VIDEO_DIR, { recursive: true });
+        // await fs.mkdir(TEMP_VIDEO_DIR, { recursive: true }); // No video dir needed now
 
-        // 1. Download original Space audio (M3U8 to MP3/AAC) and upload to S3
+        // 1. Download original Space audio and upload to S3 (for project creation)
         logger.info(`[⚙️ Backend] Downloading/uploading original Space audio for ${spaceId}...`);
         const audioUploadResult = await downloadAndUploadAudio(m3u8Url, spaceId);
         if (!audioUploadResult) {
@@ -698,100 +701,66 @@ async function performBackendProcessing(initData: InitiationResult): Promise<Bac
         }
         logger.info(`[⚙️ Backend] SpeechLab project ${thirdPartyID} completed successfully.`);
 
-        // --- Step 4 & 5: Download Dubbed Audio and Convert to Video (Conditional) --- 
-        if (config.POST_REPLY_WITH_VIDEO) {
-            logger.info('[⚙️ Backend] POST_REPLY_WITH_VIDEO is TRUE. Attempting video generation...');
+        // 4. Find and Download DUBBED MP3 Audio
+        const outputAudio = completedProject.translations?.[0]?.dub?.[0]?.medias?.find(d => 
+            d.category === 'audio' && d.format === 'mp3' && d.operationType === 'OUTPUT'
+        );
+
+        if (outputAudio?.presignedURL) {
+            logger.info(`[⚙️ Backend] Found DUBBED MP3 URL: ${outputAudio.presignedURL}`);
+            const audioFilename = `${thirdPartyID}_dubbed.mp3`; 
+            const destinationAudioPath = path.join(TEMP_AUDIO_DIR, audioFilename);
+            downloadedAudioPath = destinationAudioPath; // Store path for cleanup
             
-            // Find and Download DUBBED MP3 Audio
-            const outputAudio = completedProject.translations?.[0]?.dub?.[0]?.medias?.find(d => 
-                d.category === 'audio' && 
-                d.format === 'mp3' && 
-                d.operationType === 'OUTPUT'
-            );
-
-            if (outputAudio?.presignedURL) {
-                logger.info(`[⚙️ Backend] Found DUBBED MP3 URL: ${outputAudio.presignedURL}`);
-                const audioFilename = `${thirdPartyID}_dubbed.mp3`;
-                const destinationAudioPath = path.join(TEMP_AUDIO_DIR, audioFilename);
-                downloadedAudioPath = destinationAudioPath; // Store for potential cleanup on error
-                
-                logger.info(`[⚙️ Backend] Attempting to download dubbed audio to ${destinationAudioPath}...`);
-                const downloadSuccess = await downloadFile(outputAudio.presignedURL, destinationAudioPath);
-                
-                if (!downloadSuccess) {
-                     logger.warn(`[⚙️ Backend] Failed to download DUBBED audio file. Skipping video generation.`);
-                     downloadedAudioPath = undefined; 
-                } else {
-                    logger.info(`[⚙️ Backend] Successfully downloaded DUBBED audio: ${downloadedAudioPath}`);
-
-                    // Convert Downloaded MP3 + Placeholder Image to MP4
-                     try {
-                        await fs.access(PLACEHOLDER_IMAGE_PATH);
-                     } catch (imgError) {
-                         logger.error(`[⚙️ Backend] Placeholder image NOT FOUND at: ${PLACEHOLDER_IMAGE_PATH}. Skipping video generation.`);
-                         // Keep downloadedAudioPath for cleanup in finally block
-                         throw new Error('Placeholder image not found for video generation'); 
-                     }
-
-                    const videoFilename = `${thirdPartyID}.mp4`; // Final video name
-                    const destinationVideoPath = path.join(TEMP_VIDEO_DIR, videoFilename);
-                    generatedVideoPath = destinationVideoPath; 
-
-                    logger.info(`[⚙️ Backend] Attempting to convert ${downloadedAudioPath} + ${PLACEHOLDER_IMAGE_PATH} to ${destinationVideoPath} using ffmpeg...`);
-                    const escapedImagePath = `"${PLACEHOLDER_IMAGE_PATH}"`;
-                    const escapedAudioPath = `"${downloadedAudioPath}"`;
-                    const escapedVideoPath = `"${generatedVideoPath}"`;
-                    // Use AAC audio encoding and CRF 28 for video
-                    const ffmpegCommand = `ffmpeg -loop 1 -y -i ${escapedImagePath} -i ${escapedAudioPath} -vf "scale=w=-2:h=194" -c:v libx264 -preset veryfast -crf 28 -c:a aac -b:a 128k -pix_fmt yuv420p -shortest ${escapedVideoPath}`;
-                    logger.debug(`[⚙️ Backend] Executing ffmpeg command: ${ffmpegCommand}`);
-
-                    try {
-                        const { stdout, stderr } = await execPromise(ffmpegCommand);
-                        if (stderr && !stderr.toLowerCase().includes('success')) { 
-                            logger.warn(`[⚙️ Backend FFMPEG STDERR]:\n${stderr}`);
-                        }
-                        if (stdout) {
-                            logger.debug(`[⚙️ Backend FFMPEG STDOUT]:\n${stdout}`);
-                        }
-                        await fs.access(generatedVideoPath); 
-                        logger.info(`[⚙️ Backend] ✅ Successfully generated video: ${generatedVideoPath}`);
-                    } catch (ffmpegError: any) {
-                        logger.error(`[⚙️ Backend] ❌ FFMPEG execution failed:`, ffmpegError);
-                        logger.error(`[⚙️ Backend] FFMPEG STDERR: ${ffmpegError.stderr}`);
-                        logger.error(`[⚙️ Backend] FFMPEG STDOUT: ${ffmpegError.stdout}`);
-                        generatedVideoPath = undefined; // Don't return path if conversion failed
-                        logger.warn('[⚙️ Backend] Proceeding without generated video.');
-                    }
-                }
+            logger.info(`[⚙️ Backend] Attempting to download dubbed audio to ${destinationAudioPath}...`);
+            const downloadSuccess = await downloadFile(outputAudio.presignedURL, destinationAudioPath);
+            
+            if (!downloadSuccess) {
+                 logger.warn(`[⚙️ Backend] Failed to download DUBBED audio file.`);
+                 downloadedAudioPath = undefined; 
             } else {
-                logger.warn(`[⚙️ Backend] Could not find DUBBED MP3 audio output URL. Skipping video generation.`);
+                logger.info(`[⚙️ Backend] Successfully downloaded DUBBED audio: ${downloadedAudioPath}`);
+                
+                // 5. Upload the DUBBED MP3 to the PUBLIC S3 Bucket
+                const publicS3Key = `dubbed-spaces/${audioFilename}`; // Example S3 path
+                logger.info(`[⚙️ Backend] Uploading downloaded MP3 to public S3 bucket as ${publicS3Key}...`);
+                const uploadedUrl = await uploadLocalFileToS3(downloadedAudioPath, publicS3Key);
+                if (uploadedUrl) {
+                    publicMp3Url = uploadedUrl;
+                    logger.info(`[⚙️ Backend] ✅ Successfully uploaded dubbed MP3 to public S3: ${publicMp3Url}`);
+                } else {
+                    logger.error(`[⚙️ Backend] ❌ Failed to upload dubbed MP3 to public S3.`);
+                    // Continue without the public URL, but keep downloaded file for cleanup
+                }
+                // Skip video conversion logic
             }
         } else {
-             logger.info('[⚙️ Backend] POST_REPLY_WITH_VIDEO is FALSE. Skipping video generation.');
-             generatedVideoPath = undefined;
+            logger.warn(`[⚙️ Backend] Could not find DUBBED MP3 audio output URL in project details.`);
         }
 
         // 6. Generate sharing link 
         logger.info(`[⚙️ Backend] Generating sharing link for project ID: ${projectId}...`);
         const sharingLink = await generateSharingLink(projectId);
         if (!sharingLink) {
-             logger.warn(`[⚙️ Backend] Failed to generate sharing link for project ${projectId}. Reply will not include link.`);
+             logger.warn(`[⚙️ Backend] Failed to generate sharing link for project ${projectId}. Reply may not include link.`);
         }
         logger.info(`[⚙️ Backend] Sharing link generated: ${sharingLink || 'N/A'}`);
 
-        // Return success with link, project ID, and GENERATED video path
+        // Return success with relevant URLs
         return { 
             success: true, 
             sharingLink: sharingLink || undefined, 
-            projectId, 
-            generatedVideoPath // Path to the final MP4, or undefined
+            publicMp3Url: publicMp3Url, // Will be undefined if download or S3 upload failed
+            projectId 
         };
 
     } catch (error: any) {
         logger.error(`[⚙️ Backend] Error during backend processing for ${spaceId}:`, error);
-        // Ensure partial files are cleaned up on error too
-        if (downloadedAudioPath) await fs.unlink(downloadedAudioPath).catch(()=>{});
-        if (generatedVideoPath) await fs.unlink(generatedVideoPath).catch(()=>{});
+        // Ensure temporary downloaded audio is cleaned up on error
+        if (downloadedAudioPath) {
+             logger.info(`[⚙️ Backend] Cleaning up temporary audio file due to error: ${downloadedAudioPath}`);
+             await fs.unlink(downloadedAudioPath).catch(()=>{}); // Best effort cleanup
+        }
         return { success: false, error: error.message || 'Unknown backend error' };
     }
 }
@@ -889,75 +858,78 @@ async function runFinalReplyQueue(page: Page): Promise<void> {
     logger.info(`[↩️ Reply Queue] Processing final reply for ${mentionInfo.tweetId}. Backend Success: ${backendResult.success}`);
 
     let finalMessage = '';
-    // Determine media path ONLY if the flag is true and backend succeeded
-    let mediaPathToAttach: string | undefined = 
-        config.POST_REPLY_WITH_VIDEO && backendResult.success ? backendResult.generatedVideoPath : undefined;
+    // No media path needed anymore
+    // let mediaPathToAttach: string | undefined = undefined; 
 
-    // Construct the message based on success and link availability
     if (backendResult.success) {
         const languageName = getLanguageName(detectLanguage(mentionInfo.text)); 
-        const estimatedDurationMinutes = 10; // Placeholder
+        let baseMessage = `@${mentionInfo.username} I've translated this Space to ${languageName}!`;
+        let links = [];
         if (backendResult.sharingLink) {
-            finalMessage = `@${mentionInfo.username} I've translated this Space to ${languageName}! Listen/Watch here: ${backendResult.sharingLink}`;
-        } else {
-            finalMessage = `@${mentionInfo.username} I've translated this Space to ${languageName}! Processing finished, but link generation failed.`;
+            links.push(`Listen/Watch here: ${backendResult.sharingLink}`);
         }
-        if (mediaPathToAttach) {
-            logger.info(`[↩️ Reply Queue] Will attempt to attach generated video: ${mediaPathToAttach}`);
+        if (backendResult.publicMp3Url) {
+            links.push(`Full Audio (MP3): ${backendResult.publicMp3Url}`);
+        }
+        if (links.length > 0) {
+            finalMessage = `${baseMessage} ${links.join(' | ')}`;
         } else {
-             logger.info(`[↩️ Reply Queue] Video attachment disabled by config or video not available.`);
+            finalMessage = `${baseMessage} Processing finished, but no links could be generated.`;
         }
     } else {
         const errorReason = backendResult.error || 'processing failed';
          finalMessage = `@${mentionInfo.username} Sorry, the translation project for this Space failed (${errorReason}). Please try again later.`;
-         mediaPathToAttach = undefined; // Ensure no media attached on failure
     }
 
     // --- Posting Logic --- 
     let postSuccess = false;
+    const TEMP_AUDIO_DIR = path.join(process.cwd(), 'temp_audio'); // Define for cleanup
+    // Determine the path of the downloaded audio (needs reconstruction or passing)
+    // This reconstruction is fragile! Ideally, pass the path via BackendResult.
+    const sanitizedProjectName = (mentionInfo.text || `space_${mentionInfo.tweetId}`).toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
+    const targetLanguageCode = detectLanguage(mentionInfo.text);
+    const thirdPartyID = `${sanitizedProjectName}-${targetLanguageCode}`;
+    const assumedAudioFilename = `${thirdPartyID}_dubbed.mp3`;
+    const assumedDownloadedAudioPath = path.join(TEMP_AUDIO_DIR, assumedAudioFilename);
+
     try {
         if (config.USE_TWITTER_API_FOR_REPLY) {
-            // --- Use API --- 
             logger.info(`[↩️ Reply Queue] Posting final reply via API to tweet ID ${mentionInfo.tweetId}...`);
             postSuccess = await postTweetReplyWithMediaApi(
                 finalMessage,
                 mentionInfo.tweetId, 
-                mediaPathToAttach // Pass path (or undefined if flag is false/video missing)
+                undefined // No media attachment
             );
         } else {
-            // --- Use Playwright --- 
             logger.info(`[↩️ Reply Queue] Posting final reply via Playwright to tweet URL ${mentionInfo.tweetUrl}...`);
             postSuccess = await postReplyToTweet(
                 page, 
                 mentionInfo.tweetUrl, 
                 finalMessage, 
-                mediaPathToAttach // Pass path (or undefined if flag is false/video missing)
+                undefined // No media attachment
             );
         }
         
-        // --- Handling Post Result & Cleanup --- 
         if (postSuccess) {
             logger.info(`[↩️ Reply Queue] Successfully posted final reply via ${postMethod} for ${mentionInfo.tweetId}.`);
-            // Clean up GENERATED video file if it was successfully posted
-            if (mediaPathToAttach) { // Only cleanup if we had a path to begin with
-                logger.info(`[↩️ Reply Queue] Cleaning up generated video file: ${mediaPathToAttach}`);
-                await fs.unlink(mediaPathToAttach).catch(err => logger.warn(`[↩️ Reply Queue] Failed to delete temp video ${mediaPathToAttach}:`, err));
+            // --- Clean up DOWNLOADED MP3 --- 
+            // Attempt cleanup using the reconstructed path
+            logger.info(`[↩️ Reply Queue] Attempting cleanup of temporary audio file: ${assumedDownloadedAudioPath}`);
+            try {
+                 // Check if it exists before unlinking
+                 await fs.access(assumedDownloadedAudioPath);
+                 await fs.unlink(assumedDownloadedAudioPath);
+                 logger.info(`[↩️ Reply Queue] Successfully deleted temporary audio file.`);
+            } catch (err) {
+                 logger.warn(`[↩️ Reply Queue] Failed to delete or access temp audio ${assumedDownloadedAudioPath} (may have already been deleted or reconstruction failed):`, err);
             }
-            // TODO: Audio cleanup still needs better handling (needs path passed from backend)
-            logger.warn('[↩️ Reply Queue] Cleanup of downloaded temp audio file is currently skipped.');
-
+            // -----------------------------
         } else {
              logger.warn(`[↩️ Reply Queue] Failed to post final ${postMethod} reply for ${mentionInfo.tweetId}.`);
-             // If posting failed, files are NOT deleted by this logic (they might be by the finally block in performBackendProcessing if that errored earlier)
         }
     } catch (replyError) {
         logger.error(`[↩️ Reply Queue] CRITICAL: Error posting final ${postMethod} reply for ${mentionInfo.tweetId}:`, replyError);
-         // If posting failed, files are NOT deleted by this logic
     } finally {
-        // This finally block runs regardless of post success/failure
-        // We should only attempt cleanup here if postSuccess was true, handled above.
-        // The primary cleanup for downloaded audio / generated video on backend *error* 
-        // should be in the catch block of performBackendProcessing.
         logger.info(`[↩️ Reply Queue] Finished ${postMethod} reply work for ${mentionInfo.tweetId}.`);
         isPostingFinalReply = false; 
     }

@@ -256,7 +256,7 @@ export async function downloadAndUploadAudio(m3u8Url: string, spaceName?: string
 
     try {
         // Step 1: Download using ffmpeg
-        logger.info(`[�� Audio] 🔽 Step 1/3: Downloading audio stream...`);
+        logger.info(`[🎧 Audio] 🔽 Step 1/3: Downloading audio stream...`);
         const downloadStartTime = Date.now();
         await runFfmpegDownload(m3u8Url, localFilePath);
         const downloadEndTime = Date.now();
@@ -297,4 +297,89 @@ export async function downloadAndUploadAudio(m3u8Url: string, spaceName?: string
         }
         return null; // Indicate failure
     }
+}
+
+/**
+ * Uploads a locally stored file to the configured S3 public bucket.
+ * @param localFilePath Path to the local file to upload.
+ * @param s3Key The desired key (filename including any prefixes) for the object in S3.
+ * @returns Promise resolving with the public URL of the uploaded object, or null on failure.
+ */
+export async function uploadLocalFileToS3(localFilePath: string, s3Key: string): Promise<string | null> {
+    const MAX_RETRIES = 3;
+    let attempt = 0;
+    let lastError: any = null;
+
+    logger.info(`[☁️ S3] Attempting to upload local file to S3.`);
+    logger.debug(`[☁️ S3]   Local Path: ${localFilePath}`);
+    logger.debug(`[☁️ S3]   Target Key: ${s3Key}`);
+    logger.debug(`[☁️ S3]   Target Bucket: ${config.AWS_S3_BUCKET}`);
+
+    try {
+        if (!fs.existsSync(localFilePath)) {
+            logger.error(`[☁️ S3] ❌ File does not exist at local path: ${localFilePath}`);
+            return null;
+        }
+        const stats = fs.statSync(localFilePath);
+        if (stats.size <= 0) {
+            logger.error(`[☁️ S3] ❌ File exists but has zero bytes: ${localFilePath}`);
+            return null;
+        }
+        const fileSizeMB = (stats.size / (1024 * 1024)).toFixed(2);
+        logger.info(`[☁️ S3] File verified locally (${fileSizeMB} MB). Proceeding with upload attempts...`);
+
+    } catch (error) {
+        logger.error(`[☁️ S3] ❌ Error accessing local file ${localFilePath}:`, error);
+        return null;
+    }
+
+    while (attempt < MAX_RETRIES) {
+        attempt++;
+        try {
+            logger.info(`[☁️ S3] Starting upload attempt ${attempt}/${MAX_RETRIES}...`);
+            const startTime = Date.now();
+            const fileStream = fs.createReadStream(localFilePath);
+
+            // Dynamically determine content type based on extension (basic implementation)
+            let contentType = 'application/octet-stream'; // Default
+            const ext = path.extname(localFilePath).toLowerCase();
+            if (ext === '.mp3') contentType = 'audio/mpeg';
+            else if (ext === '.aac') contentType = 'audio/aac';
+            else if (ext === '.mp4') contentType = 'video/mp4';
+            // Add other types as needed
+            logger.debug(`[☁️ S3] Determined Content-Type: ${contentType}`);
+
+            const uploadParams: PutObjectCommandInput = {
+                Bucket: config.AWS_S3_BUCKET,
+                Key: s3Key,
+                Body: fileStream,
+                ContentType: contentType,
+                // Consider adding ACL: 'public-read' if bucket policy doesn't automatically make it public
+                // ACL: 'public-read' 
+            };
+
+            const command = new PutObjectCommand(uploadParams);
+            await s3Client.send(command);
+
+            const region = config.AWS_REGION || await s3Client.config.region() || 'us-east-1';
+            const publicUrl = `https://${config.AWS_S3_BUCKET}.s3.${region}.amazonaws.com/${s3Key}`;
+
+            const endTime = Date.now();
+            const elapsedSeconds = ((endTime - startTime) / 1000).toFixed(1);
+            logger.info(`[☁️ S3] ✅ S3 upload successful (attempt ${attempt}, ${elapsedSeconds}s). Public URL: ${publicUrl}`);
+            return publicUrl;
+            
+        } catch (error) {
+            lastError = error;
+            logger.error(`[☁️ S3] ❌ S3 upload attempt ${attempt}/${MAX_RETRIES} failed:`, error);
+            if (attempt < MAX_RETRIES) {
+                const delayMs = Math.min(1000 * Math.pow(2, attempt) + Math.random() * 1000, 10000);
+                logger.info(`[☁️ S3] ⏳ Retrying in ${(delayMs/1000).toFixed(1)}s...`);
+                await new Promise(resolve => setTimeout(resolve, delayMs));
+            }
+        }
+    }
+    
+    logger.error(`[☁️ S3] ❌ All ${MAX_RETRIES} S3 upload attempts failed for key: ${s3Key}`);
+    return null; // Return null if all retries fail
 } 

@@ -208,13 +208,13 @@ export async function createDubbingProject(
 
     const payload: CreateDubPayload = {
         name: finalProjectName,
-        sourceLanguage: config.SOURCE_LANGUAGE, // Keep source from config
-        targetLanguage: targetLanguageCode,     // Use detected target language
-        dubAccent: targetLanguageCode,          // Use language code as accent code (as requested)
+        sourceLanguage: config.SOURCE_LANGUAGE, 
+        targetLanguage: targetLanguageCode,     
+        dubAccent: targetLanguageCode,          
         unitType: "whiteGlove",
         mediaFileURI: publicAudioUrl,
-        voiceMatchingMode: "source", // Or potentially make this configurable?
-        thirdPartyID: finalThirdPartyId,       // Use provided unique ID
+        voiceMatchingMode: "source", 
+        thirdPartyID: finalThirdPartyId,       // Use the sanitized and passed thirdPartyId
     };
 
     logger.debug(`[🤖 SpeechLab] Create project payload: ${JSON.stringify(payload)}`);
