@@ -388,4 +388,41 @@ export async function waitForProjectCompletion(
     const maxWaitMinutes = (maxWaitTimeMs/1000/60).toFixed(1);
     logger.warn(`[🤖 SpeechLab] ⏰ Poll #${pollCount} - Maximum wait time of ${maxWaitMinutes} minutes exceeded without project completion.`);
     return false;
+}
+
+/**
+ * Fetches the full details of a specific SpeechLab project by its ID.
+ * @param projectId The SpeechLab project ID.
+ * @returns The full project object or null if not found/error.
+ */
+export async function getProjectDetails(projectId: string): Promise<any | null> {
+    if (!projectId) {
+        logger.error('[🤖 SpeechLab] getProjectDetails called with null or empty projectId.');
+        return null;
+    }
+    const url = `${config.SPEECHLAB_API_URI}/api/project/${projectId}`;
+    logger.info(`[🤖 SpeechLab] Fetching project details for ID: ${projectId}`);
+    
+    try {
+        const response = await apiClient.get(url, {
+            headers: {
+                'Authorization': `Bearer ${config.SPEECHLAB_API_TOKEN}`,
+                'Accept': 'application/json'
+            },
+            timeout: 30000 // 30 second timeout
+        });
+
+        if (response.status === 200 && response.data) {
+            logger.info(`[🤖 SpeechLab] Successfully fetched details for project ${projectId}`);
+            // Optionally log part of the response for debugging
+            // logger.debug(`[🤖 SpeechLab] Project details response: ${JSON.stringify(response.data).substring(0, 300)}...`);
+            return response.data; // Return the full project data object
+        } else {
+            logger.warn(`[🤖 SpeechLab] Received non-200 status (${response.status}) or no data for project ${projectId}`);
+            return null;
+        }
+    } catch (error: any) {
+        logger.error(`[🤖 SpeechLab] Error fetching project details for ID ${projectId}:`, error.response?.data || error.message);
+        return null;
+    }
 } 
