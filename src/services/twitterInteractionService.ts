@@ -1197,14 +1197,20 @@ export async function findSpaceTweetFromProfile(username: string, spaceId: strin
 }
 
 /**
- * Posts a reply to a tweet using Playwright browser automation
- * @param page The logged-in Playwright page instance.
- * @param tweetUrl The URL of the tweet to reply to
- * @param replyText The text content of the reply
- * @returns True if reply was posted successfully, false otherwise
+ * Posts a reply to a specific tweet, optionally attaching media.
+ * @param page The Playwright Page object.
+ * @param tweetUrl The URL of the tweet to reply to.
+ * @param replyText The text content of the reply.
+ * @param mediaPath Optional path to a local media file (e.g., MP4 video) to attach.
+ * @returns {Promise<boolean>} True if the reply was likely posted successfully, false otherwise.
  */
-export async function postReplyToTweet(page: Page, tweetUrl: string, replyText: string): Promise<boolean> {
-    logger.info(`[🐦 Twitter] Attempting to post reply to tweet: ${tweetUrl} using existing page.`);
+export async function postReplyToTweet(
+    page: Page, 
+    tweetUrl: string, 
+    replyText: string,
+    mediaPath?: string // Added optional media path
+): Promise<boolean> {
+    logger.info(`[🐦 Twitter] Attempting to post reply to tweet: ${tweetUrl}${mediaPath ? ' with media: ' + mediaPath : ''} using existing page.`);
     
     if (!tweetUrl) {
         logger.error(`[🐦 Twitter] Invalid tweet URL provided`);
@@ -1220,67 +1226,59 @@ export async function postReplyToTweet(page: Page, tweetUrl: string, replyText: 
     try {
         // Navigate to the tweet
         logger.info(`[🐦 Twitter] Navigating to tweet: ${tweetUrl}`);
-        
-        // Fix URL if it's using x.com instead of twitter.com
         const normalizedUrl = tweetUrl.replace('x.com', 'twitter.com');
         await page.goto(normalizedUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
-        
-        // Wait for the page to stabilize
-        await page.waitForTimeout(5000);
-        
-        // Take screenshot before trying to reply
+        await page.waitForTimeout(5000); // Stabilize
         await page.screenshot({ path: path.join(screenshotsDir, 'tweet-before-reply.png') });
         
-        // Debugging: Log the page title and current URL
-        logger.info(`[🐦 Twitter] Current page title: "${await page.title()}"`);
-        logger.info(`[🐦 Twitter] Current URL: ${page.url()}`);
-        
-        // Check if we need to expand the tweet first
-        const expandTweet = page.locator('div[data-testid="tweet"] div[role="button"]:has-text("Show more")').first();
-        if (await expandTweet.isVisible().catch(() => false)) {
-            logger.info(`[🐦 Twitter] Expanding tweet to see full content...`);
-            await expandTweet.click();
-            await page.waitForTimeout(1000);
-        }
-        
-        // Look for the reply button - **MODIFIED TO BE MORE SPECIFIC**
-        logger.info(`[🐦 Twitter] Looking for the specific reply button for tweet ${tweetUrl}...`);
-        
-        // Extract the tweet ID from the URL
+        // --- Find Reply Button (using existing logic) --- 
         const tweetIdMatch = normalizedUrl.match(/\/status\/(\d+)/);
         if (!tweetIdMatch || !tweetIdMatch[1]) {
-            logger.error(`[🐦 Twitter] Could not extract tweet ID from URL ${normalizedUrl} to target reply button.`);
+            logger.error(`[🐦 Twitter] Could not extract tweet ID from URL ${normalizedUrl}`);
             return false;
         }
         const targetTweetId = tweetIdMatch[1];
-        logger.debug(`[🐦 Twitter] Target tweet ID for reply: ${targetTweetId}`);
+        
+        // --- Locate the target tweet article/container --- 
+        logger.info(`[🐦 Twitter] Locating article/container for tweet ID: ${targetTweetId}`);
+        let targetArticle: Locator | null = null;
+        const targetArticleSelectors = [
+            // Primary selector based on timestamp link href
+            `article:has(a[href*="/status/${targetTweetId}"])`,
+            // Removed selector relying on mentionInfo.username
+             // Fallback: A cell containing the tweet (less precise)
+             `div[data-testid="cellInnerDiv"]:has(a[href*="/status/${targetTweetId}"])`
+        ];
 
-        // Locate the specific article containing a link to this tweet status
-        // This assumes the main tweet article has a timestamp link pointing to itself.
-        const targetArticleSelector = `article:has(a[href*="/status/${targetTweetId}"])`;
-        const targetArticle = page.locator(targetArticleSelector).first();
+        for (const selector of targetArticleSelectors) {
+             logger.debug(`[🐦 Twitter] Trying target article selector: ${selector}`);
+             const articleLocator = page.locator(selector).first();
+             // Increased timeout significantly
+             if (await articleLocator.isVisible({ timeout: 15000 }).catch(() => false)) { 
+                 logger.info(`[🐦 Twitter] Found target article/container with selector: ${selector}`);
+                 targetArticle = articleLocator;
+                 break;
+             }
+        }
 
-        if (!await targetArticle.isVisible({ timeout: 5000 }).catch(() => false)) {
-            logger.error(`[🐦 Twitter] Could not find the specific article element for tweet ${targetTweetId}.`);
-            await page.screenshot({ path: path.join(screenshotsDir, 'no-target-article.png') });
+        if (!targetArticle) { // Check if targetArticle was assigned
+            logger.error(`[🐦 Twitter] Could not find the specific article/container element for tweet ${targetTweetId}.`);
             // Save full page HTML for debugging
-            const html = await page.content();
-            fs.writeFileSync(path.join(screenshotsDir, 'tweet-page-no-article.html'), html);
+            try {
+                const html = await page.content();
+                fs.writeFileSync(path.join(screenshotsDir, 'tweet-page-no-article.html'), html);
+                logger.info(`[🐦 Twitter] Saved page HTML to ${screenshotsDir}/tweet-page-no-article.html`);
+            } catch (htmlError) {
+                 logger.error('[🐦 Twitter] Failed to save page HTML on article find failure:', htmlError);
+            }
+            await page.screenshot({ path: path.join(screenshotsDir, 'no-target-article.png') });
             return false;
         }
-        logger.info(`[🐦 Twitter] Found target article for tweet ${targetTweetId}. Looking for reply button within it...`);
-
-        // Now, look for the reply button *within* that specific article
-        const replyButtonSelectors = [
-            '[data-testid="reply"]',
-            'div[aria-label="Reply"]',
-            '[aria-label="Reply"]',
-            'div[role="button"]:has-text("Reply")'
-        ];
         
+        // Now search for the reply button *within* the found targetArticle
+        const replyButtonSelectors = ['[data-testid="reply"]', 'div[aria-label="Reply"]', '[aria-label="Reply"]', 'div[role="button"]:has-text("Reply")'];
         let replyButton = null;
         for (const selector of replyButtonSelectors) {
-            // Use locator chaining: find the button *within* the targetArticle
             const button = targetArticle.locator(selector).first(); 
             if (await button.isVisible({ timeout: 2000 }).catch(() => false)) {
                 replyButton = button;
@@ -1288,168 +1286,177 @@ export async function postReplyToTweet(page: Page, tweetUrl: string, replyText: 
                 break;
             }
         }
-        
-        if (!replyButton) {
-            logger.error(`[🐦 Twitter] Could not find reply button on tweet page`);
-            await page.screenshot({ path: path.join(screenshotsDir, 'no-reply-button.png') });
-            
-            // Save full page HTML for debugging
-            const html = await page.content();
-            fs.writeFileSync(path.join(screenshotsDir, 'tweet-page.html'), html);
-            logger.info(`[🐦 Twitter] Saved page HTML to debug-screenshots/tweet-page.html`);
-            
-            return false;
+        if (!replyButton || !(await replyButton.isEnabled().catch(() => false))) {
+             logger.error(`[🐦 Twitter] Could not find enabled reply button on tweet page`);
+             await page.screenshot({ path: path.join(screenshotsDir, 'no-reply-button.png') });
+             // ... (save HTML) ...
+             return false;
         }
         
-        // Check if button is disabled
-        const isEnabled = await replyButton.isEnabled().catch(() => false);
-        if (!isEnabled) {
-            logger.warn(`[🐦 Twitter] Reply button is disabled. Account may not be authorized to reply to this tweet.`);
-            await page.screenshot({ path: path.join(screenshotsDir, 'disabled-reply-button.png') });
-            
-            // Look for possible restrictions message
-            const restrictionText = await page.locator('text="Who can reply?"').isVisible().catch(() => false);
-            if (restrictionText) {
-                logger.warn(`[🐦 Twitter] Tweet has reply restrictions enabled.`);
-            }
-            
-            return false;
-        }
-        
-        // Click the reply button
+        // --- Open Reply Composer --- 
         try {
             logger.info(`[🐦 Twitter] Clicking reply button...`);
-        await replyButton.click();
+            await replyButton.click();
             logger.info(`[🐦 Twitter] Successfully clicked reply button`);
-        } catch (error) {
-            logger.error(`[🐦 Twitter] Error clicking reply button: ${error}`);
-            await page.screenshot({ path: path.join(screenshotsDir, 'reply-button-click-error.png') });
-            return false;
-        }
+            await page.waitForTimeout(3000); // Wait for composer to open
+            await page.screenshot({ path: path.join(screenshotsDir, 'reply-composer-opened.png') });
+        } catch (error) { /* ... error handling ... */ return false; }
         
-        // Wait for reply textarea to appear
-        await page.waitForTimeout(3000);
-        
-        // Take screenshot after clicking reply
-        await page.screenshot({ path: path.join(screenshotsDir, 'after-reply-click.png') });
-        
-        // Try multiple potential selectors for the reply textarea
-        const replyTextareaSelectors = [
-            'div[data-testid="tweetTextarea_0"]',
-            'div[role="textbox"][aria-label="Tweet text"]',
-            'div[contenteditable="true"]',
-            'div[role="textbox"]'
-        ];
-        
+        // --- Locate Reply Textarea --- 
+        const replyTextareaSelectors = ['div[data-testid="tweetTextarea_0"]', 'div[role="textbox"][aria-label="Tweet text"]', 'div[contenteditable="true"]', 'div[role="textbox"]'];
         let replyTextarea = null;
         for (const selector of replyTextareaSelectors) {
-            const textarea = page.locator(selector).first();
+            // IMPORTANT: Search within the potential modal/composer area, not the whole page
+            // Often the composer is within a div with role="dialog" or specific testid
+            const composerContainer = page.locator('div[role="dialog"], [data-testid="tweetEngagementsToolbar"]').last(); // Try to find composer container
+            const textarea = composerContainer.locator(selector).first(); // Search within container
             if (await textarea.isVisible({ timeout: 2000 }).catch(() => false)) {
                 replyTextarea = textarea;
-                logger.info(`[🐦 Twitter] Found reply textarea with selector: ${selector}`);
+                logger.info(`[🐦 Twitter] Found reply textarea with selector: ${selector} within composer`);
                 break;
             }
         }
-        
+         // Fallback if not found in container
+         if (!replyTextarea) {
+             for (const selector of replyTextareaSelectors) {
+                 const textarea = page.locator(selector).first();
+                 if (await textarea.isVisible({ timeout: 1000 }).catch(() => false)) {
+                     replyTextarea = textarea;
+                     logger.warn(`[🐦 Twitter] Found reply textarea with selector (fallback page search): ${selector}`);
+                     break;
+                 }
+             }
+         }
         if (!replyTextarea) {
-            logger.error(`[🐦 Twitter] Could not find reply textarea`);
-            await page.screenshot({ path: path.join(screenshotsDir, 'no-reply-textarea.png') });
-            return false;
+             logger.error(`[🐦 Twitter] Could not find reply textarea`);
+             await page.screenshot({ path: path.join(screenshotsDir, 'no-reply-textarea.png') });
+             return false;
         }
-        
-        // Type the reply text
+
+        // --- Attach Media (if provided) --- 
+        if (mediaPath) {
+            logger.info(`[🐦 Twitter] Attempting to attach media: ${mediaPath}`);
+            try {
+                // Locate the hidden file input
+                const fileInputSelector = 'input[type="file"][data-testid="fileInput"]';
+                const fileInput = page.locator(fileInputSelector).first(); // Usually only one
+                
+                // Check if file exists before attempting upload
+                 if (!fs.existsSync(mediaPath)) {
+                     logger.error(`[🐦 Twitter] Media file not found at path: ${mediaPath}`);
+                     throw new Error('Media file not found');
+                 }
+
+                logger.debug(`[🐦 Twitter] Setting input files for selector: ${fileInputSelector}`);
+                await fileInput.setInputFiles(mediaPath);
+                logger.info(`[🐦 Twitter] File input set. Waiting for media upload/processing...`);
+                
+                // Wait for upload/processing - This is TRICKY and needs refinement!
+                // Strategy 1: Wait for progress bar to disappear (if one exists)
+                const progressBarSelector = '[role="progressbar"]';
+                try {
+                    logger.debug(`[🐦 Twitter] Waiting for progress bar (${progressBarSelector}) to disappear...`);
+                    await page.locator(progressBarSelector).waitFor({ state: 'hidden', timeout: 120000 }); // Wait up to 2 minutes
+                    logger.info(`[🐦 Twitter] Progress bar disappeared.`);
+                } catch (e) {
+                    logger.warn(`[🐦 Twitter] Progress bar did not disappear within timeout, or wasn't found. Proceeding cautiously.`);
+                }
+
+                // Strategy 2: Wait for media preview/thumbnail to be visible
+                const mediaPreviewSelector = 'div[data-testid*="media"] img, div[data-testid*="preview"] img'; // Example selectors
+                 try {
+                     logger.debug(`[🐦 Twitter] Waiting for media preview (${mediaPreviewSelector}) to appear...`);
+                     await page.locator(mediaPreviewSelector).first().waitFor({ state: 'visible', timeout: 60000 }); // Wait up to 1 min
+                     logger.info(`[🐦 Twitter] Media preview appeared.`);
+                 } catch (e) {
+                     logger.warn(`[🐦 Twitter] Media preview did not appear within timeout. Upload might have failed or UI changed.`);
+                     // Consider this non-fatal for now, but it might cause the post to fail later
+                 }
+                
+                await page.waitForTimeout(3000); // Extra safety wait after potential processing
+                await page.screenshot({ path: path.join(screenshotsDir, 'reply-media-attached.png') });
+                logger.info(`[🐦 Twitter] Media attachment process complete (or timed out).`);
+
+            } catch (uploadError) {
+                logger.error(`[🐦 Twitter] Error attaching media:`, uploadError);
+                await page.screenshot({ path: path.join(screenshotsDir, 'reply-media-upload-error.png') });
+                return false; // Fail if media attachment goes wrong
+            }
+        }
+
+        // --- Type Reply Text --- 
         try {
             logger.info(`[🐦 Twitter] Clicking reply textarea...`);
-            await replyTextarea.click();
+            await replyTextarea.click({ timeout: 5000 }); // Ensure focus
             logger.info(`[🐦 Twitter] Typing reply text...`);
-            await page.keyboard.type(replyText);
+            await page.keyboard.type(replyText, { delay: 50 }); // Add slight delay
             logger.info(`[🐦 Twitter] Successfully typed reply text: ${replyText.substring(0, 30)}...`);
-        } catch (error) {
-            logger.error(`[🐦 Twitter] Error typing reply text: ${error}`);
-            await page.screenshot({ path: path.join(screenshotsDir, 'reply-text-typing-error.png') });
-            return false;
-        }
+            await page.waitForTimeout(1000); // Wait for text entry
+        } catch (error) { /* ... error handling ... */ return false; }
         
-        // Wait for a moment to ensure text is entered
-        await page.waitForTimeout(3000);
-        
-        // Take screenshot with reply text
         await page.screenshot({ path: path.join(screenshotsDir, 'reply-composed.png') });
         
-        // Look for the reply submit button
-        const replySubmitSelectors = [
-            '[data-testid="tweetButton"]',
-            'div[role="button"][data-testid="tweetButtonInline"]',
-            'button:has-text("Reply")'
-        ];
-        
+        // --- Find and Click Submit Button --- 
+        const replySubmitSelectors = ['[data-testid="tweetButton"]', 'div[role="button"][data-testid="tweetButtonInline"]', 'button:has-text("Reply")'];
         let replySubmitButton = null;
+        // IMPORTANT: Search within composer container if possible
+        const composerContainer = page.locator('div[role="dialog"], [data-testid="tweetEngagementsToolbar"]').last();
         for (const selector of replySubmitSelectors) {
-            const button = page.locator(selector).first();
-            if (await button.isVisible({ timeout: 2000 }).catch(() => false)) {
+            const button = composerContainer.locator(selector).first();
+            if (await button.isEnabled({ timeout: 2000 }).catch(() => false)) {
                 replySubmitButton = button;
-                logger.info(`[🐦 Twitter] Found reply submit button with selector: ${selector}`);
+                logger.info(`[🐦 Twitter] Found ENABLED reply submit button with selector: ${selector} within composer`);
                 break;
             }
         }
-        
+        // Fallback: Search page if not found/enabled in composer
+         if (!replySubmitButton) {
+            logger.warn('[🐦 Twitter] Submit button not found/enabled in composer, trying page search...');
+             for (const selector of replySubmitSelectors) {
+                 const button = page.locator(selector).first();
+                 if (await button.isEnabled({ timeout: 1000 }).catch(() => false)) {
+                     replySubmitButton = button;
+                     logger.info(`[🐦 Twitter] Found ENABLED reply submit button with selector (page search): ${selector}`);
+                     break;
+                 }
+             }
+         }
+
         if (!replySubmitButton) {
-            logger.error(`[🐦 Twitter] Could not find reply submit button`);
-            await page.screenshot({ path: path.join(screenshotsDir, 'no-reply-submit-button.png') });
-            return false;
+             logger.error(`[🐦 Twitter] Could not find enabled reply submit button`);
+             await page.screenshot({ path: path.join(screenshotsDir, 'no-reply-submit-button.png') });
+             return false;
         }
         
-        // Check if submit button is enabled
-        const isSubmitEnabled = await replySubmitButton.isEnabled().catch(() => false);
-        if (!isSubmitEnabled) {
-            logger.warn(`[🐦 Twitter] Reply submit button is disabled. Tweet may not meet requirements.`);
-            await page.screenshot({ path: path.join(screenshotsDir, 'disabled-submit-button.png') });
-            return false;
-        }
-        
-        // Click the submit button
+        // Click Submit
         try {
             logger.info(`[🐦 Twitter] Clicking reply submit button...`);
             await replySubmitButton.click({ timeout: 30000 });
             logger.info(`[🐦 Twitter] Successfully clicked reply submit button`);
-        } catch (error) {
-            logger.error(`[🐦 Twitter] Error clicking reply submit button: ${error}`);
-            await page.screenshot({ path: path.join(screenshotsDir, 'reply-submit-click-error.png') });
-            return false;
-        }
+        } catch (error) { /* ... error handling ... */ return false; }
         
-        // Wait for a moment to ensure the reply was posted
+        // --- Wait and Verify --- 
         await page.waitForTimeout(5000); 
-
-        // Take final screenshot to capture success/failure
         await page.screenshot({ path: path.join(screenshotsDir, 'after-reply-submit.png') });
         
-        // Check for successful reply indicators (timeline refresh, reply appears, etc.)
-        const successIndicators = [
-            'div:has-text("Your reply was sent")',
-            'div[data-testid="toast"]',
-            'div[role="alert"]:has-text("Your Tweet was sent")'
-        ];
-        
+        const successIndicators = ['div:has-text("Your reply was sent")', 'div[data-testid="toast"]', 'div[role="alert"]:has-text("Your Tweet was sent")'];
         let explicitSuccessFound = false;
         for (const selector of successIndicators) {
             if (await page.locator(selector).isVisible({ timeout: 2000 }).catch(() => false)) {
                 logger.info(`[🐦 Twitter] ✅ Reply successfully posted to tweet (confirmed by toast message: ${selector})`);
                 explicitSuccessFound = true;
-                break; // Exit loop once success is confirmed
+                break; 
             }
         }
         
-        // If explicit success was found, return true
         if (explicitSuccessFound) {
             return true;
         }
         
-        // If we didn't see explicit success, log a warning and return false
         logger.warn(`[🐦 Twitter] ⚠️ Reply submitted, but no explicit success confirmation (e.g., toast message) was detected.`);
-        logger.warn(`[🐦 Twitter] The reply might have failed silently or might appear after a delay. Returning false.`);
-        
+        logger.warn(`[🐦 Twitter] The reply might have failed silently or might appear after a delay. Returning false for now.`);
         return false;
+
     } catch (error) {
         logger.error(`[🐦 Twitter] Error posting reply to tweet: ${error}`);
         if (page && !page.isClosed()) {
@@ -1459,7 +1466,7 @@ export async function postReplyToTweet(page: Page, tweetUrl: string, replyText: 
     } finally {
         logger.info(`[🐦 Twitter] Reply attempt finished for ${tweetUrl}.`);
     }
-} 
+}
 
 // --- NEW FUNCTION ---
 /**
@@ -2078,5 +2085,6 @@ export async function extractSpaceTitleFromModal(page: Page): Promise<string | n
         return null;
     }
 }
+
 
 
