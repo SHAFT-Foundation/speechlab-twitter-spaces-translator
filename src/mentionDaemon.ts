@@ -486,8 +486,9 @@ async function initiateProcessing(mentionInfo: MentionInfo, page: Page): Promise
     // 1. Navigate & Find Article
     try {
         logger.info(`[🚀 Initiate] Navigating to mention tweet: ${mentionInfo.tweetUrl}`);
-        await page.goto(mentionInfo.tweetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-        await page.waitForTimeout(3000);
+        await page.goto(mentionInfo.tweetUrl, { waitUntil: 'domcontentloaded', timeout: 90000 });
+        logger.info('[🚀 Initiate] Waiting 60 seconds after navigation...');
+        await page.waitForTimeout(60000);
 
         articleWithPlayButton = await findArticleWithPlayButton(page);
         if (!articleWithPlayButton) {
@@ -495,7 +496,8 @@ async function initiateProcessing(mentionInfo: MentionInfo, page: Page): Promise
             const MAX_SCROLL_UP = 5;
             for (let i = 0; i < MAX_SCROLL_UP && !articleWithPlayButton; i++) {
                 await page.evaluate(() => window.scrollBy(0, -window.innerHeight));
-                await page.waitForTimeout(1500);
+                logger.info(`[🚀 Initiate] Waiting 60 seconds after scroll attempt ${i+1}...`);
+                await page.waitForTimeout(60000);
                 articleWithPlayButton = await findArticleWithPlayButton(page);
             }
         }
@@ -574,8 +576,10 @@ async function initiateProcessing(mentionInfo: MentionInfo, page: Page): Promise
         }
         logger.info(`[🚀 Initiate] Captured M3U8 URL.`);
         
-        // 4. Now try to extract title from modal (takes precedence over article title)
+        // 4. Now try to extract title from modal
         try {
+            logger.info('[🚀 Initiate] Waiting 60 seconds before extracting modal title...');
+            await page.waitForTimeout(60000);
             logger.info('[🚀 Initiate] Attempting to extract Space title from modal after clicking Play...');
             const modalTitle = await extractSpaceTitleFromModal(page);
             if (modalTitle) {
@@ -913,36 +917,52 @@ async function main() {
 
         let isLoggedIn: boolean | undefined = undefined; // Declare variable here
 
-        // Check if we're already logged in from saved state using a more reliable target page
-        logger.info('[😈 Daemon] Checking if already logged in via /notifications page...');
+        // Check if we're already logged in from saved state - trying /home again
+        logger.info('[😈 Daemon] Checking if already logged in via /home page (domcontentloaded)...');
         try {
-            // Navigate to notifications - wait for DOM content, not full network idle
-            await page.goto('https://twitter.com/notifications', { waitUntil: 'domcontentloaded', timeout: 25000 }); 
-            logger.info('[😈 Daemon] Successfully navigated to /notifications page for login check.');
-            await page.waitForTimeout(2000); // Extra wait for rendering
+            // Navigate to home - wait for DOM content load
+            await page.goto('https://twitter.com/home', { waitUntil: 'domcontentloaded', timeout: 90000 }); // Keep navigation timeout longer
+            logger.info('[😈 Daemon] Successfully navigated to /home page structure.');
+            // Wait longer for dynamic elements to potentially render after DOM load
+            logger.info('[😈 Daemon] Waiting 60 seconds for dynamic content...'); 
+            await page.waitForTimeout(60000); // Set wait to 60 seconds
 
-            // Check if the primary content column is visible (should contain notifications)
-            const primaryColumnSelector = '[data-testid="primaryColumn"]';
-             logger.debug(`[😈 Daemon] Checking login indicator: ${primaryColumnSelector}`);
-            if (await page.locator(primaryColumnSelector).first().isVisible({ timeout: 7000 })) { // Increased timeout
-                logger.info(`[😈 Daemon] ✅ Already logged in from saved state! (Verified via /notifications)`);
-                isLoggedIn = true;
-                await page.screenshot({ path: path.join(SCREENSHOT_DIR, 'daemon-login-check-notifications-success.png') });
-            } else {
-                logger.warn('[😈 Daemon] ❌ Login check failed: Primary column not visible on /notifications.');
-                isLoggedIn = false;
-                await page.screenshot({ path: path.join(SCREENSHOT_DIR, 'daemon-login-check-notifications-fail.png') });
+            // Check multiple indicators for login success
+            const successIndicators = [
+                '[data-testid="primaryColumn"]',                // Main content column
+                'aside[aria-label*="Account menu"]',            // Account menu button container
+                '[data-testid="SideNav_NewTweet_Button"]'       // Tweet button
+            ];
+            
+            logger.info('[😈 Daemon] Performing login check with multiple selectors...');
+            for (const selector of successIndicators) {
+                logger.debug(`[😈 Daemon] Checking login indicator: ${selector}`);
+                 // Increase timeout for visibility check
+                if (await page.locator(selector).first().isVisible({ timeout: 60000 }).catch(() => false)) { // Set visibility check to 60s
+                    logger.info(`[😈 Daemon] ✅ Already logged in from saved state! (Verified via /home, indicator: ${selector})`);
+                    isLoggedIn = true;
+                    break; // Stop checking once one indicator is found
+                }
             }
+
+            if (isLoggedIn) {
+                 await page.screenshot({ path: path.join(SCREENSHOT_DIR, 'daemon-login-check-home-success.png') });
+            } else {
+                 logger.warn('[😈 Daemon] ❌ Login check failed: No success indicators visible on /home.');
+                 isLoggedIn = false;
+                 await page.screenshot({ path: path.join(SCREENSHOT_DIR, 'daemon-login-check-home-fail.png') });
+            }
+
         } catch (navError) {
-            logger.warn('[😈 Daemon] Timeout or error navigating to /notifications for login check. Assuming not logged in.', navError);
+            logger.warn('[😈 Daemon] Timeout or error navigating to /home for login check. Assuming not logged in.', navError);
             try { // Best effort screenshot on error
-                 await page.screenshot({ path: path.join(SCREENSHOT_DIR, 'daemon-login-check-notifications-nav-error.png') });
+                 await page.screenshot({ path: path.join(SCREENSHOT_DIR, 'daemon-login-check-home-nav-error.png') });
             } catch {}
             isLoggedIn = false; // Explicitly set false on navigation error
         }
        
         
-        // NEW: Throw error if cookie check failed
+        // Throw error if cookie check failed
         if (isLoggedIn !== true) {
              throw new Error('Cookie-based login check failed. Please ensure valid cookies exist in cookies/twitter-cookies.json. Daemon cannot continue.');
         }

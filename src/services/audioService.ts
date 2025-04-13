@@ -31,7 +31,9 @@ function ensureTempDirExists(): void {
  */
 function runFfmpegDownload(m3u8Url: string, outputFilePath: string): Promise<void> {
     return new Promise((resolve, reject) => {
+        // Define arguments, removing `-bsf:a aac_adtstoasc` for now as it might cause issues with `-c copy`
         const ffmpegArgs = [
+            '-protocol_whitelist', 'file,http,https,tcp,tls,crypto', // Ensure necessary protocols are allowed
             '-i', m3u8Url,     // Input URL 
             '-c', 'copy',      // Copy codec (no re-encoding)
             '-y',              // Overwrite output file if it exists
@@ -40,10 +42,10 @@ function runFfmpegDownload(m3u8Url: string, outputFilePath: string): Promise<voi
 
         // Log the full ffmpeg command prominently
         const ffmpegCommand = `ffmpeg ${ffmpegArgs.join(' ')}`;
-        logger.info(`[🎧 Audio] 🔧 FFMPEG COMMAND: ${ffmpegCommand}`);
-        logger.info(`[🎧 Audio] Starting ffmpeg download for: ${m3u8Url}`);
-        logger.info(`[🎧 Audio] Output file will be saved to: ${outputFilePath}`);
-        logger.debug(`[🎧 Audio] ffmpeg command: ${ffmpegCommand}`);
+        logger.info('-------------------------------------------');
+        logger.info(`[🎧 Audio] EXECUTING FFMPEG COMMAND:`);
+        logger.info(ffmpegCommand);
+        logger.info('-------------------------------------------');
 
         // Create timestamps for progress tracking
         const startTime = Date.now();

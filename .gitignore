@@ -165,3 +165,7 @@ received_audio/ # Ignore at the root
 *.m4a
 
 /processed_mentions.json
+
+# Session/Cookie Files
+cookies/
+browser-state/
