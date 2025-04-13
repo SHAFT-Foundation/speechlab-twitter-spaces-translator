@@ -43,7 +43,7 @@ interface BackendResult {
 }
 
 const PROCESSED_MENTIONS_PATH = path.join(process.cwd(), 'processed_mentions.json');
-const POLLING_INTERVAL_MS = 60 * 1000; // Check every 60 seconds
+const POLLING_INTERVAL_MS = 10 * 60 * 1000; // Check every 10 minutes (10 * 60 * 1000 ms)
 const SCREENSHOT_DIR = path.join(process.cwd(), 'debug-screenshots');
 const MANUAL_LOGIN_WAIT_MS = 60 * 1000; // Wait 60 seconds for manual login if needed
 
