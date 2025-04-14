@@ -5,6 +5,8 @@ import * as path from 'path'; // Added import for path module
 import * as fs from 'fs'; // Added import for fs module
 import * as fsPromises from 'fs/promises'; // Use promises API for fs
 import { v4 as uuidv4 } from 'uuid';
+import { MentionInfo } from '../types/mentionTypes'; // Import MentionInfo type
+import { getLanguageName, detectLanguage } from '../utils/languageUtils'; // Import language utils
 
 // Define the expected structure for the result
 export interface SpaceInfo {
@@ -2112,6 +2114,62 @@ export async function extractSpaceTitleFromModal(page: Page): Promise<string | n
         try { await page.screenshot({ path: path.join(process.cwd(), 'debug-screenshots', 'modal-title-extraction-error.png') }); } catch {}
         return null;
     }
+}
+
+// --- NEW FUNCTION ---
+/**
+ * Sends an initial reply to a mention tweet.
+ * @param page The Playwright page object.
+ * @param mentionInfo The mention information object.
+ * @returns {Promise<boolean>} True if the reply was sent successfully, false otherwise.
+ */
+export async function sendInitialReply(page: Page, mentionInfo: MentionInfo): Promise<boolean> {
+    const languageCode = 'en'; // Replace with actual language code
+    const languageName = getLanguageName(languageCode);
+    // New fun message with estimated time
+    const message = `Hey @${mentionInfo.username}! 🚀 Got your request to dub this Space into ${languageName}. This usually takes 15-60 mins, depending on the Space length. I'll ping you back when it's ready! 🎧✨`;
+    
+    logger.info(`[➡️ Initial Reply] Sending acknowledgement to ${mentionInfo.username} for tweet ${mentionInfo.tweetId}`);
+    logger.debug(`[➡️ Initial Reply] Message: "${message}"`);
+
+    // Use the Playwright postReplyToTweet function
+    const success = await postReplyToTweet(page, mentionInfo.tweetUrl, message);
+
+    if (success) {
+        logger.info(`[➡️ Initial Reply] ✅ Successfully posted initial reply for ${mentionInfo.tweetId}.`);
+    } else {
+        logger.warn(`[➡️ Initial Reply] ⚠️ Failed to post initial reply for ${mentionInfo.tweetId}.`);
+    }
+    return success;
+}
+// --- END NEW FUNCTION ---
+
+/**
+ * Sends an initial acknowledgement reply to a mention.
+ * @param page The Playwright page object.
+ * @param mentionInfo Information about the mention tweet.
+ * @returns Promise<boolean> True if successful, false otherwise.
+ */
+export async function sendReceivedReply(page: Page, mentionInfo: MentionInfo): Promise<boolean> {
+    // Detect the language from the mention text itself
+    const languageCode = detectLanguage(mentionInfo.text);
+    const languageName = getLanguageName(languageCode);
+    
+    // Construct the fun message with the time estimate
+    const message = `Got it, @${mentionInfo.username}! 🚀 Working on dubbing this Space into ${languageName}. Usually takes 15-60 mins (depends on length). Will reply here when done! 🎧✨`;
+    
+    logger.info(`[➡️ Initial Reply] Sending acknowledgement to ${mentionInfo.username} for tweet ${mentionInfo.tweetId}`);
+    logger.debug(`[➡️ Initial Reply] Message: "${message}"`);
+
+    // Use the Playwright postReplyToTweet function
+    const success = await postReplyToTweet(page, mentionInfo.tweetUrl, message);
+
+    if (success) {
+        logger.info(`[➡️ Initial Reply] ✅ Successfully posted initial reply for ${mentionInfo.tweetId}.`);
+    } else {
+        logger.warn(`[➡️ Initial Reply] ⚠️ Failed to post initial reply for ${mentionInfo.tweetId}.`);
+    }
+    return success;
 }
 
 

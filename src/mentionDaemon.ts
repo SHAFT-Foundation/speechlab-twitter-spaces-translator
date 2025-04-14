@@ -584,7 +584,7 @@ async function initiateProcessing(mentionInfo: MentionInfo, page: Page): Promise
                 `@${mentionInfo.username} Sorry, I could find the Space but couldn't get its audio stream. It might be finished or protected.`);
              throw new Error(errMsg);
         }
-        logger.info(`[�� Initiate] Captured M3U8 URL.`);
+        logger.info(`[🚀 Initiate] Captured M3U8 URL.`);
         
         // 4. Now try to extract title from modal
         try {
@@ -858,27 +858,44 @@ async function runFinalReplyQueue(page: Page): Promise<void> {
     logger.info(`[↩️ Reply Queue] Processing final reply for ${mentionInfo.tweetId}. Backend Success: ${backendResult.success}`);
 
     let finalMessage = '';
-    // No media path needed anymore
-    // let mediaPathToAttach: string | undefined = undefined; 
+    // Media attachment is currently disabled by default via config
+    let mediaPathToAttach: string | undefined = undefined;
 
+    // Construct the final message based on success and link availability
     if (backendResult.success) {
         const languageName = getLanguageName(detectLanguage(mentionInfo.text)); 
-        let baseMessage = `@${mentionInfo.username} I've translated this Space to ${languageName}!`;
         let links = [];
         if (backendResult.sharingLink) {
-            links.push(`Listen/Watch here: ${backendResult.sharingLink}`);
+            links.push(`🎧 Listen/Watch: ${backendResult.sharingLink}`);
         }
         if (backendResult.publicMp3Url) {
-            links.push(`Full Audio (MP3): ${backendResult.publicMp3Url}`);
+            links.push(`🔊 Full MP3: ${backendResult.publicMp3Url}`);
         }
+        
         if (links.length > 0) {
-            finalMessage = `${baseMessage} ${links.join(' | ')}`;
+            // Construct success message with links
+            finalMessage = `@${mentionInfo.username} Your ${languageName} dub is ready! 🎉 ${links.join(' | ')}`;
         } else {
-            finalMessage = `${baseMessage} Processing finished, but no links could be generated.`;
+            // Success but no links (edge case)
+            finalMessage = `@${mentionInfo.username} Your ${languageName} dub processing finished, but link generation failed. 🤔 Please check the SpeechLab project directly (ID: ${backendResult.projectId || 'unknown'}).`;
+             logger.warn(`[↩️ Reply Queue] Posting success reply for ${mentionInfo.tweetId} without any links.`);
         }
+        
+        // If we intended to attach video but couldn't (e.g., generation failed), mention it.
+        if (config.POST_REPLY_WITH_VIDEO && !mediaPathToAttach) {
+            finalMessage += ` (Video generation failed, sharing audio links only.)`;
+        } 
+        // Ensure message fits Twitter length (simple truncation for now)
+        if (finalMessage.length > 280) {
+             logger.warn(`[↩️ Reply Queue] Truncating final success message for tweet ${mentionInfo.tweetId} due to length.`);
+             finalMessage = finalMessage.substring(0, 277) + '...'; 
+        }
+
     } else {
+        // Construct error message
         const errorReason = backendResult.error || 'processing failed';
-         finalMessage = `@${mentionInfo.username} Sorry, the translation project for this Space failed (${errorReason}). Please try again later.`;
+         finalMessage = `@${mentionInfo.username} Oops! 😥 Couldn't complete the ${getLanguageName(detectLanguage(mentionInfo.text))} dub for this Space (${errorReason}). Maybe try again later?`;
+         mediaPathToAttach = undefined; // Ensure no media attached on failure
     }
 
     // --- Posting Logic --- 
@@ -898,7 +915,7 @@ async function runFinalReplyQueue(page: Page): Promise<void> {
             postSuccess = await postTweetReplyWithMediaApi(
                 finalMessage,
                 mentionInfo.tweetId, 
-                undefined // No media attachment
+                mediaPathToAttach // Pass the media path if available
             );
         } else {
             logger.info(`[↩️ Reply Queue] Posting final reply via Playwright to tweet URL ${mentionInfo.tweetUrl}...`);
@@ -906,7 +923,7 @@ async function runFinalReplyQueue(page: Page): Promise<void> {
                 page, 
                 mentionInfo.tweetUrl, 
                 finalMessage, 
-                undefined // No media attachment
+                mediaPathToAttach // Pass the media path if available
             );
         }
         
