@@ -5,7 +5,7 @@ import * as path from 'path'; // Added import for path module
 import * as fs from 'fs'; // Added import for fs module
 import * as fsPromises from 'fs/promises'; // Use promises API for fs
 import { v4 as uuidv4 } from 'uuid';
-import { MentionInfo } from '../types/mentionTypes'; // Import MentionInfo type
+// Import MentionInfo type
 import { getLanguageName, detectLanguage } from '../utils/languageUtils'; // Import language utils
 
 // Define the expected structure for the result
