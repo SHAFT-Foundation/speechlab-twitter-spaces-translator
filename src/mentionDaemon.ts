@@ -690,11 +690,12 @@ async function performBackendProcessing(initData: InitiationResult): Promise<Bac
         if (!projectId) {
             throw new Error('Failed to create SpeechLab project');
         }
-        logger.info(`[⚙️ Backend] SpeechLab project created: ${projectId} (using thirdPartyID ${thirdPartyID})`);
+        logger.info(`[⚙️ Backend] SpeechLab project created: ${projectId} (using thirdPartyID: ${thirdPartyID})`);
 
-        // 3. Wait for project completion
-        logger.info(`[⚙️ Backend] Waiting for SpeechLab project completion (thirdPartyID: ${thirdPartyID})...`);
-        const completedProject = await waitForProjectCompletion(thirdPartyID); 
+        // 3. Wait for project completion (with increased timeout)
+        logger.info(`[⚙️ Backend] Waiting up to 3 hours for SpeechLab project completion (thirdPartyID: ${thirdPartyID})...`);
+        const maxWaitTimeMs = 3 * 60 * 60 * 1000; // 3 hours in milliseconds
+        const completedProject = await waitForProjectCompletion(thirdPartyID, maxWaitTimeMs); 
         if (!completedProject || completedProject.job?.status !== 'COMPLETE') {
             const finalStatus = completedProject?.job?.status || 'TIMEOUT';
             throw new Error(`SpeechLab project ${thirdPartyID} did not complete successfully (Status: ${finalStatus})`);
