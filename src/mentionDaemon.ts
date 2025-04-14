@@ -1113,7 +1113,7 @@ async function main() {
                  browserTaskIntervalId = null;
                  await shutdown('Polling Page Closed');
                 return; 
-             }
+            }
             logger.info('[😈 Daemon Polling] Polling for new mentions...');
             try {
                 const mentions = await scrapeMentions(page);
@@ -1133,9 +1133,9 @@ async function main() {
                     // Trigger initiation worker check immediately after finding new mentions
                     // The browser task loop will handle actually running it if idle
                     // triggerInitiationWorker(page); 
-                 } else {
+                    } else {
                       logger.info('[😈 Daemon Polling] No new mentions found.');
-                 }
+                    }
             } catch (error) {
                 logger.error('[😈 Daemon Polling] Error during mention polling cycle:', error);
                  // Basic recovery attempt
@@ -1146,7 +1146,7 @@ async function main() {
                      } else {
                          throw new Error('Page closed during polling error handling.');
                      }
-                 } catch (recoveryError) {
+                     } catch (recoveryError) {
                      logger.error('[😈 Daemon Polling] Recovery failed. Stopping polling.', recoveryError);
                      await shutdown('Polling Recovery Failed');
                  }

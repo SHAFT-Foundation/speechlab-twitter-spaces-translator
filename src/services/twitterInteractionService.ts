@@ -1516,6 +1516,22 @@ export async function scrapeMentions(page: Page): Promise<MentionInfo[]> {
     }
 
 
+    // --- ADDED: Navigate to Notifications First ---
+    const notificationsUrl = 'https://x.com/notifications';
+    logger.info(`[🔔 Mention] Navigating to notifications page first: ${notificationsUrl}`);
+    try {
+        await page.goto(notificationsUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
+        logger.info('[🔔 Mention] Notifications page loaded. Waiting briefly...');
+        await page.waitForTimeout(5000); // Wait 5 seconds for potential dynamic content or redirects
+        await page.screenshot({ path: path.join(screenshotDir, 'notifications-page-loaded.png') });
+        logger.info('[🔔 Mention] Finished visiting notifications page.');
+    } catch (notifError) {
+        logger.warn(`[🔔 Mention] Failed to load notifications page: ${notifError}. Continuing to mentions page...`);
+        await page.screenshot({ path: path.join(screenshotDir, 'notifications-page-error.png') });
+    }
+    // --- END ADDED SECTION ---
+
+
     logger.info(`[🔔 Mention] Navigating to mentions page: ${mentionsUrl}`);
     try {
         // Use domcontentloaded instead of networkidle and a shorter timeout
