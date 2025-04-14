@@ -169,3 +169,4 @@ received_audio/ # Ignore at the root
 # Session/Cookie Files
 cookies/
 browser-state/
+.DS_Store
