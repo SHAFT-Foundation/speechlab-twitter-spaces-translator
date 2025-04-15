@@ -1710,7 +1710,8 @@ export async function initializeDaemonBrowser(): Promise<{ browser: Browser, con
     }
     
     // Use non-headless mode for debugging
-    const isHeadless = true; // Force headless mode for server environments
+    // const isHeadless = true; // Force headless mode for server environments - REMOVED HARDCODING
+    const isHeadless = config.BROWSER_HEADLESS ?? true; // Use config setting, default to true
     logger.info(`[😈 Daemon Browser] Launching browser (Headless: ${isHeadless})`);
     const browser = await chromium.launch({ 
         headless: isHeadless, 

@@ -32,6 +32,10 @@ const finalReplyQueue: { mentionInfo: MentionInfo, backendResult: BackendResult 
 let isInitiatingProcessing = false; // Flag for browser task (initiation)
 let isPostingFinalReply = false;   // Flag for browser task (final reply)
 
+// --- MOVED: Global Set for Processed Mentions ---
+let processedMentions: Set<string> = new Set();
+// --- END MOVED SECTION ---
+
 // Interface for data passed from initiation to backend
 interface InitiationResult {
     m3u8Url: string;
@@ -446,31 +450,112 @@ async function markMentionAsProcessed(mentionId: string, processedMentions: Set<
 }
 
 /**
- * Helper to find the article containing the Play Recording button
+ * Helper to find the article OR the direct button for playing a Space recording.
+ * Prioritizes finding within an article, then falls back to searching the whole page.
+ * @returns A Locator for either the containing article OR the button itself, or null.
  */
 async function findArticleWithPlayButton(page: Page): Promise<Locator | null> {
-    logger.debug('[🐦 Helper] Searching for article containing Play Recording button...');
-    const playRecordingSelectors = [
-        'button[aria-label*="Play recording"]',
-        'button:has-text("Play recording")'
-    ];
-    const tweetArticles = await page.locator('article[data-testid="tweet"]').all();
+    logger.debug('[🐦 Helper] Searching for playable Space element (button or article)...');
+    
+    // Use case-insensitive regex for text matching
+    const playButtonTextRegex = /Play recording/i; 
+    const playButtonNameRegex = /Play recording/i; // Case-insensitive regex for getByRole
+    const articleSelector = 'article[data-testid="tweet"]';
+    const flexibleButtonXPath = "//button[contains(@aria-label, 'Play recording') or .//span[contains(text(), 'Play recording')]]";
 
-    for (let i = 0; i < tweetArticles.length; i++) {
-        const article = tweetArticles[i];
+    const VISIBILITY_TIMEOUT_SHORT = 1000; // Increased slightly
+    const VISIBILITY_TIMEOUT_LONG = 2000; // Increased slightly
+
+    // --- Strategy 1: Find TEXT (regex) within articles --- 
+    logger.debug(`[🐦 Helper] Strategy 1: Searching within articles (${articleSelector}) using getByText(${playButtonTextRegex})...`);
+    const articles = await page.locator(articleSelector).all();
+    for (let i = 0; i < articles.length; i++) {
+        const article = articles[i];
         if (!await article.isVisible().catch(() => false)) {
              logger.debug(`[🐦 Helper] Article ${i + 1} is not visible, skipping.`);
              continue;
          }
-
-        for (const selector of playRecordingSelectors) {
-            if (await article.locator(selector).isVisible({ timeout: 500 })) {
-                logger.info(`[🐦 Helper] Found Play Recording button in article ${i + 1}.`);
-                return article; // Return the Locator for the article
+        // Find element with the text regex within the article
+        const textElementInArticle = article.getByText(playButtonTextRegex);
+        if (await textElementInArticle.isVisible({ timeout: VISIBILITY_TIMEOUT_SHORT })) {
+            logger.info(`[🐦 Helper] Found text matching ${playButtonTextRegex} in article ${i + 1}. Returning article locator.`);
+             // Check if the found element *is* the button, otherwise return the article
+            const tagName = await textElementInArticle.evaluate(el => el.tagName.toLowerCase()).catch(() => '');
+            if (tagName === 'button') {
+                 logger.info(`[🐦 Helper] The text element itself is the button. Returning button.`);
+                return textElementInArticle;
             }
+            // Try finding the button *near* the text within the article
+            const buttonNearText = article.locator('button').filter({ has: textElementInArticle }).first();
+            if (await buttonNearText.isVisible({timeout: 500})){
+                logger.info(`[🐦 Helper] Found button near text in article ${i+1}. Returning button.`);
+                return buttonNearText;
+            }
+            logger.info(`[🐦 Helper] Text found, but couldn't pinpoint button within. Returning containing article.`);
+            return article; 
         }
     }
-    logger.warn('[🐦 Helper] Could not find any article with a Play Recording button.');
+
+    // --- Strategy 2: Find TEXT (regex) page-wide --- 
+    logger.info(`[🐦 Helper] Strategy 2: Searching page-level using getByText(${playButtonTextRegex})...`);
+    const textElementOnPage = page.getByText(playButtonTextRegex).first(); 
+    if (await textElementOnPage.isVisible({ timeout: VISIBILITY_TIMEOUT_LONG })) {
+        logger.info(`[🐦 Helper] Found text matching ${playButtonTextRegex} directly on page.`);
+        // Attempt to find the closest button ancestor or return the element if it's a button
+        try {
+            const buttonAncestor = textElementOnPage.locator('xpath=ancestor-or-self::button').first();
+            if (await buttonAncestor.isVisible({timeout: VISIBILITY_TIMEOUT_SHORT})) {
+                logger.info('[🐦 Helper] Found closest button ancestor/self for the text. Returning button locator.');
+                return buttonAncestor;
+            } else {
+                logger.warn('[🐦 Helper] Found text, but no button ancestor. Returning text element directly.');
+                return textElementOnPage; // Fallback
+            }
+        } catch (e) {
+             logger.warn('[🐦 Helper] Error finding button ancestor for text, returning text element directly.');
+             return textElementOnPage; // Fallback
+        }
+    }
+
+    // --- Strategy 3: Find button within articles using getByRole --- 
+    logger.debug(`[🐦 Helper] Strategy 3: Searching within articles (${articleSelector}) using getByRole...`);
+    // Reuse articles from Strategy 1
+    for (let i = 0; i < articles.length; i++) {
+        const article = articles[i];
+        if (!await article.isVisible().catch(() => false)) continue; // Skip non-visible articles
+        const buttonInArticle = article.getByRole('button', { name: playButtonNameRegex }).first();
+        if (await buttonInArticle.isVisible({ timeout: VISIBILITY_TIMEOUT_SHORT })) {
+            logger.info(`[🐦 Helper] Found Play button in article ${i + 1} using getByRole. Returning article.`);
+            return article; // Return the article containing the button
+        }
+    }
+
+    // --- Strategy 4: Find button directly on page using getByRole --- 
+    logger.info('[🐦 Helper] Strategy 4: Searching page-level using getByRole...');
+    const buttonByRole = page.getByRole('button', { name: playButtonNameRegex }).first();
+    if (await buttonByRole.isVisible({ timeout: VISIBILITY_TIMEOUT_LONG })) {
+        logger.info('[🐦 Helper] Found Play button using getByRole directly on page. Returning button locator.');
+        return buttonByRole;
+    }
+    
+    // --- Strategy 5: Find button directly on page using flexible XPath --- 
+    logger.info('[🐦 Helper] Strategy 5: Searching page-level using flexible XPath...');
+    const buttonByXPath = page.locator(flexibleButtonXPath).first();
+    if (await buttonByXPath.isVisible({ timeout: VISIBILITY_TIMEOUT_LONG })) {
+        logger.info('[🐦 Helper] Found Play button using flexible XPath directly on page. Returning button locator.');
+        return buttonByXPath;
+    }
+
+    logger.warn('[🐦 Helper] Could not find any playable element using text, getByRole, or XPath strategies.');
+    // Log full page HTML for debugging if everything fails
+    try {
+        const html = await page.content();
+        const logPath = path.join(process.cwd(), 'logs', 'find-button-fail.html');
+        await fs.writeFile(logPath, html);
+        logger.warn(`[🐦 Helper] Saved full page HTML to ${logPath} for debugging.`);
+    } catch (htmlError) {
+        logger.error('[🐦 Helper] Failed to save page HTML on find failure:', htmlError);
+    }
     return null;
 }
 
@@ -486,7 +571,8 @@ async function findArticleWithPlayButton(page: Page): Promise<Locator | null> {
  */
 async function initiateProcessing(mentionInfo: MentionInfo, page: Page): Promise<InitiationResult> {
     logger.info(`[🚀 Initiate] Starting browser phase for ${mentionInfo.tweetId}`);
-    let articleWithPlayButton: Locator | null = null;
+    // Rename variable to reflect it might be article OR button
+    let playElementLocator: Locator | null = null;
 
     // Detect target language early
     const targetLanguageCode = detectLanguage(mentionInfo.text);
@@ -500,26 +586,32 @@ async function initiateProcessing(mentionInfo: MentionInfo, page: Page): Promise
         logger.info('[🚀 Initiate] Waiting 60 seconds after navigation...');
         await page.waitForTimeout(60000);
 
-        articleWithPlayButton = await findArticleWithPlayButton(page);
-        if (!articleWithPlayButton) {
-            logger.info('[🚀 Initiate] Play button not immediately visible. Scrolling up...');
+        // --- ADDED: Screenshot before searching ---
+        logger.info('[🚀 Initiate] Taking screenshot before attempting to find play button/article...');
+        const screenshotDir = path.join(process.cwd(), 'debug-screenshots'); 
+        await page.screenshot({ path: path.join(screenshotDir, `before-find-play-button-${mentionInfo.tweetId}.png`) });
+        // --- END ADDED SECTION ---
+
+        playElementLocator = await findArticleWithPlayButton(page); // Function now finds article or button
+        if (!playElementLocator) {
+            logger.info('[🚀 Initiate] Play button/article not immediately visible. Scrolling up...');
             const MAX_SCROLL_UP = 5;
-            for (let i = 0; i < MAX_SCROLL_UP && !articleWithPlayButton; i++) {
+            for (let i = 0; i < MAX_SCROLL_UP && !playElementLocator; i++) {
                 await page.evaluate(() => window.scrollBy(0, -window.innerHeight));
                 logger.info(`[🚀 Initiate] Waiting 60 seconds after scroll attempt ${i+1}...`);
                 await page.waitForTimeout(60000);
-                articleWithPlayButton = await findArticleWithPlayButton(page);
+                playElementLocator = await findArticleWithPlayButton(page);
             }
         }
 
-        if (!articleWithPlayButton) {
-            const errMsg = `Could not find article with Play button for tweet ${mentionInfo.tweetId}.`;
+        if (!playElementLocator) {
+            const errMsg = `Could not find playable Space element (article or button) for tweet ${mentionInfo.tweetId}.`; // Updated error message
             logger.warn(`[🚀 Initiate] ${errMsg}`);
             await postReplyToTweet(page, mentionInfo.tweetUrl,
                 `@${mentionInfo.username} Sorry, I couldn't find a playable Twitter Space associated with this tweet.`);
             throw new Error(errMsg); // Throw to signal failure
         }
-        logger.info(`[🚀 Initiate] Found article containing Play button.`);
+        logger.info(`[🚀 Initiate] Found potential Space element (article or button).`);
 
     } catch (error) {
         logger.error(`[🚀 Initiate] Error during navigation/article finding for ${mentionInfo.tweetId}:`, error);
@@ -536,7 +628,7 @@ async function initiateProcessing(mentionInfo: MentionInfo, page: Page): Promise
     // 2. Extract Title from Article (First attempt, before clicking Play)
     let spaceTitle: string | null = null;
     try {
-        logger.debug(`[🚀 Initiate] Attempting to extract Space title from article...`);
+        logger.debug(`[🚀 Initiate] Attempting to extract Space title from located element...`);
         // Try common selectors for Space titles within cards/articles
         const titleSelectors = [
             // Specific testids if available
@@ -549,12 +641,13 @@ async function initiateProcessing(mentionInfo: MentionInfo, page: Page): Promise
         
         for (const selector of titleSelectors) {
             logger.debug(`[🚀 Initiate] Trying title selector: ${selector}`);
-            const titleElement = articleWithPlayButton.locator(selector).first();
+            // Use the found locator (could be article or button)
+            const titleElement = playElementLocator.locator(selector).first(); 
             if (await titleElement.isVisible({ timeout: 500 })) {
                 const potentialTitle = await titleElement.textContent({ timeout: 1000 });
                  if (potentialTitle && potentialTitle.trim().length > 0) {
                     spaceTitle = potentialTitle.trim().substring(0, 100); // Limit length
-                    logger.info(`[🚀 Initiate] Extracted potential Space title from article using selector ${selector}: "${spaceTitle}"`);
+                    logger.info(`[🚀 Initiate] Extracted potential Space title from located element using selector ${selector}: "${spaceTitle}"`);
                     break; // Stop trying selectors once found
                 } else {
                     logger.debug(`[🚀 Initiate] Selector ${selector} found element but text was empty.`);
@@ -565,18 +658,19 @@ async function initiateProcessing(mentionInfo: MentionInfo, page: Page): Promise
         }
 
         if (!spaceTitle) {
-             logger.warn('[🚀 Initiate] Could not extract Space title from article using known selectors.');
+             logger.warn('[🚀 Initiate] Could not extract Space title from located element using known selectors.');
         }
 
     } catch (titleError) {
-        logger.warn('[🚀 Initiate] Error during Space title extraction from article:', titleError);
+        logger.warn('[🚀 Initiate] Error during Space title extraction from located element:', titleError);
     }
 
     // 3. Click Play and capture M3U8
     let m3u8Url: string | null = null;
     try {
         logger.info(`[🚀 Initiate] Clicking Play button and capturing M3U8...`);
-        m3u8Url = await clickPlayButtonAndCaptureM3u8(page, articleWithPlayButton);
+        // Pass the located element (article or button) to the capture function
+        m3u8Url = await clickPlayButtonAndCaptureM3u8(page, playElementLocator); 
         if (!m3u8Url) {
              const errMsg = `Failed to capture M3U8 URL for tweet ${mentionInfo.tweetId}.`;
              logger.error(`[🚀 Initiate] ${errMsg}`);
@@ -930,6 +1024,16 @@ async function runFinalReplyQueue(page: Page): Promise<void> {
         
         if (postSuccess) {
             logger.info(`[↩️ Reply Queue] Successfully posted final reply via ${postMethod} for ${mentionInfo.tweetId}.`);
+            
+            // --- ADDED: Mark as processed ONLY AFTER successful reply ---
+            try {
+                await markMentionAsProcessed(mentionInfo.tweetId, processedMentions); 
+            } catch (markError) {
+                logger.error(`[↩️ Reply Queue] CRITICAL: Failed to mark mention ${mentionInfo.tweetId} as processed after successful reply:`, markError);
+                // Continue cleanup even if marking fails
+            }
+            // --- END ADDED SECTION ---
+
             // --- Clean up DOWNLOADED MP3 --- 
             // Attempt cleanup using the reconstructed path
             logger.info(`[↩️ Reply Queue] Attempting cleanup of temporary audio file: ${assumedDownloadedAudioPath}`);
@@ -991,7 +1095,6 @@ async function main() {
     let browser: Browser | null = null;
     let context: BrowserContext | null = null;
     let page: Page | null = null;
-    let processedMentions: Set<string>;
     let mainLoopIntervalId: NodeJS.Timeout | null = null; // Keep track of main polling interval
     let browserTaskIntervalId: NodeJS.Timeout | null = null; // Keep track of browser task interval
 
@@ -1118,14 +1221,20 @@ async function main() {
             try {
                 const mentions = await scrapeMentions(page);
                 logger.info(`[😈 Daemon Polling] Scraped ${mentions.length} mentions.`);
+                logger.debug(`[😈 Daemon Polling] Current processedMentions set size: ${processedMentions.size}`); // Log set size
                 let newMentionsFound = 0;
                 for (const mention of mentions) {
-                    if (!processedMentions.has(mention.tweetId)) {
+                    // --- ADDED: Detailed logging before check ---
+                    const currentTweetId = mention.tweetId;
+                    const isAlreadyProcessed = processedMentions.has(currentTweetId);
+                    logger.debug(`[😈 Daemon Polling] Checking mention ID: ${currentTweetId}. Already processed according to Set: ${isAlreadyProcessed}`);
+                    // --- END ADDED LOGGING ---
+                    
+                    if (!isAlreadyProcessed) { // Use the pre-checked variable
                         newMentionsFound++;
-                        logger.info(`[🔔 Mention] Found new mention: ID=${mention.tweetId}, User=${mention.username}`);
+                        logger.info(`[🔔 Mention] Found new mention: ID=${currentTweetId}, User=${mention.username}`);
                              mentionQueue.push(mention);
-                             await markMentionAsProcessed(mention.tweetId, processedMentions);
-                        logger.info(`[⚙️ Queue] Mention ${mention.tweetId} added to initiation queue. Queue size: ${mentionQueue.length}`);
+                        logger.info(`[⚙️ Queue] Mention ${currentTweetId} added to initiation queue. Queue size: ${mentionQueue.length}`);
                     } 
                 }
                  if (newMentionsFound > 0) {
@@ -1163,7 +1272,7 @@ async function main() {
         const BROWSER_TASK_INTERVAL_MS = 5000; // Check queues every 5 seconds
         logger.info(`[😈 Daemon] Starting browser task worker loop (Interval: ${BROWSER_TASK_INTERVAL_MS / 1000}s)`);
         browserTaskIntervalId = setInterval(() => {
-             logger.debug('[😈 Daemon Task Loop] Checking queues for browser tasks...');
+            // logger.debug('[😈 Daemon Task Loop] Checking queues for browser tasks...');
             if (!page || page.isClosed()) {
                 logger.error('[😈 Daemon Task Loop] Page is closed. Stopping task loop.');
                 if (browserTaskIntervalId) clearInterval(browserTaskIntervalId);
