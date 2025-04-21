@@ -2,6 +2,7 @@ import { chromium, Browser, Page, Locator } from 'playwright'; // Use Playwright
 import logger from '../utils/logger';
 import * as fs from 'fs'; // Import fs for file operations
 import * as path from 'path'; // Import path
+import { config } from '../utils/config'; // Import config
 
 const LEADERBOARD_URL = 'https://spacesdashboard.com/leaderboard?lang=en&mode=7d';
 const TWITTER_BASE_URL = 'https://x.com';
@@ -54,8 +55,8 @@ export async function fetchLeaderboardData(limit: number = 50): Promise<Leaderbo
 
     try {
         logger.debug('[📊 Scraper] Launching Playwright browser...');
-        // Keep headless: true for automation unless debugging needed
-        browser = await chromium.launch({ headless: true });
+        // Use config setting, default to true for scraper
+        browser = await chromium.launch({ headless: config.BROWSER_HEADLESS ?? true });
         const page: Page = await browser.newPage();
         logger.debug(`[📊 Scraper] Navigating to ${LEADERBOARD_URL}...`);
         await page.goto(LEADERBOARD_URL, { waitUntil: 'networkidle', timeout: 120000 });

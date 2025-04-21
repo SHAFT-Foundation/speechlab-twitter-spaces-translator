@@ -59,7 +59,7 @@ function postSplitReply(tweetUrl) {
                 case 0:
                     logger_1.default.info("[\uD83E\uDDEA Test] Posting split reply to tweet: ".concat(tweetUrl));
                     return [4 /*yield*/, playwright_1.chromium.launch({
-                            headless: false,
+                            headless: process.env.BROWSER_HEADLESS ? process.env.BROWSER_HEADLESS.toLowerCase() === 'true' : false,
                             args: ['--no-sandbox']
                         })];
                 case 1:
@@ -126,7 +126,7 @@ function postSplitReply(tweetUrl) {
                 case 17:
                     _a.sent();
                     messageTstamp = new Date().toISOString().replace(/[T]/g, ' ').substring(0, 16);
-                    firstMessage = "Speechlab Twitter Space Agent sponsored by @shaftfinance $shaft has dubbed this space in Latin Spanish! [".concat(messageTstamp, "]");
+                    firstMessage = "Speechlab Twitter Space Agent sponsored by @shaftfinance $shaft has dubbed this @shaftfinance space in Latin Spanish! Contact for more languages!";
                     // Step 1: Post the first reply with just text
                     logger_1.default.info("[\uD83D\uDC26 Twitter] Posting first reply with just text");
                     // Click reply button

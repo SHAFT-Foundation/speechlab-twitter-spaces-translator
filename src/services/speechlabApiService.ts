@@ -3,6 +3,7 @@ import { config } from '../utils/config';
 import logger from '../utils/logger';
 import path from 'path';
 import fs from 'fs';
+import fsPromises from 'fs/promises';
 
 const API_BASE_URL = 'https://translate-api.speechlab.ai';
 
@@ -51,20 +52,56 @@ interface GenerateLinkResponse {
     // Add other potential fields
 }
 
+// Define the structure for the Dub Media Item (OUTPUTS)
+export interface DubMedia {
+    _id: string;
+    uri: string;
+    category: string; 
+    contentTYpe: string; // Note the typo in the example API response
+    format: string; 
+    operationType: string; // Should be OUTPUT
+    presignedURL?: string; 
+    isSRTUploaded?: boolean;
+    // Include other relevant fields
+}
+
+// Define the structure for the main Dub object within a Translation
+export interface DubObject {
+     id?: string; // Or _id
+     language?: string;
+     voiceMatchingMode?: string;
+     isDubUpdated?: boolean;
+     mergeStatus?: string;
+     lastDubRunType?: string;
+     medias?: DubMedia[]; // The array of output media files
+     // Include other fields associated with the dub process itself
+}
+
+// Define the structure for a Translation object
+export interface Translation {
+    id: string; // Or _id depending on API
+    language: string;
+    dub?: DubObject[]; // Dub process results are in an array here
+    // Include other translation-specific fields
+}
+
+// Define the structure for the Project Details
+export interface Project {
+    id: string;
+    job: {
+        name: string;
+        sourceLanguage: string;
+        targetLanguage: string;
+        status: string; 
+    };
+    translations?: Translation[]; 
+    // Include other fields from the API response as needed
+}
+
+// Update GetProjectsResponse to use the refined Project type
 interface GetProjectsResponse {
-    results: Array<{
-        id: string;
-        job: {
-            name: string;
-            sourceLanguage: string;
-            targetLanguage: string;
-            status: string; // "COMPLETE", "PROCESSING", etc.
-            // No progress field in the actual API
-        };
-        // Other project fields
-    }>;
+    results: Array<Project>; 
     totalResults: number;
-    // Other pagination fields
 }
 
 // Simple in-memory cache for the token
@@ -147,31 +184,36 @@ async function getAuthToken(): Promise<string | null> {
 /**
  * Creates a dubbing project in SpeechLab.
  * @param publicAudioUrl The publicly accessible URL of the source audio file (e.g., S3 URL).
- * @param spaceName The name to use for the project and thirdPartyID.
+ * @param projectName The desired name for the project.
+ * @param targetLanguageCode The detected target language code (e.g., 'es').
+ * @param thirdPartyId The unique identifier for this job (e.g., spaceId-langCode).
  * @returns {Promise<string | null>} The projectId if successful, otherwise null.
  */
-export async function createDubbingProject(publicAudioUrl: string, spaceName: string): Promise<string | null> {
-    logger.info(`[🤖 SpeechLab] Attempting to create dubbing project for: ${spaceName}`);
+export async function createDubbingProject(
+    publicAudioUrl: string, 
+    projectName: string, 
+    targetLanguageCode: string, 
+    thirdPartyId: string 
+): Promise<string | null> {
+    logger.info(`[🤖 SpeechLab] Attempting to create dubbing project: Name="${projectName}", Lang=${targetLanguageCode}, 3rdPartyID=${thirdPartyId}`);
     const token = await getAuthToken();
     if (!token) {
         logger.error('[🤖 SpeechLab] ❌ Cannot create project: Failed to get authentication token.');
         return null;
     }
 
-    // Sanitize spaceName or use a default for API fields
-    const projectName = spaceName ? spaceName.substring(0, 100) : `Dubbed Space ${new Date().toISOString()}`; // Ensure reasonable length
-    const thirdPartyId = spaceName ? spaceName.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 50) : `id_${Date.now()}`; // Ensure valid characters/length
+    // Ensure projectName is reasonably limited
+    const finalProjectName = projectName.substring(0, 100);
 
     const payload: CreateDubPayload = {
-        name: projectName,
-        sourceLanguage: config.SOURCE_LANGUAGE,
-        targetLanguage: config.TARGET_LANGUAGE,
-        dubAccent: config.DUB_ACCENT,
+        name: finalProjectName,
+        sourceLanguage: config.SOURCE_LANGUAGE, 
+        targetLanguage: targetLanguageCode,     
+        dubAccent: targetLanguageCode,          
         unitType: "whiteGlove",
         mediaFileURI: publicAudioUrl,
-        voiceMatchingMode: "source",
-        thirdPartyID: thirdPartyId,
-        // customizedVoiceMatchingSpeakers: [], // Keep empty as per spec
+        voiceMatchingMode: "source", 
+        thirdPartyID: thirdPartyId,       // Use the ID passed directly into the function
     };
 
     logger.debug(`[🤖 SpeechLab] Create project payload: ${JSON.stringify(payload)}`);
@@ -183,16 +225,16 @@ export async function createDubbingProject(publicAudioUrl: string, spaceName: st
 
         const projectId = response.data?.projectId;
         if (projectId) {
-            logger.info(`[🤖 SpeechLab] ✅ Successfully created project. Project ID: ${projectId}`);
+            logger.info(`[🤖 SpeechLab] ✅ Successfully created project. Project ID: ${projectId} (ThirdPartyID: ${thirdPartyId})`);
             return projectId;
         } else {
-            logger.error('[🤖 SpeechLab] ❌ Project creation successful but projectId not found in response.');
+            logger.error(`[🤖 SpeechLab] ❌ Project creation API call successful but projectId not found in response.`);
              logger.debug(`[🤖 SpeechLab] Full create project response: ${JSON.stringify(response.data)}`);
             return null;
         }
 
     } catch (error) {
-        handleApiError(error, `project creation for ${projectName}`);
+        handleApiError(error, `project creation for ${finalProjectName} (3rdPartyID: ${thirdPartyId})`);
         return null;
     }
 }
@@ -235,10 +277,11 @@ export async function generateSharingLink(projectId: string): Promise<string | n
 
 /**
  * Gets project details by thirdPartyID to check its status.
+ * Returns the *full* project object if found.
  * @param thirdPartyID The thirdPartyID used when creating the project
- * @returns {Promise<{id: string, status: string, progress: number} | null>} Project details if found, otherwise null
+ * @returns {Promise<Project | null>} Full project object if found, otherwise null
  */
-export async function getProjectByThirdPartyID(thirdPartyID: string): Promise<{id: string, status: string, progress: number} | null> {
+export async function getProjectByThirdPartyID(thirdPartyID: string): Promise<Project | null> {
     logger.info(`[🤖 SpeechLab] Getting project status for thirdPartyID: ${thirdPartyID}`);
     const token = await getAuthToken();
     if (!token) {
@@ -247,105 +290,60 @@ export async function getProjectByThirdPartyID(thirdPartyID: string): Promise<{i
     }
 
     try {
-        // URL encode the thirdPartyID to ensure it works in the query parameter
         const encodedThirdPartyID = encodeURIComponent(thirdPartyID);
         const url = `/v1/projects?sortBy=createdAt%3Aasc&limit=10&page=1&expand=true&thirdPartyIDs=${encodedThirdPartyID}`;
         
-        logger.debug(`[🤖 SpeechLab] 🔍 Fetching project status from API URL: ${url}`);
+        logger.debug(`[🤖 SpeechLab] 🔍 Fetching project status from API URL: ${API_BASE_URL}${url}`);
+        
         const response = await apiClient.get<GetProjectsResponse>(url, {
             headers: { 'Authorization': `Bearer ${token}` }
         });
 
-        // Write the full API response to a temporary file for debugging
-        const tempFilePath = path.join(process.cwd(), 'temp_api_response.json');
+        // Write the *summary* API response to a temporary file for debugging if needed
+        const tempFilePath = path.join(process.cwd(), 'temp_api_response_summary.json');
         try {
-            fs.writeFileSync(
+            fsPromises.writeFile(
                 tempFilePath,
                 JSON.stringify({
                     timestamp: new Date().toISOString(),
                     thirdPartyID: thirdPartyID,
-                    url: url,
-                    response: response.data
+                    requestUrl: `${API_BASE_URL}${url}`,
+                    responseStatus: response.status,
+                    responseTotalResults: response.data?.totalResults,
+                    responseFirstProjectId: response.data?.results?.[0]?.id,
+                    responseFirstProjectStatus: response.data?.results?.[0]?.job?.status
                 }, null, 2)
             );
-            logger.info(`[🤖 SpeechLab] 📝 Wrote API response to ${tempFilePath}`);
+            logger.info(`[🤖 SpeechLab] 📝 Wrote API response summary to ${tempFilePath}`);
         } catch (writeError) {
-            logger.error(`[🤖 SpeechLab] ❌ Failed to write API response to file:`, writeError);
+            logger.error(`[🤖 SpeechLab] ❌ Failed to write API response summary to file:`, writeError);
         }
 
-        // Log the raw response to help with debugging
-        logger.debug(`[🤖 SpeechLab] 📊 Raw API response: ${JSON.stringify(response.data)}`);
-
-        // Check if we got projects back and that there is at least one
         if (response.data?.results && response.data.results.length > 0) {
-            const project = response.data.results[0]; // Get first project (should be only one)
-            
-            // Log the job structure for debugging
-            logger.debug(`[🤖 SpeechLab] 🔍 Project job data: ${JSON.stringify(project.job)}`);
-            
-            // Extract status and determine progress
+            const project = response.data.results[0]; 
             const status = project.job?.status || "UNKNOWN";
-            // If status is COMPLETE, set progress to 100, otherwise default to 0 (no progress field in API)
-            const progress = status === "COMPLETE" ? 100 : (status === "PROCESSING" ? 50 : 0);
             
-            // Enhanced logging with more details
             logger.info(`[🤖 SpeechLab] ✅ Found project with ID: ${project.id} for thirdPartyID: ${thirdPartyID}`);
-            logger.info(`[🤖 SpeechLab] 📊 Project status: ${status}, Progress: ${progress}%`);
-            logger.info(`[🤖 SpeechLab] 📋 Project details: Name: "${project.job?.name || 'Unknown'}", Source: ${project.job?.sourceLanguage || 'Unknown'}, Target: ${project.job?.targetLanguage || 'Unknown'}`);
-            
-            return {
-                id: project.id,
-                status: status,
-                progress: progress
-            };
+            logger.info(`[🤖 SpeechLab] 📊 Project status: ${status}`);
+            logger.info(`[🤖 SpeechLab] 📋 Project details: Name: \"${project.job?.name || 'Unknown'}\", Source: ${project.job?.sourceLanguage || 'Unknown'}, Target: ${project.job?.targetLanguage || 'Unknown'}`);
+            // Corrected debug log path for the *medias* array inside the first dub object of the first translation
+            logger.debug(`[🤖 SpeechLab] 🔍 Found ${project.translations?.[0]?.dub?.[0]?.medias?.length || 0} media objects in first translation's first dub.`); 
+            // Log the full response data for debugging
+            logger.debug(`[🤖 SpeechLab] --- FULL PROJECT RESPONSE ---`);
+            logger.debug(JSON.stringify(response.data, null, 2));
+            logger.debug(`[🤖 SpeechLab] --- END FULL PROJECT RESPONSE ---`);
+
+            // Return the full project object
+            return project;
         } else {
-            // More detailed warning when no projects are found
-            logger.warn(`[🤖 SpeechLab] ⚠️ No projects found for thirdPartyID: ${thirdPartyID}`);
+            logger.warn(`[🤖 SpeechLab] ⚠️ No projects found matching thirdPartyID: ${thirdPartyID}`);
             if (response.data?.totalResults !== undefined) {
-                logger.warn(`[🤖 SpeechLab] API returned ${response.data.totalResults} total projects`);
+                logger.warn(`[🤖 SpeechLab] API reported ${response.data.totalResults} total results for this query.`);
             }
-            
-            // Write an error log file with more detailed information
-            const errorLogPath = path.join(process.cwd(), 'project_not_found.json');
-            try {
-                fs.writeFileSync(
-                    errorLogPath,
-                    JSON.stringify({
-                        timestamp: new Date().toISOString(),
-                        error: "No projects found",
-                        thirdPartyID: thirdPartyID,
-                        url: url,
-                        apiResponse: response.data,
-                        total: response.data?.totalResults
-                    }, null, 2)
-                );
-                logger.info(`[🤖 SpeechLab] 📝 Wrote error details to ${errorLogPath}`);
-            } catch (writeError) {
-                logger.error(`[🤖 SpeechLab] ❌ Failed to write error log:`, writeError);
-            }
-            
             return null;
         }
     } catch (error) {
         handleApiError(error, `getting project status for thirdPartyID: ${thirdPartyID}`);
-        
-        // Write error details to file
-        try {
-            const errorPath = path.join(process.cwd(), 'api_error.json');
-            fs.writeFileSync(
-                errorPath,
-                JSON.stringify({
-                    timestamp: new Date().toISOString(),
-                    thirdPartyID: thirdPartyID,
-                    error: error instanceof Error ? error.message : String(error),
-                    stack: error instanceof Error ? error.stack : undefined
-                }, null, 2)
-            );
-            logger.info(`[🤖 SpeechLab] 📝 Wrote API error details to ${errorPath}`);
-        } catch (writeError) {
-            logger.error(`[🤖 SpeechLab] ❌ Failed to write error details:`, writeError);
-        }
-        
         return null;
     }
 }
@@ -355,43 +353,45 @@ export async function getProjectByThirdPartyID(thirdPartyID: string): Promise<{i
  * @param thirdPartyID The thirdPartyID of the project to monitor
  * @param maxWaitTimeMs Maximum time to wait in milliseconds (default: 1 hour)
  * @param checkIntervalMs Interval between status checks in milliseconds (default: 30 seconds)
- * @returns {Promise<boolean>} True if project completed successfully, false otherwise
+ * @returns {Promise<Project | null>} The full project object if completed successfully, otherwise null
  */
 export async function waitForProjectCompletion(
     thirdPartyID: string, 
     maxWaitTimeMs = 60 * 60 * 1000, // 1 hour default
     checkIntervalMs = 30000 // 30 seconds default
-): Promise<boolean> {
+): Promise<Project | null> {
     logger.info(`[🤖 SpeechLab] Waiting for project completion: ${thirdPartyID}`);
     logger.info(`[🤖 SpeechLab] Maximum wait time: ${maxWaitTimeMs/1000/60} minutes, Check interval: ${checkIntervalMs/1000} seconds`);
     
     const startTime = Date.now();
     let pollCount = 0;
+    let lastProjectDetails: Project | null = null; // Store last retrieved details
     
-    // Continue polling until max time is reached
     while (Date.now() - startTime < maxWaitTimeMs) {
         pollCount++;
         const elapsedSeconds = ((Date.now() - startTime) / 1000).toFixed(1);
         
         logger.info(`[🤖 SpeechLab] 🔄 Poll #${pollCount} - Checking project status (${elapsedSeconds}s elapsed)...`);
         
-        const projectDetails = await getProjectByThirdPartyID(thirdPartyID);
+        // Get the full project details
+        const project = await getProjectByThirdPartyID(thirdPartyID); 
+        lastProjectDetails = project; // Store the latest result
         
-        if (!projectDetails) {
+        if (!project) {
             logger.warn(`[🤖 SpeechLab] ⚠️ Poll #${pollCount} - Could not retrieve project details, will retry in ${checkIntervalMs/1000}s...`);
-        } else if (projectDetails.status === "COMPLETE") {
+        } else if (project.job?.status === "COMPLETE") {
             const elapsedMinutes = ((Date.now() - startTime) / 1000 / 60).toFixed(1);
             logger.info(`[🤖 SpeechLab] ✅ Poll #${pollCount} - Project completed successfully after ${elapsedMinutes} minutes!`);
-            return true;
-        } else if (projectDetails.status === "FAILED") {
+            return project; // Return the full project object on success
+        } else if (project.job?.status === "FAILED") {
             logger.error(`[🤖 SpeechLab] ❌ Poll #${pollCount} - Project failed to process!`);
-            return false;
+            return null; // Return null on failure
         } else {
-            // More detailed status update including remaining time estimate
-            const progressPercent = projectDetails.progress || 0;
+            // Calculate progress (simplified)
+            const status = project.job?.status || "UNKNOWN";
+            const progressPercent = status === "PROCESSING" ? 50 : 0; 
             let remainingTimeEstimate = "unknown";
             
-            // If we have progress > 0, try to estimate remaining time
             if (progressPercent > 0) {
                 const elapsedMs = Date.now() - startTime;
                 const estimatedTotalMs = (elapsedMs / progressPercent) * 100;
@@ -400,17 +400,15 @@ export async function waitForProjectCompletion(
                 remainingTimeEstimate = `~${estimatedRemainingMin} minutes`;
             }
             
-            logger.info(`[🤖 SpeechLab] 🕒 Poll #${pollCount} - Project status: ${projectDetails.status}, Progress: ${progressPercent}%, Estimated time remaining: ${remainingTimeEstimate}`);
+            logger.info(`[🤖 SpeechLab] 🕒 Poll #${pollCount} - Project status: ${status}, Progress: ${progressPercent}%, Estimated time remaining: ${remainingTimeEstimate}`);
             logger.info(`[🤖 SpeechLab] ⏳ Poll #${pollCount} - Will check again in ${checkIntervalMs/1000}s...`);
         }
         
-        // Wait for the specified interval before checking again
         logger.debug(`[🤖 SpeechLab] 💤 Poll #${pollCount} - Sleeping for ${checkIntervalMs/1000}s before next check...`);
         await new Promise(resolve => setTimeout(resolve, checkIntervalMs));
     }
     
-    // If we get here, we've exceeded the maximum wait time
     const maxWaitMinutes = (maxWaitTimeMs/1000/60).toFixed(1);
     logger.warn(`[🤖 SpeechLab] ⏰ Poll #${pollCount} - Maximum wait time of ${maxWaitMinutes} minutes exceeded without project completion.`);
-    return false;
+    return lastProjectDetails?.job?.status === "COMPLETE" ? lastProjectDetails : null; // Return last details only if complete, else null
 } 

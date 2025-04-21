@@ -123,7 +123,16 @@ def scrape_leaderboard_playwright(
 ):
     print(f"--- Starting Playwright Scraper ---")
     print(f"Target URL: {LEADERBOARD_URL}")
-    print(f"Headless mode: {headless}")
+
+    # Check environment variable, override function argument if set
+    env_headless = os.environ.get('BROWSER_HEADLESS')
+    use_headless = headless # Default to function argument
+    if env_headless is not None:
+        use_headless = env_headless.lower() == 'true'
+        print(f"Found BROWSER_HEADLESS environment variable, overriding headless setting to: {use_headless}")
+    else:
+        print(f"Headless mode (from argument/default): {use_headless}")
+
     print(f"Target entries: ~{limit} (will stop scrolling if reached)")
     print(f"Max scroll attempts: {scrolls}")
     print(f"Debug mode: {debug}")
@@ -133,7 +142,7 @@ def scrape_leaderboard_playwright(
     with sync_playwright() as p:
         browser = None
         try:
-            browser = p.chromium.launch(headless=headless)
+            browser = p.chromium.launch(headless=use_headless)
             page = browser.new_page()
             stealth_sync(page) # Apply stealth
 

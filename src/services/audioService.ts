@@ -32,18 +32,20 @@ function ensureTempDirExists(): void {
 function runFfmpegDownload(m3u8Url: string, outputFilePath: string): Promise<void> {
     return new Promise((resolve, reject) => {
         const ffmpegArgs = [
-            '-i', m3u8Url,     // Input URL 
-            '-c', 'copy',      // Copy codec (no re-encoding)
-            '-y',              // Overwrite output file if it exists
-            outputFilePath     // Output file path
+            '-protocol_whitelist', 'file,http,https,tcp,tls,crypto',
+            '-i', m3u8Url,
+            '-c', 'copy', 
+            '-bsf:a', 'aac_adtstoasc',
+            '-y',
+            outputFilePath
         ];
 
         // Log the full ffmpeg command prominently
         const ffmpegCommand = `ffmpeg ${ffmpegArgs.join(' ')}`;
-        logger.info(`[🎧 Audio] 🔧 FFMPEG COMMAND: ${ffmpegCommand}`);
-        logger.info(`[🎧 Audio] Starting ffmpeg download for: ${m3u8Url}`);
-        logger.info(`[🎧 Audio] Output file will be saved to: ${outputFilePath}`);
-        logger.debug(`[🎧 Audio] ffmpeg command: ${ffmpegCommand}`);
+        logger.info('-------------------------------------------');
+        logger.info(`[🎧 Audio] EXECUTING FFMPEG COMMAND:`);
+        logger.info(ffmpegCommand);
+        logger.info('-------------------------------------------');
 
         // Create timestamps for progress tracking
         const startTime = Date.now();
@@ -194,12 +196,12 @@ async function uploadToS3(localFilePath: string, s3Key: string): Promise<string>
             // This can be more reliable for avoiding EPIPE errors
             const fileBuffer = fs.readFileSync(localFilePath);
             
-            // Use the correct content type for MP4 files
+            // Use the correct content type for AAC files
             const uploadParams: PutObjectCommandInput = {
                 Bucket: config.AWS_S3_BUCKET,
                 Key: s3Key,
                 Body: fileBuffer,
-                ContentType: 'video/mp4', // Updated content type for MP4 container
+                ContentType: 'audio/aac', // Set content type to audio/aac
             };
 
             logger.debug(`[🎧 Audio] 📋 Uploading to bucket: ${config.AWS_S3_BUCKET}`);
@@ -243,13 +245,13 @@ async function uploadToS3(localFilePath: string, s3Key: string): Promise<string>
 export async function downloadAndUploadAudio(m3u8Url: string, spaceName?: string | null): Promise<string | null> {
     ensureTempDirExists();
     const uniqueId = uuidv4();
-    // Sanitize spaceName for filename or use uuid if name is unavailable/invalid
     const sanitizedNamePart = spaceName ? spaceName.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 50) : uniqueId;
-    const outputFilename = `${sanitizedNamePart}_${uniqueId}.mp4`; // Using MP4 container instead of AAC
+    const outputFilename = `${sanitizedNamePart}_${uniqueId}.aac`;
     const localFilePath = path.join(TEMP_DIR, outputFilename);
-    const s3Key = `twitter-space-audio/${outputFilename}`; // Store in a specific "folder" in S3
+    const s3Key = `twitter-space-audio/${outputFilename}`;
 
     logger.info(`[🎧 Audio] 🔄 Processing Twitter Space "${spaceName || 'Unnamed Space'}"`);
+    logger.info(`[🎧 Audio] Output filename: ${outputFilename}`);
     logger.info(`[🎧 Audio] Download queue initialized`);
 
     try {
@@ -295,4 +297,89 @@ export async function downloadAndUploadAudio(m3u8Url: string, spaceName?: string
         }
         return null; // Indicate failure
     }
+}
+
+/**
+ * Uploads a locally stored file to the configured S3 public bucket.
+ * @param localFilePath Path to the local file to upload.
+ * @param s3Key The desired key (filename including any prefixes) for the object in S3.
+ * @returns Promise resolving with the public URL of the uploaded object, or null on failure.
+ */
+export async function uploadLocalFileToS3(localFilePath: string, s3Key: string): Promise<string | null> {
+    const MAX_RETRIES = 3;
+    let attempt = 0;
+    let lastError: any = null;
+
+    logger.info(`[☁️ S3] Attempting to upload local file to S3.`);
+    logger.debug(`[☁️ S3]   Local Path: ${localFilePath}`);
+    logger.debug(`[☁️ S3]   Target Key: ${s3Key}`);
+    logger.debug(`[☁️ S3]   Target Bucket: ${config.AWS_S3_BUCKET}`);
+
+    try {
+        if (!fs.existsSync(localFilePath)) {
+            logger.error(`[☁️ S3] ❌ File does not exist at local path: ${localFilePath}`);
+            return null;
+        }
+        const stats = fs.statSync(localFilePath);
+        if (stats.size <= 0) {
+            logger.error(`[☁️ S3] ❌ File exists but has zero bytes: ${localFilePath}`);
+            return null;
+        }
+        const fileSizeMB = (stats.size / (1024 * 1024)).toFixed(2);
+        logger.info(`[☁️ S3] File verified locally (${fileSizeMB} MB). Proceeding with upload attempts...`);
+
+    } catch (error) {
+        logger.error(`[☁️ S3] ❌ Error accessing local file ${localFilePath}:`, error);
+        return null;
+    }
+
+    while (attempt < MAX_RETRIES) {
+        attempt++;
+        try {
+            logger.info(`[☁️ S3] Starting upload attempt ${attempt}/${MAX_RETRIES}...`);
+            const startTime = Date.now();
+            const fileStream = fs.createReadStream(localFilePath);
+
+            // Dynamically determine content type based on extension (basic implementation)
+            let contentType = 'application/octet-stream'; // Default
+            const ext = path.extname(localFilePath).toLowerCase();
+            if (ext === '.mp3') contentType = 'audio/mpeg';
+            else if (ext === '.aac') contentType = 'audio/aac';
+            else if (ext === '.mp4') contentType = 'video/mp4';
+            // Add other types as needed
+            logger.debug(`[☁️ S3] Determined Content-Type: ${contentType}`);
+
+            const uploadParams: PutObjectCommandInput = {
+                Bucket: config.AWS_S3_BUCKET,
+                Key: s3Key,
+                Body: fileStream,
+                ContentType: contentType,
+                // Consider adding ACL: 'public-read' if bucket policy doesn't automatically make it public
+                // ACL: 'public-read' 
+            };
+
+            const command = new PutObjectCommand(uploadParams);
+            await s3Client.send(command);
+
+            const region = config.AWS_REGION || await s3Client.config.region() || 'us-east-1';
+            const publicUrl = `https://${config.AWS_S3_BUCKET}.s3.${region}.amazonaws.com/${s3Key}`;
+
+            const endTime = Date.now();
+            const elapsedSeconds = ((endTime - startTime) / 1000).toFixed(1);
+            logger.info(`[☁️ S3] ✅ S3 upload successful (attempt ${attempt}, ${elapsedSeconds}s). Public URL: ${publicUrl}`);
+            return publicUrl;
+            
+        } catch (error) {
+            lastError = error;
+            logger.error(`[☁️ S3] ❌ S3 upload attempt ${attempt}/${MAX_RETRIES} failed:`, error);
+            if (attempt < MAX_RETRIES) {
+                const delayMs = Math.min(1000 * Math.pow(2, attempt) + Math.random() * 1000, 10000);
+                logger.info(`[☁️ S3] ⏳ Retrying in ${(delayMs/1000).toFixed(1)}s...`);
+                await new Promise(resolve => setTimeout(resolve, delayMs));
+            }
+        }
+    }
+    
+    logger.error(`[☁️ S3] ❌ All ${MAX_RETRIES} S3 upload attempts failed for key: ${s3Key}`);
+    return null; // Return null if all retries fail
 } 
