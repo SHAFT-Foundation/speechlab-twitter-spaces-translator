@@ -457,17 +457,12 @@ async function markMentionAsProcessed(mentionId: string, processedMentions: Set<
 async function findArticleWithPlayButton(page: Page): Promise<Locator | null> {
     logger.debug('[🐦 Helper] Searching for playable Space element (button or article)...');
     
-    // Use case-insensitive regex for text matching
-    const playButtonTextRegex = /Play recording/i; 
-    const playButtonNameRegex = /Play recording/i; // Case-insensitive regex for getByRole
+    const playButtonNameRegex = /Play recording/i; // Case-insensitive regex
     const articleSelector = 'article[data-testid="tweet"]';
     const flexibleButtonXPath = "//button[contains(@aria-label, 'Play recording') or .//span[contains(text(), 'Play recording')]]";
 
-    const VISIBILITY_TIMEOUT_SHORT = 1000; // Increased slightly
-    const VISIBILITY_TIMEOUT_LONG = 2000; // Increased slightly
-
-    // --- Strategy 1: Find TEXT (regex) within articles --- 
-    logger.debug(`[🐦 Helper] Strategy 1: Searching within articles (${articleSelector}) using getByText(${playButtonTextRegex})...`);
+    // --- Strategy 1: Find button within articles using getByRole --- 
+    logger.debug(`[🐦 Helper] Strategy 1: Searching within articles (${articleSelector}) using getByRole...`);
     const articles = await page.locator(articleSelector).all();
     for (let i = 0; i < articles.length; i++) {
         const article = articles[i];
@@ -475,87 +470,36 @@ async function findArticleWithPlayButton(page: Page): Promise<Locator | null> {
              logger.debug(`[🐦 Helper] Article ${i + 1} is not visible, skipping.`);
              continue;
          }
-        // Find element with the text regex within the article
-        const textElementInArticle = article.getByText(playButtonTextRegex);
-        if (await textElementInArticle.isVisible({ timeout: VISIBILITY_TIMEOUT_SHORT })) {
-            logger.info(`[🐦 Helper] Found text matching ${playButtonTextRegex} in article ${i + 1}. Returning article locator.`);
-             // Check if the found element *is* the button, otherwise return the article
-            const tagName = await textElementInArticle.evaluate(el => el.tagName.toLowerCase()).catch(() => '');
-            if (tagName === 'button') {
-                 logger.info(`[🐦 Helper] The text element itself is the button. Returning button.`);
-                return textElementInArticle;
-            }
-            // Try finding the button *near* the text within the article
-            const buttonNearText = article.locator('button').filter({ has: textElementInArticle }).first();
-            if (await buttonNearText.isVisible({timeout: 500})){
-                logger.info(`[🐦 Helper] Found button near text in article ${i+1}. Returning button.`);
-                return buttonNearText;
-            }
-            logger.info(`[🐦 Helper] Text found, but couldn't pinpoint button within. Returning containing article.`);
-            return article; 
-        }
-    }
-
-    // --- Strategy 2: Find TEXT (regex) page-wide --- 
-    logger.info(`[🐦 Helper] Strategy 2: Searching page-level using getByText(${playButtonTextRegex})...`);
-    const textElementOnPage = page.getByText(playButtonTextRegex).first(); 
-    if (await textElementOnPage.isVisible({ timeout: VISIBILITY_TIMEOUT_LONG })) {
-        logger.info(`[🐦 Helper] Found text matching ${playButtonTextRegex} directly on page.`);
-        // Attempt to find the closest button ancestor or return the element if it's a button
-        try {
-            const buttonAncestor = textElementOnPage.locator('xpath=ancestor-or-self::button').first();
-            if (await buttonAncestor.isVisible({timeout: VISIBILITY_TIMEOUT_SHORT})) {
-                logger.info('[🐦 Helper] Found closest button ancestor/self for the text. Returning button locator.');
-                return buttonAncestor;
-            } else {
-                logger.warn('[🐦 Helper] Found text, but no button ancestor. Returning text element directly.');
-                return textElementOnPage; // Fallback
-            }
-        } catch (e) {
-             logger.warn('[🐦 Helper] Error finding button ancestor for text, returning text element directly.');
-             return textElementOnPage; // Fallback
-        }
-    }
-
-    // --- Strategy 3: Find button within articles using getByRole --- 
-    logger.debug(`[🐦 Helper] Strategy 3: Searching within articles (${articleSelector}) using getByRole...`);
-    // Reuse articles from Strategy 1
-    for (let i = 0; i < articles.length; i++) {
-        const article = articles[i];
-        if (!await article.isVisible().catch(() => false)) continue; // Skip non-visible articles
         const buttonInArticle = article.getByRole('button', { name: playButtonNameRegex }).first();
-        if (await buttonInArticle.isVisible({ timeout: VISIBILITY_TIMEOUT_SHORT })) {
+        if (await buttonInArticle.isVisible({ timeout: 500 })) {
             logger.info(`[🐦 Helper] Found Play button in article ${i + 1} using getByRole. Returning article.`);
             return article; // Return the article containing the button
         }
     }
 
-    // --- Strategy 4: Find button directly on page using getByRole --- 
-    logger.info('[🐦 Helper] Strategy 4: Searching page-level using getByRole...');
+    // --- Strategy 2: Find button directly on page using getByRole --- 
+    logger.info('[🐦 Helper] Strategy 2: Searching page-level using getByRole...');
     const buttonByRole = page.getByRole('button', { name: playButtonNameRegex }).first();
-    if (await buttonByRole.isVisible({ timeout: VISIBILITY_TIMEOUT_LONG })) {
+    if (await buttonByRole.isVisible({ timeout: 1000 })) {
         logger.info('[🐦 Helper] Found Play button using getByRole directly on page. Returning button locator.');
         return buttonByRole;
     }
     
-    // --- Strategy 5: Find button directly on page using flexible XPath --- 
-    logger.info('[🐦 Helper] Strategy 5: Searching page-level using flexible XPath...');
+    // --- Strategy 3: Find button directly on page using flexible XPath --- 
+    logger.info('[🐦 Helper] Strategy 3: Searching page-level using flexible XPath...');
     const buttonByXPath = page.locator(flexibleButtonXPath).first();
-    if (await buttonByXPath.isVisible({ timeout: VISIBILITY_TIMEOUT_LONG })) {
+    if (await buttonByXPath.isVisible({ timeout: 1000 })) {
         logger.info('[🐦 Helper] Found Play button using flexible XPath directly on page. Returning button locator.');
         return buttonByXPath;
     }
 
-    logger.warn('[🐦 Helper] Could not find any playable element using text, getByRole, or XPath strategies.');
-    // Log full page HTML for debugging if everything fails
-    try {
-        const html = await page.content();
-        const logPath = path.join(process.cwd(), 'logs', 'find-button-fail.html');
-        await fs.writeFile(logPath, html);
-        logger.warn(`[🐦 Helper] Saved full page HTML to ${logPath} for debugging.`);
-    } catch (htmlError) {
-        logger.error('[🐦 Helper] Failed to save page HTML on find failure:', htmlError);
-    }
+    // --- Deprecated Selectors (kept for reference, commented out) ---
+    // const playRecordingSelectors = [
+    //     'button[aria-label*="Play recording"]'
+    // ];
+    // const nestedButtonSelector = 'button[aria-label*="Play recording"]:has(button:has-text("Play recording"))';
+
+    logger.warn('[🐦 Helper] Could not find any playable element using getByRole or XPath strategies.');
     return null;
 }
 
@@ -586,12 +530,6 @@ async function initiateProcessing(mentionInfo: MentionInfo, page: Page): Promise
         logger.info('[🚀 Initiate] Waiting 60 seconds after navigation...');
         await page.waitForTimeout(60000);
 
-        // --- ADDED: Screenshot before searching ---
-        logger.info('[🚀 Initiate] Taking screenshot before attempting to find play button/article...');
-        const screenshotDir = path.join(process.cwd(), 'debug-screenshots'); 
-        await page.screenshot({ path: path.join(screenshotDir, `before-find-play-button-${mentionInfo.tweetId}.png`) });
-        // --- END ADDED SECTION ---
-
         playElementLocator = await findArticleWithPlayButton(page); // Function now finds article or button
         if (!playElementLocator) {
             logger.info('[🚀 Initiate] Play button/article not immediately visible. Scrolling up...');
@@ -607,8 +545,11 @@ async function initiateProcessing(mentionInfo: MentionInfo, page: Page): Promise
         if (!playElementLocator) {
             const errMsg = `Could not find playable Space element (article or button) for tweet ${mentionInfo.tweetId}.`; // Updated error message
             logger.warn(`[🚀 Initiate] ${errMsg}`);
-            await postReplyToTweet(page, mentionInfo.tweetUrl,
-                `@${mentionInfo.username} Sorry, I couldn't find a playable Twitter Space associated with this tweet.`);
+            // --- ADDED: Log error reply before sending ---
+            const errorReplyText = `${mentionInfo.username} Sorry, I couldn't find a playable Twitter Space associated with this tweet.`;
+            logger.info(`[🚀 Initiate] Posting error reply: ${errorReplyText}`);
+            // --- END ADDED SECTION ---
+            await postReplyToTweet(page, mentionInfo.tweetUrl, errorReplyText);
             throw new Error(errMsg); // Throw to signal failure
         }
         logger.info(`[🚀 Initiate] Found potential Space element (article or button).`);
@@ -618,8 +559,11 @@ async function initiateProcessing(mentionInfo: MentionInfo, page: Page): Promise
         // Try to post error reply if possible (and if it wasn't the error above)
         if (!(error instanceof Error && error.message.includes('Playable Space article not found'))) {
             try {
-                 await postReplyToTweet(page, mentionInfo.tweetUrl,
-                    `@${mentionInfo.username} Sorry, I had trouble loading the tweet to find the Space.`);
+                 // --- ADDED: Log error reply before sending ---
+                 const errorReplyText = `${mentionInfo.username} Sorry, I had trouble loading the tweet to find the Space.`;
+                 logger.info(`[🚀 Initiate] Posting error reply: ${errorReplyText}`);
+                 // --- END ADDED SECTION ---
+                 await postReplyToTweet(page, mentionInfo.tweetUrl, errorReplyText);
             } catch (replyError) { /* Ignore */ }
         }
         throw error; // Re-throw original error
@@ -628,41 +572,63 @@ async function initiateProcessing(mentionInfo: MentionInfo, page: Page): Promise
     // 2. Extract Title from Article (First attempt, before clicking Play)
     let spaceTitle: string | null = null;
     try {
-        logger.debug(`[🚀 Initiate] Attempting to extract Space title from located element...`);
-        // Try common selectors for Space titles within cards/articles
-        const titleSelectors = [
-            // Specific testids if available
-            'div[data-testid="card.layoutLarge.title"] span', 
-            'div[data-testid*="AudioSpaceCardHeader"] span[aria-hidden="true"]', // Sometimes title is here
-            // More generic: A prominent span near the play button (might need refinement)
-            'div > span[dir="auto"]:not([aria-hidden="true"])', // Look for direct child span
-            'span[data-testid="card.layoutSmall.media.title"]' // Added for small card layout
-        ];
+        logger.debug(`[🚀 Initiate] Attempting to extract Space title from located element (pre-click)...`);
         
-        for (const selector of titleSelectors) {
-            logger.debug(`[🚀 Initiate] Trying title selector: ${selector}`);
-            // Use the found locator (could be article or button)
-            const titleElement = playElementLocator.locator(selector).first(); 
-            if (await titleElement.isVisible({ timeout: 500 })) {
-                const potentialTitle = await titleElement.textContent({ timeout: 1000 });
-                 if (potentialTitle && potentialTitle.trim().length > 0) {
-                    spaceTitle = potentialTitle.trim().substring(0, 100); // Limit length
-                    logger.info(`[🚀 Initiate] Extracted potential Space title from located element using selector ${selector}: "${spaceTitle}"`);
-                    break; // Stop trying selectors once found
-                } else {
-                    logger.debug(`[🚀 Initiate] Selector ${selector} found element but text was empty.`);
+        // Strategy 1: Check aria-label of the button first
+        let parsedFromAriaLabel = false;
+        try {
+            const tagName = await playElementLocator.evaluate(el => el.tagName.toLowerCase()).catch(() => '');
+            if (tagName === 'button') {
+                const ariaLabel = await playElementLocator.getAttribute('aria-label');
+                const prefix = 'Play recording of ';
+                if (ariaLabel && ariaLabel.startsWith(prefix)) {
+                    const potentialTitle = ariaLabel.substring(prefix.length).trim();
+                    if (potentialTitle && potentialTitle.length > 0) {
+                        spaceTitle = potentialTitle.substring(0, 150); // Allow slightly longer title from aria-label
+                        logger.info(`[🚀 Initiate] Extracted title from button aria-label: "${spaceTitle}"`);
+                        parsedFromAriaLabel = true;
+                    }
                 }
-            } else {
-                 logger.debug(`[🚀 Initiate] Selector ${selector} did not find visible element.`);
+            }
+        } catch (ariaError) {
+             logger.warn('[🚀 Initiate] Minor error checking button aria-label for title:', ariaError);
+        }
+        
+        // Strategy 2: If not found in aria-label, check the main tweet text associated with the element
+        if (!parsedFromAriaLabel) {
+            logger.debug(`[🚀 Initiate] Trying title extraction from associated tweet text (data-testid="tweetText")...`);
+             try {
+                 // Find the tweetText div relative to the play element locator
+                 const tweetTextElement = playElementLocator.locator('div[data-testid="tweetText"]').first();
+                 // Alternative: Find closest ancestor article first, then the tweetText within it
+                 // const ancestorArticle = playElementLocator.locator('xpath=ancestor::article[1]').first();
+                 // const tweetTextElement = ancestorArticle.locator('div[data-testid="tweetText"]').first();
+                 
+                 if (await tweetTextElement.isVisible({ timeout: 1000 })) {
+                     const potentialTitle = await tweetTextElement.textContent({ timeout: 1000 });
+                     if (potentialTitle && potentialTitle.trim().length > 3) {
+                         // Basic cleaning - remove the @mention part if it exists at the start
+                         const cleanedTitle = potentialTitle.trim().replace(/^@[^\s]+\s*/, ''); 
+                         spaceTitle = cleanedTitle.substring(0, 150); // Limit length
+                         logger.info(`[🚀 Initiate] Extracted title from associated tweet text: "${spaceTitle}"`);
+                     } else {
+                         logger.debug('[🚀 Initiate] tweetText element found, but content too short or empty.');
+                     }
+                 } else {
+                     logger.debug('[🚀 Initiate] Could not find visible tweetText element associated with play element.');
+                 }
+            } catch (tweetTextError) {
+                logger.warn('[🚀 Initiate] Error trying to extract title from associated tweet text:', tweetTextError);
             }
         }
 
+        // Log if still not found pre-click (will rely on modal extraction)
         if (!spaceTitle) {
-             logger.warn('[🚀 Initiate] Could not extract Space title from located element using known selectors.');
+             logger.info('[🚀 Initiate] Could not extract Space title from element pre-click (checked aria-label and tweetText). Will rely on modal extraction later.');
         }
 
     } catch (titleError) {
-        logger.warn('[🚀 Initiate] Error during Space title extraction from located element:', titleError);
+        logger.warn('[🚀 Initiate] Error during pre-click title extraction:', titleError);
     }
 
     // 3. Click Play and capture M3U8
@@ -674,8 +640,11 @@ async function initiateProcessing(mentionInfo: MentionInfo, page: Page): Promise
         if (!m3u8Url) {
              const errMsg = `Failed to capture M3U8 URL for tweet ${mentionInfo.tweetId}.`;
              logger.error(`[🚀 Initiate] ${errMsg}`);
-            await postReplyToTweet(page, mentionInfo.tweetUrl,
-                `@${mentionInfo.username} Sorry, I could find the Space but couldn't get its audio stream. It might be finished or protected.`);
+            // --- ADDED: Log error reply before sending ---
+            const errorReplyText = `${mentionInfo.username} Sorry, I could find the Space but couldn't get its audio stream. It might be finished or protected.`;
+            logger.info(`[🚀 Initiate] Posting error reply: ${errorReplyText}`);
+            // --- END ADDED SECTION ---
+            await postReplyToTweet(page, mentionInfo.tweetUrl, errorReplyText);
              throw new Error(errMsg);
         }
         logger.info(`[🚀 Initiate] Captured M3U8 URL.`);
@@ -700,8 +669,11 @@ async function initiateProcessing(mentionInfo: MentionInfo, page: Page): Promise
     } catch (error) {
          logger.error(`[🚀 Initiate] Error during M3U8 capture for ${mentionInfo.tweetId}:`, error);
          try {
-             await postReplyToTweet(page, mentionInfo.tweetUrl,
-                `@${mentionInfo.username} Sorry, I encountered an error trying to access the Space audio.`);
+             // --- ADDED: Log error reply before sending ---
+             const errorReplyText = `${mentionInfo.username} Sorry, I encountered an error trying to access the Space audio.`;
+             logger.info(`[🚀 Initiate] Posting error reply: ${errorReplyText}`);
+             // --- END ADDED SECTION ---
+             await postReplyToTweet(page, mentionInfo.tweetUrl, errorReplyText);
          } catch(replyError) { /* Ignore */ }
          throw error;
     }
@@ -720,7 +692,10 @@ async function initiateProcessing(mentionInfo: MentionInfo, page: Page): Promise
     // 6. Post preliminary acknowledgement reply
     try {
         logger.info(`[🚀 Initiate] Posting preliminary acknowledgement reply...`);
-        const ackMessage = `@${mentionInfo.username} Received! I've started processing this Space into ${targetLanguageName}. Please check back here in ~10-15 minutes for the translated link.`;
+        const ackMessage = `${mentionInfo.username} Received! I've started processing this Space into ${targetLanguageName}. Please check back here in ~10-15 minutes for the translated link.`;
+        // --- ADDED: Log acknowledgement reply before sending ---
+        logger.info(`[🚀 Initiate] Full Ack Reply Text: ${ackMessage}`);
+        // --- END ADDED SECTION ---
         const ackSuccess = await postReplyToTweet(page, mentionInfo.tweetUrl, ackMessage);
         if (!ackSuccess) {
             logger.warn(`[🚀 Initiate] Failed to post acknowledgement reply (non-critical).`);
@@ -952,102 +927,112 @@ async function runFinalReplyQueue(page: Page): Promise<void> {
     const { mentionInfo, backendResult } = replyData;
     logger.info(`[↩️ Reply Queue] Processing final reply for ${mentionInfo.tweetId}. Backend Success: ${backendResult.success}`);
 
-    let finalMessage = '';
+    let finalMessage = ''; // Keep for potential single message fallback
     // Media attachment is currently disabled by default via config
     let mediaPathToAttach: string | undefined = undefined;
 
     // Construct the final message based on success and link availability
     if (backendResult.success) {
         const languageName = getLanguageName(detectLanguage(mentionInfo.text)); 
-        let links = [];
-        if (backendResult.sharingLink) {
-            links.push(`🎧 Listen/Watch: ${backendResult.sharingLink}`);
+        const hasSharingLink = !!backendResult.sharingLink;
+        const hasMp3Link = !!backendResult.publicMp3Url;
+        
+        // --- Determine Reply Strategy (Single Message) ---
+        let linkParts = [];
+        if (hasMp3Link) {
+             // MP3 Link comes first
+            linkParts.push(`MP3: ${backendResult.publicMp3Url}`);
         }
-        if (backendResult.publicMp3Url) {
-            links.push(`🔊 Full MP3: ${backendResult.publicMp3Url}`);
+        if (hasSharingLink) {
+             // Sharing Link comes second
+            linkParts.push(`Link: ${backendResult.sharingLink}`);
         }
         
-        if (links.length > 0) {
-            // Construct success message with links
-            finalMessage = `@${mentionInfo.username} Your ${languageName} dub is ready! 🎉 ${links.join(' | ')}`;
+        if (linkParts.length > 0) {
+            // Construct success message with links in the desired order
+            finalMessage = `${mentionInfo.username} Your ${languageName} dub is ready! 🎉 ${linkParts.join(' | ')}`;
         } else {
-            // Success but no links (edge case)
-            finalMessage = `@${mentionInfo.username} Your ${languageName} dub processing finished, but link generation failed. 🤔 Please check the SpeechLab project directly (ID: ${backendResult.projectId || 'unknown'}).`;
+            // Strategy: No links available (edge case)
              logger.warn(`[↩️ Reply Queue] Posting success reply for ${mentionInfo.tweetId} without any links.`);
+             finalMessage = `${mentionInfo.username} Your ${languageName} dub processing finished, but link generation failed. 🤔 Please check the SpeechLab project directly (ID: ${backendResult.projectId || 'unknown'}).`;
         }
         
-        // If we intended to attach video but couldn't (e.g., generation failed), mention it.
-        if (config.POST_REPLY_WITH_VIDEO && !mediaPathToAttach) {
-            finalMessage += ` (Video generation failed, sharing audio links only.)`;
-        } 
-        // Ensure message fits Twitter length (simple truncation for now)
-        if (finalMessage.length > 280) {
-             logger.warn(`[↩️ Reply Queue] Truncating final success message for tweet ${mentionInfo.tweetId} due to length.`);
-             finalMessage = finalMessage.substring(0, 277) + '...'; 
-        }
+        // Removed video check placeholder
 
     } else {
-        // Construct error message
+        // Construct error message for the single reply
         const errorReason = backendResult.error || 'processing failed';
-         finalMessage = `@${mentionInfo.username} Oops! 😥 Couldn't complete the ${getLanguageName(detectLanguage(mentionInfo.text))} dub for this Space (${errorReason}). Maybe try again later?`;
+         finalMessage = `${mentionInfo.username} Oops! 😥 Couldn't complete the ${getLanguageName(detectLanguage(mentionInfo.text))} dub for this Space (${errorReason}). Maybe try again later?`;
          mediaPathToAttach = undefined; // Ensure no media attached on failure
     }
+    
+    // --- ADDED: Log the final constructed message before sending ---
+    logger.info(`[↩️ Reply Queue] Final constructed reply text: ${finalMessage}`);
+    // --- END ADDED SECTION ---
 
-    // --- Posting Logic --- 
+    // --- Posting Logic (Single Reply) --- 
     let postSuccess = false;
-    const TEMP_AUDIO_DIR = path.join(process.cwd(), 'temp_audio'); // Define for cleanup
-    // Determine the path of the downloaded audio (needs reconstruction or passing)
-    // This reconstruction is fragile! Ideally, pass the path via BackendResult.
-    const sanitizedProjectName = (mentionInfo.text || `space_${mentionInfo.tweetId}`).toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
-    const targetLanguageCode = detectLanguage(mentionInfo.text);
-    const thirdPartyID = `${sanitizedProjectName}-${targetLanguageCode}`;
-    const assumedAudioFilename = `${thirdPartyID}_dubbed.mp3`;
-    const assumedDownloadedAudioPath = path.join(TEMP_AUDIO_DIR, assumedAudioFilename);
 
     try {
+        // --- Post Final Reply --- 
+        logger.info(`[↩️ Reply Queue] Posting final reply (${postMethod})...`);
         if (config.USE_TWITTER_API_FOR_REPLY) {
-            logger.info(`[↩️ Reply Queue] Posting final reply via API to tweet ID ${mentionInfo.tweetId}...`);
             postSuccess = await postTweetReplyWithMediaApi(
-                finalMessage,
+                finalMessage, 
                 mentionInfo.tweetId, 
-                mediaPathToAttach // Pass the media path if available
+                mediaPathToAttach // Media only attached if applicable
             );
         } else {
-            logger.info(`[↩️ Reply Queue] Posting final reply via Playwright to tweet URL ${mentionInfo.tweetUrl}...`);
             postSuccess = await postReplyToTweet(
                 page, 
                 mentionInfo.tweetUrl, 
                 finalMessage, 
-                mediaPathToAttach // Pass the media path if available
+                mediaPathToAttach // Media only attached if applicable
             );
         }
         
         if (postSuccess) {
             logger.info(`[↩️ Reply Queue] Successfully posted final reply via ${postMethod} for ${mentionInfo.tweetId}.`);
             
-            // --- ADDED: Mark as processed ONLY AFTER successful reply ---
-            try {
-                await markMentionAsProcessed(mentionInfo.tweetId, processedMentions); 
-            } catch (markError) {
-                logger.error(`[↩️ Reply Queue] CRITICAL: Failed to mark mention ${mentionInfo.tweetId} as processed after successful reply:`, markError);
-                // Continue cleanup even if marking fails
-            }
-            // --- END ADDED SECTION ---
+            // --- Mark Processed After Successful Reply --- 
+             if (backendResult.success) { // Only mark processed if the backend succeeded
+                logger.info(`[↩️ Reply Queue] Marking mention ${mentionInfo.tweetId} as processed now.`);
+                try {
+                    await markMentionAsProcessed(mentionInfo.tweetId, processedMentions); 
+                } catch (markError) {
+                    // Log critical error but continue if possible
+                    logger.error(`[↩️ Reply Queue] CRITICAL: Failed to mark mention ${mentionInfo.tweetId} as processed after successful reply:`, markError);
+                }
+             } else {
+                 logger.info(`[↩️ Reply Queue] Backend failed, not marking mention ${mentionInfo.tweetId} as processed.`);
+             }
 
             // --- Clean up DOWNLOADED MP3 --- 
-            // Attempt cleanup using the reconstructed path
-            logger.info(`[↩️ Reply Queue] Attempting cleanup of temporary audio file: ${assumedDownloadedAudioPath}`);
-            try {
-                 // Check if it exists before unlinking
-                 await fs.access(assumedDownloadedAudioPath);
-                 await fs.unlink(assumedDownloadedAudioPath);
-                 logger.info(`[↩️ Reply Queue] Successfully deleted temporary audio file.`);
-            } catch (err) {
-                 logger.warn(`[↩️ Reply Queue] Failed to delete or access temp audio ${assumedDownloadedAudioPath} (may have already been deleted or reconstruction failed):`, err);
+            if (backendResult.success && backendResult.publicMp3Url) { // Only cleanup if backend succeeded AND MP3 link existed (meaning download likely happened)
+                 // Extract thirdPartyID for potential audio file cleanup
+                 const targetLanguageCode = detectLanguage(mentionInfo.text);
+                 // !! This title reconstruction for cleanup is FRAGILE !!
+                 // It assumes the title used during backend processing was 'temp' if original was missing.
+                 // A better approach would be to pass the actual used thirdPartyID back in BackendResult.
+                 const spaceTitle = 'temp'; 
+                 const sanitizedProjectName = spaceTitle.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
+                 const thirdPartyID = `${sanitizedProjectName}-${targetLanguageCode}`;
+                 const TEMP_AUDIO_DIR = path.join(process.cwd(), 'temp_audio');
+                 const assumedAudioFilename = `${thirdPartyID}_dubbed.mp3`;
+                 const assumedDownloadedAudioPath = path.join(TEMP_AUDIO_DIR, assumedAudioFilename);
+
+                logger.info(`[↩️ Reply Queue] Attempting cleanup of temporary audio file: ${assumedDownloadedAudioPath}`);
+                try {
+                    await fs.access(assumedDownloadedAudioPath);
+                    await fs.unlink(assumedDownloadedAudioPath);
+                    logger.info(`[↩️ Reply Queue] Successfully deleted temporary audio file.`);
+                } catch (err) {
+                    logger.warn(`[↩️ Reply Queue] Failed to delete or access temp audio ${assumedDownloadedAudioPath} (may have already been deleted or reconstruction failed):`, err);
+                }
             }
             // -----------------------------
         } else {
-             logger.warn(`[↩️ Reply Queue] Failed to post final ${postMethod} reply for ${mentionInfo.tweetId}.`);
+             logger.warn(`[↩️ Reply Queue] Failed to post final reply via ${postMethod} for ${mentionInfo.tweetId}. Mention not marked processed.`);
         }
     } catch (replyError) {
         logger.error(`[↩️ Reply Queue] CRITICAL: Error posting final ${postMethod} reply for ${mentionInfo.tweetId}:`, replyError);
@@ -1221,20 +1206,14 @@ async function main() {
             try {
                 const mentions = await scrapeMentions(page);
                 logger.info(`[😈 Daemon Polling] Scraped ${mentions.length} mentions.`);
-                logger.debug(`[😈 Daemon Polling] Current processedMentions set size: ${processedMentions.size}`); // Log set size
                 let newMentionsFound = 0;
                 for (const mention of mentions) {
-                    // --- ADDED: Detailed logging before check ---
-                    const currentTweetId = mention.tweetId;
-                    const isAlreadyProcessed = processedMentions.has(currentTweetId);
-                    logger.debug(`[😈 Daemon Polling] Checking mention ID: ${currentTweetId}. Already processed according to Set: ${isAlreadyProcessed}`);
-                    // --- END ADDED LOGGING ---
-                    
-                    if (!isAlreadyProcessed) { // Use the pre-checked variable
+                    if (!processedMentions.has(mention.tweetId)) {
                         newMentionsFound++;
-                        logger.info(`[🔔 Mention] Found new mention: ID=${currentTweetId}, User=${mention.username}`);
+                        logger.info(`[🔔 Mention] Found new mention: ID=${mention.tweetId}, User=${mention.username}`);
                              mentionQueue.push(mention);
-                        logger.info(`[⚙️ Queue] Mention ${currentTweetId} added to initiation queue. Queue size: ${mentionQueue.length}`);
+                             // await markMentionAsProcessed(mention.tweetId, processedMentions); // REMOVED: Moved to runFinalReplyQueue on success
+                        logger.info(`[⚙️ Queue] Mention ${mention.tweetId} added to initiation queue. Queue size: ${mentionQueue.length}`);
                     } 
                 }
                  if (newMentionsFound > 0) {

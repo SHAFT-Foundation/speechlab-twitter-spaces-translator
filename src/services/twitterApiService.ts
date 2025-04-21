@@ -64,6 +64,7 @@ export async function postTweetReplyWithMediaApi(
     mediaPath?: string
 ): Promise<boolean> {
     logger.info(`[🐦 API Post] Attempting to post API reply to tweet ID: ${tweetIdToReplyTo}${mediaPath ? ' with media' : ''}`);
+    logger.info(`[🐦 API Post] Full Reply Text: ${tweetText}`);
     
     let mediaId: string | null = null;
 
@@ -107,6 +108,7 @@ export async function postTweetReplyWithMediaApi(
 
     } catch (error: any) {
         logger.error('[🐦 API Post] ❌ Error posting tweet reply via API:', error);
+        logger.error(`[🐦 API Post] Failed Reply Text: ${tweetText}`);
         if (error.code) {
              logger.error(`[🐦 API Post] Twitter Error Code: ${error.code}, Message: ${error.message}`);
         } else if (error.data?.errors) {

@@ -1213,7 +1213,10 @@ export async function postReplyToTweet(
     mediaPath?: string // Added optional media path
 ): Promise<boolean> {
     logger.info(`[🐦 Twitter] Attempting to post reply to tweet: ${tweetUrl}${mediaPath ? ' with media: ' + mediaPath : ''} using existing page.`);
-    
+    // --- ADDED: Log full reply text ---
+    logger.info(`[🐦 Twitter] Full Reply Text: ${replyText}`);
+    // --- END ADDED SECTION ---
+
     if (!tweetUrl) {
         logger.error(`[🐦 Twitter] Invalid tweet URL provided`);
         return false;
@@ -1418,9 +1421,10 @@ export async function postReplyToTweet(
         try {
             logger.info(`[🐦 Twitter] Clicking reply textarea...`);
             await replyTextarea.click({ timeout: 5000 }); // Ensure focus
-            logger.info(`[🐦 Twitter] Typing reply text...`);
+            // REMOVED logging before typing
             await page.keyboard.type(replyText, { delay: 50 }); // Add slight delay
-            logger.info(`[🐦 Twitter] Successfully typed reply text: ${replyText.substring(0, 30)}...`);
+            // ADDED logging AFTER typing
+            logger.info(`[🐦 Twitter] Successfully typed reply text.`); 
             await page.waitForTimeout(1000); // Wait for text entry
         } catch (error) { /* ... error handling ... */ return false; }
         
@@ -1489,6 +1493,9 @@ export async function postReplyToTweet(
 
     } catch (error) {
         logger.error(`[🐦 Twitter] Error posting reply to tweet: ${error}`);
+        // --- ADDED: Log full reply text on error ---
+        logger.error(`[🐦 Twitter] Failed Reply Text: ${replyText}`);
+        // --- END ADDED SECTION ---
         if (page && !page.isClosed()) {
              await page.screenshot({ path: path.join(screenshotsDir, 'reply-attempt-error.png') });
         }
@@ -1963,9 +1970,7 @@ export async function clickPlayButtonAndCaptureM3u8(page: Page, articleLocator: 
  */
 export async function extractSpaceTitleFromModal(page: Page): Promise<string | null> {
     logger.info('[🐦 Helper Title] Attempting to extract Space title from modal...');
-    // Define screenshot/log paths relative to process CWD, assuming they exist or are created elsewhere
     const screenshotDir = path.join(process.cwd(), 'debug-screenshots');
-    const LOG_DIR = path.join(process.cwd(), 'logs');
 
     try {
         // Wait for *some* indicator of the player/modal content
@@ -1981,7 +1986,7 @@ export async function extractSpaceTitleFromModal(page: Page): Promise<string | n
         await page.waitForTimeout(1000); // Stability wait
 
         // Locate the specific player/modal container
-        let container: any | null = null;
+        let container: Locator | null = null; // Use Locator type
         const potentialContainerSelectors = [
             'div[data-testid="SpaceDockExpanded"]', // **** PRIORITIZE THIS ****
             'div[data-testid="audioSpaceDetailView"]',
@@ -2022,109 +2027,83 @@ export async function extractSpaceTitleFromModal(page: Page): Promise<string | n
 
         // --- Search for Title WITHIN the container --- 
 
-        // Strategy 0: Use the structure identified from user's HTML snippet
-        logger.info('[🐦 Helper Title] FOCUS STRATEGY: Checking data-testid=tweetText span within container...');
+        // Strategy 0: Check specific known structures first
+        logger.info('[🐦 Helper Title] Strategy 0: Checking known structures (e.g., tweetText span)... ');
         try {
+            // Check data-testid="tweetText" span 
             const tweetTextSpan = container.locator('div[data-testid="tweetText"] span').first();
-            if (await tweetTextSpan.isVisible({ timeout: 2000 })) { // Increased timeout
+            if (await tweetTextSpan.isVisible({ timeout: 1000 })) {
                 const text = await tweetTextSpan.textContent();
                 const trimmedText = text?.trim();
-                // Use a more general check first
-                if (trimmedText && trimmedText.length > 3) { 
-                    // Check if it resembles the specific known title format, but be flexible
-                    // REMOVED HARDCODED CHECK - Rely on the selector finding the right element
+                if (trimmedText && trimmedText.length > 3) {
                     logger.info(`[🐦 Helper Title] SUCCESS: Found title via tweetText span: "${trimmedText}"`);
-                    return trimmedText; 
-                    /* Previous check removed:
-                    if (trimmedText.includes('MEMECOIN COMMUNITY')) {
-                         logger.info(`[🐦 Helper Title] SUCCESS: Found title via tweetText span (specific match): "${trimmedText}"`);
-                         return trimmedText;
-                    } else {
-                         logger.warn(`[🐦 Helper Title] tweetText span found, but doesn't match expected "MEMECOIN COMMUNITY": "${trimmedText}"`);
-                    }
-                    */
-                } else {
-                    logger.warn(`[🐦 Helper Title] tweetText span visible, but text content too short: "${trimmedText}"`);
+                    return trimmedText;
                 }
-            } else {
-                logger.warn('[🐦 Helper Title] tweetText span was not visible within the container.');
             }
+            
+            // Check for a specific h2 structure 
+            const h2Title = container.locator('h2[aria-level="2"][role="heading"]').first();
+            if (await h2Title.isVisible({ timeout: 500 })) {
+                 const text = await h2Title.textContent();
+                 const trimmedText = text?.trim();
+                 if (trimmedText && trimmedText.length > 3) { 
+                    logger.info(`[🐦 Helper Title] SUCCESS: Found title via specific H2 structure: "${trimmedText}"`);
+                    return trimmedText;
+                }
+            }
+            
         } catch (e) { 
-             logger.error('[🐦 Helper Title] Error checking tweetText span:', e);
+             logger.warn('[🐦 Helper Title] Error during Strategy 0 checks:', e);
         }
         
-        // --- ADD BACK OTHER STRATEGIES AS FALLBACKS --- 
-
-        // Fallback Strategy 1: Target specific, reliable heading selectors within the container
-        logger.debug('[🐦 Helper Title] Fallback Strategy 1: Checking specific heading selectors within container...');
-        const specificHeadingSelectors = [
-            'h2[aria-level="2"]', 
-            'h1'
-        ];
-        for (const selector of specificHeadingSelectors) { 
-            try {
-                const element = container.locator(selector).first(); 
-                if (await element.isVisible({ timeout: 500 })) { 
-                    const text = await element.textContent({ timeout: 1000 }); 
-                    const trimmedText = text?.trim();
-                    if (trimmedText && trimmedText.length > 3 && !trimmedText.includes('keyboard shortcuts') && !trimmedText.includes('ago') && !trimmedText.includes('Listeners')) {
-                        logger.info(`[🐦 Helper Title] Fallback SUCCESS: Found title via container heading selector "${selector}": "${trimmedText}"`); 
-                        return trimmedText;
-                    }
-                }
-            } catch (e) { logger.debug(`[🐦 Helper Title] Error trying container heading selector ${selector}: ${e}`); } 
-        }
-
-        // Fallback Strategy 2: Improve "Tuned In" logic within the container
-        logger.debug('[🐦 Helper Title] Fallback Strategy 2: Looking near "tuned in" text within container...');
-        try { 
-            const timeElement = container.getByText(/tuned in/i).first(); 
-            if (await timeElement.isVisible({ timeout: 1000 })) {
-                const parentContainer = timeElement.locator('xpath=ancestor::div[contains(@style, "display: flex")] | ancestor::div[contains(@dir, "auto")]').first();
-                if (await parentContainer.isVisible({timeout: 500})){
-                    const containerText = await parentContainer.textContent();
-                    const lines = containerText?.split('\n').map((line: string) => line.trim()).filter(Boolean) || []; 
-                    const tunedInIndex = lines.findIndex((line: string) => /tuned in/i.test(line)); 
-                     if (tunedInIndex !== -1 && tunedInIndex + 1 < lines.length) {
-                        const potentialTitle = lines[tunedInIndex + 1];
-                        if (potentialTitle && potentialTitle.length > 3 && !/^\d+$/.test(potentialTitle) && !potentialTitle.includes('ago') && !potentialTitle.includes(':')) {
-                             logger.info(`[🐦 Helper Title] Fallback SUCCESS: Extracted potential title (line after tuned in): "${potentialTitle}"`);
-                             return potentialTitle;
-                         }
-                    }
-                    const headingInContainer = parentContainer.locator('h1, h2, span[role="heading"]').first();
-                    if(await headingInContainer.isVisible({timeout: 200})){
-                         const headingText = await headingInContainer.textContent();
-                         if (headingText && headingText.trim().length > 3) {
-                             logger.info(`[🐦 Helper Title] Fallback SUCCESS: Extracted potential title (heading near tuned in): "${headingText.trim()}"`);
-                             return headingText.trim();
-                         }
-                    }
-                }
-            }
-        } catch(e) { logger.debug('[🐦 Helper Title] Error in Fallback Strategy 2 (tuned in)', e); }
-
-        // Fallback Strategy 4 (ALL CAPS)
-        logger.debug('[🐦 Helper Title] Fallback Strategy 4: Checking for ALL CAPS text within container...');
+        // Strategy 1: Use getByRole to find the main heading
+        logger.info('[🐦 Helper Title] Strategy 1: Checking getByRole("heading")...');
         try {
-            const textElements = await container.locator('span').all();
-            for (const element of textElements) {
-                if (await element.isVisible({ timeout: 200 })) {
-                     const text = await element.textContent();
-                     const trimmed = text?.trim();
-                     if (trimmed && trimmed.length > 5 && trimmed === trimmed.toUpperCase() && !/^\d+$/.test(trimmed) && !trimmed.includes('JOIN') && !trimmed.includes('LIVE') && !trimmed.includes('ENDED')) {
-                         logger.info(`[🐦 Helper Title] Fallback SUCCESS: Found potential ALL CAPS title in container: "${trimmed}"`);
-                         return trimmed;
-                     }
-                 }
+            const heading = container.getByRole('heading', { level: 2 }).first(); 
+            if (await heading.isVisible({ timeout: 1000 })) {
+                 const text = await heading.textContent();
+                 const trimmedText = text?.trim();
+                 if (trimmedText && trimmedText.length > 3 && !trimmedText.includes('keyboard shortcuts')) { 
+                    logger.info(`[🐦 Helper Title] SUCCESS: Found title via getByRole('heading', level: 2): "${trimmedText}"`);
+                    return trimmedText;
+                }
             }
-        } catch (error) {
-            logger.debug(`[🐦 Helper Title] Error trying to find all-caps title in container: ${error}`);
+            // Try level 1 as fallback
+             const headingL1 = container.getByRole('heading', { level: 1 }).first(); 
+            if (await headingL1.isVisible({ timeout: 500 })) {
+                 const text = await headingL1.textContent();
+                 const trimmedText = text?.trim();
+                 if (trimmedText && trimmedText.length > 3 && !trimmedText.includes('keyboard shortcuts')) { 
+                    logger.info(`[🐦 Helper Title] SUCCESS: Found title via getByRole('heading', level: 1): "${trimmedText}"`);
+                    return trimmedText;
+                }
+            }
+        } catch (e) { 
+            logger.warn('[🐦 Helper Title] Error checking getByRole heading:', e);
         }
 
+        // Strategy 2: Fallback - Look for prominent text near the top
+        logger.info('[🐦 Helper Title] Strategy 2: Checking prominent text near top...');
+        try {
+            // Find all potential text elements (span, div) directly inside the container
+            const potentialTitles = await container.locator('> span[dir="ltr"], > div[dir="ltr"]').all(); 
+            for (const element of potentialTitles) {
+                if (await element.isVisible({ timeout: 200 })) {
+                    const text = await element.textContent();
+                    const trimmed = text?.trim();
+                     // Basic heuristics: longer than 3 chars, not just numbers, not common UI text
+                     if (trimmed && trimmed.length > 3 && !/^\d+$/.test(trimmed) && !/listeners|speaker|live|ended|ago|tuned/i.test(trimmed)) {
+                        logger.info(`[🐦 Helper Title] SUCCESS: Found potential title via prominent text near top: "${trimmed}"`);
+                        return trimmed;
+                    }
+                }
+            }
+        } catch (e) {
+             logger.warn('[🐦 Helper Title] Error checking prominent text:', e);
+        }
 
-        logger.warn('[🐦 Helper Title] Could not extract Space title using any strategy.');
-        return null; // Added missing return null
+        logger.warn('[🐦 Helper Title] Could not extract Space title using any strategy within the modal.');
+        return null;
     } catch (error) {
         logger.error('[🐦 Helper Title] Error during title extraction process:', error);
         // Ensure screenshot path is handled correctly if screenshotDir isn't globally available in service file

@@ -44,46 +44,67 @@ const DEFAULT_LANGUAGE_CODE = 'en';
  */
 export function detectLanguage(text: string): string {
     const lowerText = text.toLowerCase();
-    logger.debug(`[🗣️ Lang] Detecting language from text: "${lowerText.substring(0, 100)}..."`);
+    logger.debug(`[🗣️ Lang] Detecting language from text: \"${lowerText.substring(0, 100)}...\"`);
+
+    let detectedCode = DEFAULT_LANGUAGE_CODE; // Start with default
+    let found = false;
 
     // --- Strategy 1: Look for patterns like "in spanish", "to french", "dub german" --- 
     const patternRegex = /(?:in|to|dub)\s+([a-zA-Z\u00C0-\u017F]+)/g; // Added global flag 'g'
     let matches;
     logger.debug(`[🗣️ Lang DEBUG] Checking for pattern: ${patternRegex}`);
-    while ((matches = patternRegex.exec(lowerText)) !== null) {
+    while ((matches = patternRegex.exec(lowerText)) !== null && !found) { // Stop if found
         const potentialLangName = matches[1];
         logger.debug(`[🗣️ Lang DEBUG] Found pattern match, potential language: ${potentialLangName}`);
         for (const lang of SUPPORTED_LANGUAGES) {
             if (lang.aliases.map(a => a.toLowerCase()).includes(potentialLangName)) {
                 logger.info(`[🗣️ Lang] Detected language via pattern: ${lang.label} (${lang.code})`);
-                return lang.code; // Return the first valid match from the pattern
+                detectedCode = lang.code;
+                found = true;
+                break; // Exit inner loop
             }
         }
     }
-    logger.debug(`[🗣️ Lang DEBUG] No valid language found using pattern regex.`);
+    if (!found) logger.debug(`[🗣️ Lang DEBUG] No valid language found using pattern regex.`);
 
     // --- Strategy 2: Check all words against aliases (Looser Match) --- 
-    logger.debug(`[🗣️ Lang DEBUG] No pattern match. Checking all words against aliases...`);
-    const words = lowerText.split(/\s+|\p{P}/u).filter(Boolean); // Split by space or punctuation
-    logger.debug(`[🗣️ Lang DEBUG] Words extracted: ${words.join(', ')}`);
-    
-    for (const word of words) {
-        for (const lang of SUPPORTED_LANGUAGES) {
-            for (const alias of lang.aliases) {
-                 // Check if the current word *exactly* matches an alias
-                if (word === alias.toLowerCase()) {
-                    logger.debug(`[🗣️ Lang DEBUG] Found direct alias match: word="${word}", alias="${alias}", lang=${lang.code}`);
-                    logger.info(`[🗣️ Lang] Detected language via alias match: ${lang.label} (${lang.code})`);
-                    return lang.code; // Return the first valid alias match
+    if (!found) { // Only run if not found by pattern
+        logger.debug(`[🗣️ Lang DEBUG] No pattern match. Checking all words against aliases...`);
+        const words = lowerText.split(/\s+|\p{P}/u).filter(Boolean); // Split by space or punctuation
+        logger.debug(`[🗣️ Lang DEBUG] Words extracted: ${words.join(', ')}`);
+        
+        wordLoop: // Label for breaking outer loop
+        for (const word of words) {
+            for (const lang of SUPPORTED_LANGUAGES) {
+                for (const alias of lang.aliases) {
+                    // Check if the current word *exactly* matches an alias
+                    if (word === alias.toLowerCase()) {
+                        logger.debug(`[🗣️ Lang DEBUG] Found direct alias match: word="${word}", alias="${alias}", lang=${lang.code}`);
+                        logger.info(`[🗣️ Lang] Detected language via alias match: ${lang.label} (${lang.code})`);
+                        detectedCode = lang.code;
+                        found = true;
+                        break wordLoop; // Exit both inner loops
+                    }
                 }
             }
         }
+         if (!found) logger.debug(`[🗣️ Lang DEBUG] No word matched any alias.`);
     }
-    logger.debug(`[🗣️ Lang DEBUG] No word matched any alias.`);
 
     // --- Default --- 
-    logger.info(`[🗣️ Lang] No specific language detected via pattern or alias, defaulting to ${DEFAULT_LANGUAGE_CODE}`);
-    return DEFAULT_LANGUAGE_CODE;
+    if (!found) {
+        logger.info(`[🗣️ Lang] No specific language detected via pattern or alias, using default ${DEFAULT_LANGUAGE_CODE}`);
+        // detectedCode is already DEFAULT_LANGUAGE_CODE
+    }
+
+    // --- ADDED: Map 'es' to 'es_LA' --- 
+    if (detectedCode === 'es') {
+        logger.info(`[🗣️ Lang] Mapping detected language 'es' to 'es_LA' for SpeechLab compatibility.`);
+        return 'es_LA';
+    }
+    // --- END ADDED MAPPING --- 
+
+    return detectedCode;
 }
 
 /**
