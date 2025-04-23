@@ -8,6 +8,9 @@ Ever wished your insightful Twitter Space conversations could reach listeners wo
 
 Imagine your content seamlessly translated and shared, expanding your reach and impact across language barriers – all automated!
 
+![Screenshot 2025-04-23 at 11 00 09 AM](https://github.com/user-attachments/assets/5824dc2a-c8a0-4a7a-be3d-3fb7de04bb36)
+
+
 ## ✨ Key Features
 
 *   **🔍 Finds Top Spaces:** (Future) Scans leaderboards like SpacesDashboard to identify influential Twitter profiles.
