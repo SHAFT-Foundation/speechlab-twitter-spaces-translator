@@ -130,7 +130,7 @@ This document specifies the requirements for a Node.js TypeScript AI agent with 
 ### Phase 7: Post Comment to Twitter
 
 *   **Goal:** Post the SpeechLab sharing link as a reply to the original Twitter Space tweet.
-*   **Input:** Original Tweet URL, SpeechLab Sharing Link
+*   **Input:** Original Tweet URL, SpeechLab Sharing Link, (MP3 Link Optional)
 *   **Service:** `twitterInteractionService.ts`
 *   **Method:**
     *   Use several approaches to find a suitable tweet to reply to:
@@ -138,8 +138,8 @@ This document specifies the requirements for a Node.js TypeScript AI agent with 
         *   Look for tweets on the host's profile that reference this Space
         *   Find any Space-related tweet on the host's profile
         *   Find any tweet embedding the Space
-    *   Generate comment text including the timestamp, sharing link, and attribution.
-    *   Use Playwright to navigate to the tweet URL and post a reply.
+    *   Generate comment text including the sharing link (and MP3 link if available, MP3 first) and attribution.
+    *   Use Playwright (default) or Twitter API v2 (if configured via `USE_TWITTER_API_FOR_REPLY=true`) to post the reply.
 *   **Key Functions:** 
     *   `postReplyToTweet(tweetUrl, commentText)`
     *   `findSpaceTweetFromProfile(hostUsername, spaceId)`
@@ -155,24 +155,26 @@ This document specifies the requirements for a Node.js TypeScript AI agent with 
 *   **Method:**
     *   **Daemon Startup:** A new entry point/command (e.g., `npm run start:daemon`) launches the daemon.
     *   **Login:** Daemon logs into the agent's Twitter account (`TWITTER_USERNAME` from `.env`).
-    *   **Polling:** Periodically (e.g., every 60 seconds):
-        *   Navigate to the Twitter Mentions page (`https://twitter.com/notifications/mentions`).
-        *   Scrape recent mentions (tweet ID, username, text).
-        *   Identify new mentions not previously processed (using a simple file like `processed_mentions.json` to track IDs).
+    *   **Polling:** Periodically (e.g., every 10 minutes):
+        *   Navigate to the Twitter Notifications page (`https://x.com/notifications`) briefly, then to the Mentions page (`https://twitter.com/notifications/mentions`).
+        *   Scrape recent mentions (tweet ID, username [including @], text).
+        *   Identify new mentions not previously processed (using `processed_mentions.json`).
     *   **Space URL Extraction:** For each new mention:
-        *   Search the tweet text for a pattern matching `https://twitter.com/i/spaces/[a-zA-Z0-9]+`.
+        *   Search the tweet text for a valid Space URL.
+        *   Detect target language (mapping `es` to `es_LA`).
         *   If a valid Space URL is found:
             *   **MCP Call (Placeholder):** Send the mention text/URL to an MCP endpoint (to be defined) for logging/validation. This step is currently conceptual.
             *   **Trigger Dubbing Workflow:**
-                *   Extract necessary info: `directSpaceUrl` from the mention, potentially extract the mentioning user's handle for the reply.
-                *   *Reuse/Adapt:* Call existing service functions (Phases 2-7), potentially wrapping them in a new function `processMentionRequest(mentionTweetId, mentionUsername, spaceUrl)`.
-                *   **Important:** The output `sharingLink` needs to be associated with the original `mentionTweetId`.
+                *   Extract necessary info: `directSpaceUrl` from the mention, `mentionUsername`.
+                *   Attempt to extract Space Title (using button `aria-label`, `tweetText`, or post-click modal).
+                *   *Reuse/Adapt:* Call existing service functions (Phases 2-7).
+                *   **Important:** The output `sharingLink` and `publicMp3Url` needs to be associated with the original `mentionTweetId`.
             *   **Post Reply (Phase 7 adaptation):**
-                *   Use `postReplyToTweet` function.
+                *   Use `postReplyToTweet` (Playwright) or `postTweetReplyWithMediaApi` (API).
                 *   **Target:** Reply to the `mentionTweetId`.
-                *   **Text:** Format a reply tagging the `mentionUsername`, indicating success, and providing the `sharingLink`. Example: `"Hey @mentionUsername, here's the dubbed version of the Space you shared! Contact for more languages! <LINK>"`
-            *   **Mark as Processed:** Add the `mentionTweetId` to `processed_mentions.json`.
-    *   **Error Handling:** Log errors during scraping, processing, or posting replies. Continue monitoring.
+                *   **Text:** Construct a single reply message. Tag the `mentionUsername`. Include the target language name. If links are available, include them in the order: `MP3: <mp3_link> | Link: <sharing_link>`. Handle cases where only one or zero links are available.
+            *   **Mark as Processed:** Add the `mentionTweetId` to `processed_mentions.json` *only after* the reply has been successfully posted.
+    *   **Error Handling:** Log errors during scraping, processing, or posting replies (including the full text of failed replies). Post specific error replies to the user (e.g., if Space not found, M3U8 capture fails).
 *   **Key Functions (New/Adapted):**
     *   `monitorMentions()` (in `mentionDaemon.ts`)
     *   `scrapeMentions()` (in `twitterInteractionService.ts`)
@@ -238,12 +240,14 @@ This document specifies the requirements for a Node.js TypeScript AI agent with 
 
 ## 5. Open Questions Addressed
 
-*   Source Language: `en`
+*   Source Language: `en` (by default, can be inferred from Space if needed)
+*   Target Language: Determined from mention text (e.g., `dub in spanish`). `es` is mapped to `es_LA` for SpeechLab.
 *   Audio Hosting: AWS S3, bucket `speechlab-test-files-public`, using env credentials.
 *   Sharing Link API: `POST /v1/collaborations/generateSharingLink`, link is in `link` field.
-*   Twitter Interaction: Browser automation via Playwright.
-*   Logging: Detailed, structured, with icons and prefixes.
+*   Twitter Interaction: Browser automation via Playwright (`USE_TWITTER_API_FOR_REPLY=false`) or Twitter API v2 (`USE_TWITTER_API_FOR_REPLY=true`).
+*   Logging: Detailed, structured, with icons and prefixes. Full reply text logged.
 *   Voice Matching: `source`.
+*   Configuration: `BROWSER_HEADLESS` environment variable respected by daemon.
 
 ## 6. Error Handling and Diagnostics
 

@@ -1,9 +1,9 @@
 {
-  "timestamp": "2025-04-21T00:09:48.411Z",
-  "thirdPartyID": "testing-dubbing-agent-ru",
-  "requestUrl": "https://translate-api.speechlab.ai/v1/projects?sortBy=createdAt%3Aasc&limit=10&page=1&expand=true&thirdPartyIDs=testing-dubbing-agent-ru",
+  "timestamp": "2025-04-21T06:48:22.503Z",
+  "thirdPartyID": "mantra-ceo-om-updates-whats-next-en",
+  "requestUrl": "https://translate-api.speechlab.ai/v1/projects?sortBy=createdAt%3Aasc&limit=10&page=1&expand=true&thirdPartyIDs=mantra-ceo-om-updates-whats-next-en",
   "responseStatus": 200,
-  "responseTotalResults": 3,
-  "responseFirstProjectId": "68058a6b5d40b10026f77aa6",
+  "responseTotalResults": 1,
+  "responseFirstProjectId": "6805cca45d40b10026f94828",
   "responseFirstProjectStatus": "COMPLETE"
 }
