@@ -100,7 +100,7 @@ export function detectLanguage(text: string): string {
     // --- ADDED: Map 'es' to 'es_LA' --- 
     if (detectedCode === 'es') {
         logger.info(`[🗣️ Lang] Mapping detected language 'es' to 'es_LA' for SpeechLab compatibility.`);
-        return 'es_LA';
+        return 'es_la';
     }
     // --- END ADDED MAPPING --- 
 
