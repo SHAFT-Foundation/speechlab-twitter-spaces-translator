@@ -937,30 +937,37 @@ async function runFinalReplyQueue(page: Page): Promise<void> {
         const hasSharingLink = !!backendResult.sharingLink;
         const hasMp3Link = !!backendResult.publicMp3Url;
         
-        // --- Determine Reply Strategy (Single Message) ---
-        let linkParts = [];
+        // --- MODIFIED: Check for MP3 Link presence FIRST for success message ---
         if (hasMp3Link) {
-             // MP3 Link comes first
+            // MP3 is available - construct the success message
+            let linkParts = [];
+            // MP3 Link comes first
             linkParts.push(`MP3: ${backendResult.publicMp3Url}`);
-        }
-        if (hasSharingLink) {
-             // Sharing Link comes second
-            linkParts.push(`Link: ${backendResult.sharingLink}`);
-        }
-        
-        if (linkParts.length > 0) {
+            if (hasSharingLink) {
+                 // Sharing Link comes second if available
+                linkParts.push(`Link: ${backendResult.sharingLink}`);
+            }
             // Construct success message with links in the desired order
             finalMessage = `${mentionInfo.username} Your ${languageName} dub is ready! 🎉 ${linkParts.join(' | ')}`;
+            
         } else {
-            // Strategy: No links available (edge case)
-             logger.warn(`[↩️ Reply Queue] Posting success reply for ${mentionInfo.tweetId} without any links.`);
-             finalMessage = `${mentionInfo.username} Your ${languageName} dub processing finished, but link generation failed. 🤔 Please check the SpeechLab project directly (ID: ${backendResult.projectId || 'unknown'}).`;
+            // MP3 is MISSING, even though backendResult.success is true. Treat as partial failure for reply.
+            logger.warn(`[↩️ Reply Queue] Backend succeeded for ${mentionInfo.tweetId} but MP3 link is missing. Posting alternative message.`);
+            let partialFailureMessage = `${mentionInfo.username} Processing finished for the ${languageName} dub, but I couldn't prepare the MP3 audio file. 😥`;
+            if (hasSharingLink) {
+                partialFailureMessage += ` You might find project details here: ${backendResult.sharingLink}`;
+            }
+            if (backendResult.projectId) {
+                 partialFailureMessage += ` (Project ID: ${backendResult.projectId})`;
+            }
+             finalMessage = partialFailureMessage;
+             // Keep mediaPathToAttach as undefined in this case too
+             mediaPathToAttach = undefined;
         }
-        
-        // Removed video check placeholder
+        // --- END MODIFIED SECTION ---
 
     } else {
-        // Construct error message for the single reply
+        // Construct error message for the single reply (original logic)
         const errorReason = backendResult.error || 'processing failed';
          finalMessage = `${mentionInfo.username} Oops! 😥 Couldn't complete the ${getLanguageName(detectLanguage(mentionInfo.text))} dub for this Space (${errorReason}). Maybe try again later?`;
          mediaPathToAttach = undefined; // Ensure no media attached on failure
