@@ -1190,8 +1190,9 @@ async function main() {
 
         logger.info('[😈 Daemon] Twitter login confirmed via cookies. Ready to monitor mentions.');
 
-        // --- Main Polling Loop --- 
-        logger.info(`[😈 Daemon] Starting mention polling loop (Interval: ${POLLING_INTERVAL_MS / 1000}s)`);
+        const skipInitialMentions = process.env.SKIP_INITIAL_MENTIONS === 'true'; // Check environment variable
+
+        // --- Main Polling Loop Setup ---
         const pollMentions = async () => {
              if (!page || page.isClosed()) { 
                  logger.error('[😈 Daemon Polling] Page closed. Stopping polling loop.');
@@ -1241,11 +1242,47 @@ async function main() {
             }
         };
 
-        // Initial poll, then set interval
-        await pollMentions(); 
-        mainLoopIntervalId = setInterval(pollMentions, POLLING_INTERVAL_MS);
+        if (skipInitialMentions) {
+            logger.warn(`[😈 Daemon] SKIP_INITIAL_MENTIONS flag is set. Performing initial scrape to mark mentions as processed WITHOUT queueing...`);
+            try {
+                if (!page || page.isClosed()) {
+                    throw new Error("Page closed before initial skip scrape could run.");
+                }
+                // Scrape mentions once
+                const initialMentions = await scrapeMentions(page);
+                logger.info(`[😈 Daemon] Initial scrape found ${initialMentions.length} mentions.`);
+                let skippedCount = 0;
+                for (const mention of initialMentions) {
+                    // Check if it's *not* already processed, just in case
+                    if (!processedMentions.has(mention.tweetId)) {
+                        logger.info(`[😈 Daemon] Marking initially found mention ${mention.tweetId} as processed (skipping queue).`);
+                        // Use the existing function to add to the set AND save the file
+                        await markMentionAsProcessed(mention.tweetId, processedMentions);
+                        skippedCount++;
+                    } else {
+                         logger.debug(`[😈 Daemon] Initially found mention ${mention.tweetId} was already marked as processed.`);
+                    }
+                }
+                logger.info(`[😈 Daemon] Finished marking ${skippedCount} initial mentions as processed.`);
 
-        // --- Browser Task Worker Loop --- 
+                // Now, just start the interval WITHOUT the initial poll call
+                logger.info(`[😈 Daemon] Starting regular mention polling loop (Interval: ${POLLING_INTERVAL_MS / 1000}s) after initial skip.`);
+                mainLoopIntervalId = setInterval(pollMentions, POLLING_INTERVAL_MS);
+
+            } catch (error) {
+                logger.error('[😈 Daemon] Error during initial mention skip scrape:', error);
+                logger.error('[😈 Daemon] Proceeding to normal polling interval, but backlog may not have been skipped.');
+                // Fallback: Start interval without initial poll on error during skip attempt
+                mainLoopIntervalId = setInterval(pollMentions, POLLING_INTERVAL_MS);
+            }
+        } else {
+            // --- Original Behavior: Initial poll, then set interval ---
+            logger.info(`[😈 Daemon] Starting mention polling loop (Interval: ${POLLING_INTERVAL_MS / 1000}s)`);
+            await pollMentions(); // Perform the first poll immediately (adds to queue)
+            mainLoopIntervalId = setInterval(pollMentions, POLLING_INTERVAL_MS); // Then set the interval
+        }
+
+        // --- Browser Task Worker Loop ---
         // Separate interval to trigger browser-based queue workers (initiation & final reply)
         // This ensures they don't block the main polling loop and manage page access.
         const BROWSER_TASK_INTERVAL_MS = 5000; // Check queues every 5 seconds
