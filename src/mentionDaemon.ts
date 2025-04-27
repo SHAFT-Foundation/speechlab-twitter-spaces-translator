@@ -544,20 +544,27 @@ async function updateProjectStatus(
         if (mentionData.projects[thirdPartyID]) {
             // Update existing project
             const project = mentionData.projects[thirdPartyID];
+            // Log previous status if it's changing
+            if (project.status !== status) {
+                logger.info(`[😈 Daemon] Project ${thirdPartyID} status changing: ${project.status} → ${status}`);
+            }
             project.status = status;
             project.updatedAt = now;
             
             // Add projectId if provided and not already set
             if (projectId && !project.projectId) {
+                logger.info(`[😈 Daemon] Adding SpeechLab projectId ${projectId} to project ${thirdPartyID}`);
                 project.projectId = projectId;
             }
             
             // Add mentionId if not already in the list
             if (!project.mentionIds.includes(mentionId)) {
+                logger.info(`[😈 Daemon] Adding mention ${mentionId} to project ${thirdPartyID}`);
                 project.mentionIds.push(mentionId);
             }
         } else {
             // Create new project entry
+            logger.info(`[😈 Daemon] Creating new project tracking entry: thirdPartyID=${thirdPartyID}, status=${status}`);
             mentionData.projects[thirdPartyID] = {
                 thirdPartyID,
                 projectId,
@@ -1374,6 +1381,7 @@ async function main() {
     let page: Page | null = null;
     let mainLoopIntervalId: NodeJS.Timeout | null = null; // Keep track of main polling interval
     let browserTaskIntervalId: NodeJS.Timeout | null = null; // Keep track of browser task interval
+    let projectLogIntervalId: NodeJS.Timeout | null = null; // Keep track of project logging interval
 
     // Graceful shutdown handler
     const shutdown = async (signal: string) => {
@@ -1382,6 +1390,8 @@ async function main() {
         mainLoopIntervalId = null; // Prevent further polling calls
         if (browserTaskIntervalId) clearInterval(browserTaskIntervalId);
         browserTaskIntervalId = null; // Prevent further browser task calls
+        if (projectLogIntervalId) clearInterval(projectLogIntervalId);
+        projectLogIntervalId = null; // Prevent further project logging
 
         try {
             if (page && !page.isClosed()) {
@@ -1412,6 +1422,18 @@ async function main() {
 
     try {
         processedMentions = await loadProcessedMentions();
+        
+        // Log active projects at startup
+        logger.info('[😈 Daemon] Logging active projects at startup:');
+        await logActiveProjects();
+        
+        // Set up periodic project logging (every 30 minutes)
+        const PROJECT_LOG_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
+        logger.info(`[😈 Daemon] Setting up periodic project logging (every ${PROJECT_LOG_INTERVAL_MS/60000} minutes)`);
+        projectLogIntervalId = setInterval(async () => {
+            logger.info('[😈 Daemon] Periodic active project log:');
+            await logActiveProjects();
+        }, PROJECT_LOG_INTERVAL_MS);
 
         logger.info('[😈 Daemon] Initializing browser and logging into Twitter...');
         const browserInfo = await initializeDaemonBrowser(); // Use the imported function
@@ -1501,12 +1523,29 @@ async function main() {
                 logger.info(`[😈 Daemon Polling] Scraped ${mentions.length} mentions.`);
                 let newMentionsFound = 0;
                 for (const mention of mentions) {
+                    // First check if the mention is already in the processed set
                     if (!processedMentions.has(mention.tweetId)) {
-                        newMentionsFound++;
-                        logger.info(`[🔔 Mention] Found new mention: ID=${mention.tweetId}, User=${mention.username}`);
-                             mentionQueue.push(mention);
-                             // await markMentionAsProcessed(mention.tweetId, processedMentions); // REMOVED: Moved to runFinalReplyQueue on success
-                        logger.info(`[⚙️ Queue] Mention ${mention.tweetId} added to initiation queue. Queue size: ${mentionQueue.length}`);
+                        // Then check if it's associated with a project
+                        const associatedProject = await getProjectForMention(mention.tweetId);
+                        
+                        if (associatedProject) {
+                            logger.info(`[🔔 Mention] Found mention ID=${mention.tweetId} already associated with project ${associatedProject.thirdPartyID} (status: ${associatedProject.status})`);
+                            
+                            // If project is already completed or failed, mark the mention as processed
+                            if (associatedProject.status === 'complete' || associatedProject.status === 'failed') {
+                                logger.info(`[🔔 Mention] Project ${associatedProject.thirdPartyID} is already ${associatedProject.status}. Marking mention as processed.`);
+                                await markMentionAsProcessed(mention.tweetId, processedMentions);
+                            } else {
+                                // Project is still in progress, don't add to queue but log the state
+                                logger.info(`[🔔 Mention] Project ${associatedProject.thirdPartyID} is still ${associatedProject.status}. Not queuing duplicate mention.`);
+                            }
+                        } else {
+                            // No associated project found, process as new mention
+                            newMentionsFound++;
+                            logger.info(`[🔔 Mention] Found new unprocessed mention: ID=${mention.tweetId}, User=${mention.username}`);
+                            mentionQueue.push(mention);
+                            logger.info(`[⚙️ Queue] Mention ${mention.tweetId} added to initiation queue. Queue size: ${mentionQueue.length}`);
+                        }
                     } 
                 }
                  if (newMentionsFound > 0) {
@@ -1547,9 +1586,24 @@ async function main() {
                 for (const mention of initialMentions) {
                     // Check if it's *not* already processed, just in case
                     if (!processedMentions.has(mention.tweetId)) {
+                        // For initial skipping, we'll mark as processed but also create a placeholder project entry
+                        // to indicate that this mention was intentionally skipped
                         logger.info(`[😈 Daemon] Marking initially found mention ${mention.tweetId} as processed (skipping queue).`);
-                        // Use the existing function to add to the set AND save the file
+                        
+                        // Create a placeholder thirdPartyID for the skipped mention
+                        const placeholderThirdPartyID = `skipped-${mention.tweetId}`;
+                        
+                        // Mark the mention as processed
                         await markMentionAsProcessed(mention.tweetId, processedMentions);
+                        
+                        // Create a placeholder project entry with 'complete' status to prevent future processing
+                        await updateProjectStatus(
+                            placeholderThirdPartyID,
+                            'complete',  // Mark as complete to avoid reprocessing
+                            mention.tweetId,
+                            undefined    // No actual project ID since this was skipped
+                        );
+                        
                         skippedCount++;
                     } else {
                          logger.debug(`[😈 Daemon] Initially found mention ${mention.tweetId} was already marked as processed.`);
@@ -1631,6 +1685,84 @@ async function main() {
           logger.info('[😈 Daemon] Interval timer not set or cleared. Exiting.');
           process.exit(0); // Exit if polling stopped
      }
+}
+
+/**
+ * Retrieves project information associated with a specific mention ID.
+ * This helps determine if a mention is already being processed as part of a project.
+ * @param mentionId The mention ID to check
+ * @returns Project status info or null if no associated project found
+ */
+async function getProjectForMention(mentionId: string): Promise<ProjectStatusInfo | null> {
+    try {
+        await fs.access(PROCESSED_MENTIONS_PATH);
+        const data = await fs.readFile(PROCESSED_MENTIONS_PATH, 'utf-8');
+        let mentionData: ProcessedMentionData;
+        
+        try {
+            mentionData = JSON.parse(data);
+            
+            // If the structure is not valid, return null
+            if (!mentionData.projects) {
+                return null;
+            }
+            
+            // Check each project to see if it includes this mention ID
+            for (const projectId in mentionData.projects) {
+                const project = mentionData.projects[projectId];
+                if (project.mentionIds && project.mentionIds.includes(mentionId)) {
+                    logger.info(`[😈 Daemon] Found project ${projectId} associated with mention ${mentionId}`);
+                    return project;
+                }
+            }
+        } catch (parseError) {
+            logger.error(`[😈 Daemon] Error parsing processed mentions file while checking mention-project association:`, parseError);
+        }
+        
+        return null;
+    } catch (error) {
+        logger.error(`[😈 Daemon] Error checking project for mention ${mentionId}:`, error);
+        return null;
+    }
+}
+
+/**
+ * Helper function to log all active projects (for debugging)
+ */
+async function logActiveProjects(): Promise<void> {
+    try {
+        await fs.access(PROCESSED_MENTIONS_PATH);
+        const data = await fs.readFile(PROCESSED_MENTIONS_PATH, 'utf-8');
+        let mentionData: ProcessedMentionData;
+        
+        try {
+            mentionData = JSON.parse(data);
+            
+            if (!mentionData.projects || Object.keys(mentionData.projects).length === 0) {
+                logger.info(`[😈 Daemon] No active projects found.`);
+                return;
+            }
+            
+            logger.info(`[😈 Daemon] === Current Projects (${Object.keys(mentionData.projects).length}) ===`);
+            
+            for (const thirdPartyID in mentionData.projects) {
+                const project = mentionData.projects[thirdPartyID];
+                logger.info(`[😈 Daemon] Project: ${thirdPartyID}`);
+                logger.info(`[😈 Daemon]   - Status: ${project.status}`);
+                logger.info(`[😈 Daemon]   - SpeechLab ID: ${project.projectId || 'N/A'}`);
+                logger.info(`[😈 Daemon]   - Created: ${project.createdAt}`);
+                logger.info(`[😈 Daemon]   - Updated: ${project.updatedAt}`);
+                logger.info(`[😈 Daemon]   - Associated Mentions: ${project.mentionIds.length}`);
+                logger.info(`[😈 Daemon]   - Mention IDs: ${project.mentionIds.join(', ')}`);
+            }
+            
+            logger.info(`[😈 Daemon] === End Projects ===`);
+        } catch (parseError) {
+            logger.error(`[😈 Daemon] Error parsing processed mentions file while logging active projects:`, parseError);
+        }
+    } catch (error) {
+        logger.error(`[😈 Daemon] Error reading file for logging active projects:`, error);
+    }
 }
 
 main(); 
