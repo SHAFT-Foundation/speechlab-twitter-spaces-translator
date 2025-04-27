@@ -15,7 +15,7 @@ import {
     extractSpaceTitleFromModal
 } from './services/twitterInteractionService';
 import { downloadAndUploadAudio } from './services/audioService';
-import { createDubbingProject, waitForProjectCompletion, generateSharingLink } from './services/speechlabApiService';
+import { createDubbingProject, waitForProjectCompletion, generateSharingLink, getProjectByThirdPartyID } from './services/speechlabApiService';
 import { detectLanguage, getLanguageName } from './utils/languageUtils';
 import { v4 as uuidv4 } from 'uuid';
 import { downloadFile } from './utils/fileUtils';
@@ -51,9 +51,25 @@ interface BackendResult {
     sharingLink?: string;   // Link to SpeechLab project page
     publicMp3Url?: string;  // Link to the uploaded dubbed MP3 on S3
     projectId?: string;
+    thirdPartyID?: string;  // Added thirdPartyID to track in processed mentions
     error?: string;
     // Path to the FINAL generated video file
     // generatedVideoPath?: string; 
+}
+
+// New interfaces for processed mentions tracking
+interface ProcessedMentionData {
+    mentions: string[];
+    projects: Record<string, ProjectStatusInfo>;
+}
+
+interface ProjectStatusInfo {
+    thirdPartyID: string;
+    projectId?: string;
+    status: 'initiated' | 'processing' | 'complete' | 'failed';
+    createdAt: string;
+    updatedAt: string;
+    mentionIds: string[];
 }
 
 const PROCESSED_MENTIONS_PATH = path.join(process.cwd(), 'processed_mentions.json');
@@ -405,20 +421,40 @@ async function attemptAutomatedLogin(page: Page, username: string, password: str
 }
 
 /**
- * Loads processed mention IDs from the JSON file.
+ * Loads processed mention IDs and project status info from the JSON file.
  * Creates the file if it doesn't exist.
  */
 async function loadProcessedMentions(): Promise<Set<string>> {
     try {
         await fs.access(PROCESSED_MENTIONS_PATH);
         const data = await fs.readFile(PROCESSED_MENTIONS_PATH, 'utf-8');
-        const ids: string[] = JSON.parse(data);
-        logger.info(`[😈 Daemon] Loaded ${ids.length} processed mention IDs from ${PROCESSED_MENTIONS_PATH}.`);
-        return new Set(ids);
+        let mentionData: ProcessedMentionData;
+        
+        try {
+            mentionData = JSON.parse(data);
+            // Check if data has the new structure, if not convert it
+            if (!mentionData.mentions && Array.isArray(mentionData)) {
+                logger.info(`[😈 Daemon] Converting old processed_mentions.json format to new structure.`);
+                mentionData = {
+                    mentions: mentionData as any, // Convert the array directly to mentions
+                    projects: {}
+                };
+                // Save the converted structure
+                await fs.writeFile(PROCESSED_MENTIONS_PATH, JSON.stringify(mentionData, null, 2));
+            }
+        } catch (parseError) {
+            logger.error(`[😈 Daemon] Error parsing ${PROCESSED_MENTIONS_PATH}, creating new structure:`, parseError);
+            mentionData = { mentions: [], projects: {} };
+            await fs.writeFile(PROCESSED_MENTIONS_PATH, JSON.stringify(mentionData, null, 2));
+        }
+        
+        logger.info(`[😈 Daemon] Loaded ${mentionData.mentions.length} processed mention IDs and ${Object.keys(mentionData.projects).length} project statuses from ${PROCESSED_MENTIONS_PATH}.`);
+        return new Set(mentionData.mentions);
     } catch (error: any) {
         if (error.code === 'ENOENT') {
-            logger.info(`[😈 Daemon] ${PROCESSED_MENTIONS_PATH} not found. Creating a new one.`);
-            await fs.writeFile(PROCESSED_MENTIONS_PATH, JSON.stringify([]));
+            logger.info(`[😈 Daemon] ${PROCESSED_MENTIONS_PATH} not found. Creating a new one with updated structure.`);
+            const newData: ProcessedMentionData = { mentions: [], projects: {} };
+            await fs.writeFile(PROCESSED_MENTIONS_PATH, JSON.stringify(newData, null, 2));
             return new Set<string>();
         } else {
             logger.error('[😈 Daemon] Error loading processed mentions:', error);
@@ -434,18 +470,137 @@ async function markMentionAsProcessed(mentionId: string, processedMentions: Set<
     if (processedMentions.has(mentionId)) {
         logger.debug(`[😈 Daemon] Mention ${mentionId} is already in the processed set.`);
         return;
-     }
+    }
 
     processedMentions.add(mentionId);
     try {
-        const idsArray = Array.from(processedMentions);
-        await fs.writeFile(PROCESSED_MENTIONS_PATH, JSON.stringify(idsArray, null, 2));
+        // Load the current data first
+        await fs.access(PROCESSED_MENTIONS_PATH);
+        const data = await fs.readFile(PROCESSED_MENTIONS_PATH, 'utf-8');
+        let mentionData: ProcessedMentionData;
+        
+        try {
+            mentionData = JSON.parse(data);
+            // Ensure proper structure
+            if (!mentionData.mentions) {
+                mentionData = { mentions: [], projects: {} };
+            }
+        } catch (parseError) {
+            mentionData = { mentions: [], projects: {} };
+        }
+        
+        // Add the new mention ID to the array if not already there
+        if (!mentionData.mentions.includes(mentionId)) {
+            mentionData.mentions.push(mentionId);
+        }
+        
+        await fs.writeFile(PROCESSED_MENTIONS_PATH, JSON.stringify(mentionData, null, 2));
         logger.debug(`[😈 Daemon] Marked mention ${mentionId} as processed and saved to file.`);
     } catch (error) {
         logger.error(`[😈 Daemon] Error saving processed mention ${mentionId} to ${PROCESSED_MENTIONS_PATH}:`, error);
         // Remove from the set in memory if save fails to allow retry on next poll
         processedMentions.delete(mentionId);
         logger.warn(`[😈 Daemon] Removed ${mentionId} from in-memory set due to save failure.`);
+    }
+}
+
+/**
+ * Updates project status information in the processed mentions file.
+ * @param thirdPartyID The unique third-party ID used to identify the project
+ * @param projectId The SpeechLab project ID (optional)
+ * @param status The current status of the project
+ * @param mentionId The mention ID associated with this project
+ */
+async function updateProjectStatus(
+    thirdPartyID: string, 
+    status: 'initiated' | 'processing' | 'complete' | 'failed',
+    mentionId: string,
+    projectId?: string
+): Promise<void> {
+    logger.info(`[😈 Daemon] Updating project status: thirdPartyID=${thirdPartyID}, projectId=${projectId || 'N/A'}, status=${status}, mentionId=${mentionId}`);
+    
+    try {
+        // Load current data
+        await fs.access(PROCESSED_MENTIONS_PATH);
+        const data = await fs.readFile(PROCESSED_MENTIONS_PATH, 'utf-8');
+        let mentionData: ProcessedMentionData;
+        
+        try {
+            mentionData = JSON.parse(data);
+            // Ensure proper structure
+            if (!mentionData.projects) {
+                mentionData.projects = {};
+            }
+            if (!mentionData.mentions) {
+                mentionData.mentions = [];
+            }
+        } catch (parseError) {
+            mentionData = { mentions: [], projects: {} };
+        }
+        
+        const now = new Date().toISOString();
+        
+        // Update or create project status entry
+        if (mentionData.projects[thirdPartyID]) {
+            // Update existing project
+            const project = mentionData.projects[thirdPartyID];
+            project.status = status;
+            project.updatedAt = now;
+            
+            // Add projectId if provided and not already set
+            if (projectId && !project.projectId) {
+                project.projectId = projectId;
+            }
+            
+            // Add mentionId if not already in the list
+            if (!project.mentionIds.includes(mentionId)) {
+                project.mentionIds.push(mentionId);
+            }
+        } else {
+            // Create new project entry
+            mentionData.projects[thirdPartyID] = {
+                thirdPartyID,
+                projectId,
+                status,
+                createdAt: now,
+                updatedAt: now,
+                mentionIds: [mentionId]
+            };
+        }
+        
+        await fs.writeFile(PROCESSED_MENTIONS_PATH, JSON.stringify(mentionData, null, 2));
+        logger.info(`[😈 Daemon] Successfully updated project status for ${thirdPartyID} to ${status}.`);
+    } catch (error) {
+        logger.error(`[😈 Daemon] Error updating project status for ${thirdPartyID}:`, error);
+    }
+}
+
+/**
+ * Checks if a project with the given thirdPartyID exists and retrieves its status.
+ * @param thirdPartyID The unique third-party ID 
+ * @returns The project status info or null if not found
+ */
+async function getProjectStatus(thirdPartyID: string): Promise<ProjectStatusInfo | null> {
+    try {
+        await fs.access(PROCESSED_MENTIONS_PATH);
+        const data = await fs.readFile(PROCESSED_MENTIONS_PATH, 'utf-8');
+        let mentionData: ProcessedMentionData;
+        
+        try {
+            mentionData = JSON.parse(data);
+            
+            // Check if project exists
+            if (mentionData.projects && mentionData.projects[thirdPartyID]) {
+                return mentionData.projects[thirdPartyID];
+            }
+        } catch (parseError) {
+            logger.error(`[😈 Daemon] Error parsing processed mentions file while checking project status:`, parseError);
+        }
+        
+        return null;
+    } catch (error) {
+        logger.error(`[😈 Daemon] Error checking project status for ${thirdPartyID}:`, error);
+        return null;
     }
 }
 
@@ -732,11 +887,17 @@ async function performBackendProcessing(initData: InitiationResult): Promise<Bac
     let downloadedAudioPath: string | undefined = undefined;
     // let generatedVideoPath: string | undefined = undefined;
     let publicMp3Url: string | undefined = undefined;
+    let projectId: string | null = null; // Initialize projectId
+    
+    // Initialize thirdPartyID at the top level
+    const projectName = spaceTitle || `Twitter Space ${spaceId}`; 
+    const sanitizedProjectName = projectName.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
+    const thirdPartyID = `${sanitizedProjectName}-${targetLanguageCode}`;
 
     try {
         await fs.mkdir(TEMP_AUDIO_DIR, { recursive: true });
         // await fs.mkdir(TEMP_VIDEO_DIR, { recursive: true }); // No video dir needed now
-
+        
         // 1. Download original Space audio and upload to S3 (for project creation)
         logger.info(`[⚙️ Backend] Downloading/uploading original Space audio for ${spaceId}...`);
         const audioUploadResult = await downloadAndUploadAudio(m3u8Url, spaceId);
@@ -744,31 +905,128 @@ async function performBackendProcessing(initData: InitiationResult): Promise<Bac
             throw new Error('Failed to download/upload original Space audio');
         }
         logger.info(`[⚙️ Backend] Original audio uploaded to S3: ${audioUploadResult}`);
-
-        // 2. Create SpeechLab project
-        const projectName = spaceTitle || `Twitter Space ${spaceId}`; 
-        const sanitizedProjectName = projectName.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
-        const thirdPartyID = `${sanitizedProjectName}-${targetLanguageCode}`;
-        logger.info(`[⚙️ Backend] Creating SpeechLab project: Name="${projectName}", Lang=${targetLanguageCode}, 3rdPartyID=${thirdPartyID}`);
-        const projectId = await createDubbingProject(
-            audioUploadResult, 
-            projectName, 
-            targetLanguageCode, 
-            thirdPartyID
-        );
-        if (!projectId) {
-            throw new Error('Failed to create SpeechLab project');
+        
+        // First check our local status tracking
+        logger.info(`[⚙️ Backend] Checking local project status for thirdPartyID: ${thirdPartyID}...`);
+        const existingProjectStatus = await getProjectStatus(thirdPartyID);
+        
+        if (existingProjectStatus) {
+            logger.info(`[⚙️ Backend] ✅ Found existing project tracking: ${JSON.stringify(existingProjectStatus)}`);
+            
+            // Check the status to decide what to do
+            if (existingProjectStatus.status === 'complete') {
+                logger.info(`[⚙️ Backend] Project already completed successfully, no need to process again.`);
+                projectId = existingProjectStatus.projectId || null;
+                
+                // Return success immediately, client can use the existing project data
+                if (projectId) {
+                    const sharingLink = await generateSharingLink(projectId);
+                    return { 
+                        success: true, 
+                        sharingLink: sharingLink || undefined,
+                        projectId: projectId,
+                        thirdPartyID: thirdPartyID
+                    };
+                }
+            } else if (existingProjectStatus.status === 'failed') {
+                logger.info(`[⚙️ Backend] Previous project attempt failed. Will retry processing.`);
+                // Continue with processing to retry
+            } else {
+                logger.info(`[⚙️ Backend] Project is already being processed (status: ${existingProjectStatus.status}).`);
+                projectId = existingProjectStatus.projectId || null;
+                
+                // Update the existing project tracking to add this mention ID
+                await updateProjectStatus(thirdPartyID, existingProjectStatus.status, mentionInfo.tweetId, projectId || undefined);
+                
+                // We'll continue with checking SpeechLab API to get the latest status
+            }
         }
-        logger.info(`[⚙️ Backend] SpeechLab project created: ${projectId} (using thirdPartyID: ${thirdPartyID})`);
+        
+        // Check with SpeechLab API regardless
+        logger.info(`[⚙️ Backend] Checking for existing SpeechLab project with thirdPartyID: ${thirdPartyID}...`);
+        const existingProject = await getProjectByThirdPartyID(thirdPartyID);
 
-        // 3. Wait for project completion (with increased timeout)
-        logger.info(`[⚙️ Backend] Waiting up to 3 hours for SpeechLab project completion (thirdPartyID: ${thirdPartyID})...`);
-        const maxWaitTimeMs = 3 * 60 * 60 * 1000; // 3 hours in milliseconds
+        if (existingProject) {
+            logger.info(`[⚙️ Backend] ✅ Found existing project with ID: ${existingProject.id} (Status: ${existingProject.job?.status || 'UNKNOWN'}). Reusing this project.`);
+            projectId = existingProject.id;
+            
+            // Update our local tracking with the actual project status
+            const apiStatus = existingProject.job?.status || 'UNKNOWN';
+            let localStatus: 'initiated' | 'processing' | 'complete' | 'failed';
+            
+            switch (apiStatus) {
+                case 'COMPLETE':
+                    localStatus = 'complete';
+                    break;
+                case 'FAILED':
+                    localStatus = 'failed';
+                    break;
+                case 'PROCESSING':
+                case 'QUEUED':
+                    localStatus = 'processing';
+                    break;
+                default:
+                    localStatus = 'initiated';
+            }
+            
+            await updateProjectStatus(thirdPartyID, localStatus, mentionInfo.tweetId, projectId);
+            
+            // If project is already complete, we can skip waiting
+            if (apiStatus === 'COMPLETE') {
+                logger.info(`[⚙️ Backend] Project is already complete according to SpeechLab API.`);
+                // Skip to sharing link generation
+            } else if (apiStatus === 'FAILED') {
+                // If project has failed, throw an error
+                throw new Error(`SpeechLab project ${thirdPartyID} failed to process according to API`);
+            } else {
+                // For any other status, continue with waiting for completion
+                logger.info(`[⚙️ Backend] Project is still processing. Will wait for completion.`);
+            }
+        } else {
+            logger.info(`[⚙️ Backend] No existing project found. Creating a new SpeechLab project...`);
+            // Mark as initiated in our tracking system
+            await updateProjectStatus(thirdPartyID, 'initiated', mentionInfo.tweetId);
+            
+            logger.info(`[⚙️ Backend] Creating SpeechLab project: Name="${projectName}", Lang=${targetLanguageCode}, 3rdPartyID=${thirdPartyID}`);
+            projectId = await createDubbingProject(
+                audioUploadResult, 
+                projectName, 
+                targetLanguageCode, 
+                thirdPartyID
+            );
+            if (!projectId) {
+                // Update status to failed
+                await updateProjectStatus(thirdPartyID, 'failed', mentionInfo.tweetId);
+                throw new Error('Failed to create SpeechLab project after check');
+            }
+            logger.info(`[⚙️ Backend] New SpeechLab project created: ${projectId} (using thirdPartyID: ${thirdPartyID})`);
+            
+            // Update our tracking with the new project ID and status
+            await updateProjectStatus(thirdPartyID, 'processing', mentionInfo.tweetId, projectId);
+        }
+        // --- END MODIFIED SECTION ---
+
+        // Ensure we have a project ID before proceeding
+        if (!projectId) {
+            // Update status to failed
+            await updateProjectStatus(thirdPartyID, 'failed', mentionInfo.tweetId);
+            throw new Error('Could not determine SpeechLab project ID (existing or new).');
+        }
+
+        // 3. Wait for project completion (using the determined projectId and thirdPartyID)
+        logger.info(`[⚙️ Backend] Waiting up to 6 hours for SpeechLab project completion (thirdPartyID: ${thirdPartyID})...`);
+        const maxWaitTimeMs = 6 * 60 * 60 * 1000; // 6 hours in milliseconds
+        // Pass thirdPartyID to wait function, as it uses that for polling
         const completedProject = await waitForProjectCompletion(thirdPartyID, maxWaitTimeMs); 
         if (!completedProject || completedProject.job?.status !== 'COMPLETE') {
             const finalStatus = completedProject?.job?.status || 'TIMEOUT';
+            // Update our tracking with failed status
+            await updateProjectStatus(thirdPartyID, 'failed', mentionInfo.tweetId, projectId);
             throw new Error(`SpeechLab project ${thirdPartyID} did not complete successfully (Status: ${finalStatus})`);
         }
+        
+        // Update our tracking with completed status
+        await updateProjectStatus(thirdPartyID, 'complete', mentionInfo.tweetId, projectId);
         logger.info(`[⚙️ Backend] SpeechLab project ${thirdPartyID} completed successfully.`);
 
         // 4. Find and Download DUBBED MP3 Audio
@@ -821,7 +1079,8 @@ async function performBackendProcessing(initData: InitiationResult): Promise<Bac
             success: true, 
             sharingLink: sharingLink || undefined, 
             publicMp3Url: publicMp3Url, // Will be undefined if download or S3 upload failed
-            projectId 
+            projectId: projectId,
+            thirdPartyID: thirdPartyID
         };
 
     } catch (error: any) {
@@ -831,7 +1090,11 @@ async function performBackendProcessing(initData: InitiationResult): Promise<Bac
              logger.info(`[⚙️ Backend] Cleaning up temporary audio file due to error: ${downloadedAudioPath}`);
              await fs.unlink(downloadedAudioPath).catch(()=>{}); // Best effort cleanup
         }
-        return { success: false, error: error.message || 'Unknown backend error' };
+        return { 
+            success: false, 
+            error: error.message || 'Unknown backend error', 
+            thirdPartyID: thirdPartyID 
+        };
     }
 }
 
@@ -1002,16 +1265,38 @@ async function runFinalReplyQueue(page: Page): Promise<void> {
             logger.info(`[↩️ Reply Queue] Successfully posted final reply via ${postMethod} for ${mentionInfo.tweetId}.`);
             
             // --- Mark Processed After Successful Reply --- 
-             if (backendResult.success) { // Only mark processed if the backend succeeded
+            if (backendResult.success) { // Only mark processed if the backend succeeded
                 logger.info(`[↩️ Reply Queue] Marking mention ${mentionInfo.tweetId} as processed now.`);
                 try {
                     await markMentionAsProcessed(mentionInfo.tweetId, processedMentions); 
+                    
+                    // If we have a thirdPartyID, update the project status to 'complete'
+                    if (backendResult.thirdPartyID) {
+                        logger.info(`[↩️ Reply Queue] Updating project status for ${backendResult.thirdPartyID} to 'complete'.`);
+                        await updateProjectStatus(
+                            backendResult.thirdPartyID, 
+                            'complete', 
+                            mentionInfo.tweetId, 
+                            backendResult.projectId
+                        );
+                    }
                 } catch (markError) {
                     // Log critical error but continue if possible
                     logger.error(`[↩️ Reply Queue] CRITICAL: Failed to mark mention ${mentionInfo.tweetId} as processed after successful reply:`, markError);
                 }
              } else {
                  logger.info(`[↩️ Reply Queue] Backend failed, not marking mention ${mentionInfo.tweetId} as processed.`);
+                 
+                 // If we have a thirdPartyID, update the project status to 'failed'
+                 if (backendResult.thirdPartyID) {
+                     logger.info(`[↩️ Reply Queue] Updating project status for ${backendResult.thirdPartyID} to 'failed'.`);
+                     await updateProjectStatus(
+                         backendResult.thirdPartyID, 
+                         'failed', 
+                         mentionInfo.tweetId, 
+                         backendResult.projectId
+                     );
+                 }
              }
 
             // --- Clean up DOWNLOADED MP3 --- 
