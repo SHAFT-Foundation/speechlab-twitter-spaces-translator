@@ -37,6 +37,75 @@ const SUPPORTED_LANGUAGES: LanguageInfo[] = [
 const DEFAULT_LANGUAGE_CODE = 'en';
 
 /**
+ * Interface for language detection result
+ */
+export interface LanguageDetectionResult {
+    sourceLanguageCode: string;
+    targetLanguageCode: string;
+    sourceLanguageName: string;
+    targetLanguageName: string;
+}
+
+/**
+ * Detects both source and target languages from mention text
+ * Supports formats like "dub from English to Spanish" or just "dub in Spanish"
+ * @param text The text of the Twitter mention
+ * @returns Object containing both source and target language codes and names
+ */
+export function detectLanguages(text: string): LanguageDetectionResult {
+    const lowerText = text.toLowerCase();
+    logger.debug(`[🗣️ Lang] Detecting source and target languages from text: \"${lowerText.substring(0, 100)}...\"`);
+
+    // Initialize with defaults (source: English, target: determine from text)
+    let sourceLanguageCode = DEFAULT_LANGUAGE_CODE;
+    let targetLanguageCode = detectLanguage(text); // Use existing function to get target language
+    
+    // Check for "from [language] to [language]" pattern
+    const fromToPattern = /from\s+([a-zA-Z\u00C0-\u017F]+)\s+to\s+([a-zA-Z\u00C0-\u017F]+)/i;
+    const fromToMatch = lowerText.match(fromToPattern);
+    
+    if (fromToMatch) {
+        const potentialSourceLang = fromToMatch[1].toLowerCase();
+        const potentialTargetLang = fromToMatch[2].toLowerCase();
+        
+        logger.debug(`[🗣️ Lang] Found "from/to" pattern. Source candidate: "${potentialSourceLang}", Target candidate: "${potentialTargetLang}"`);
+        
+        // Look up source language
+        for (const lang of SUPPORTED_LANGUAGES) {
+            if (lang.aliases.map(a => a.toLowerCase()).includes(potentialSourceLang)) {
+                sourceLanguageCode = lang.code;
+                logger.info(`[🗣️ Lang] Detected source language: ${lang.label} (${lang.code})`);
+                break;
+            }
+        }
+        
+        // Look up target language
+        for (const lang of SUPPORTED_LANGUAGES) {
+            if (lang.aliases.map(a => a.toLowerCase()).includes(potentialTargetLang)) {
+                targetLanguageCode = lang.code;
+                logger.info(`[🗣️ Lang] Detected target language: ${lang.label} (${lang.code})`);
+                break;
+            }
+        }
+    } else {
+        logger.debug(`[🗣️ Lang] No "from/to" pattern found. Using default source (${sourceLanguageCode}) and detected target (${targetLanguageCode})`);
+    }
+
+    // Handle Spanish special case mapping for target language
+    if (targetLanguageCode === 'es') {
+        logger.info(`[🗣️ Lang] Mapping detected target language 'es' to 'es_LA' for SpeechLab compatibility.`);
+        targetLanguageCode = 'es_la';
+    }
+
+    return {
+        sourceLanguageCode,
+        targetLanguageCode,
+        sourceLanguageName: getLanguageName(sourceLanguageCode),
+        targetLanguageName: getLanguageName(targetLanguageCode)
+    };
+}
+
+/**
  * Detects the target language requested in the mention text.
  * Uses simple keyword matching.
  * @param text The text of the Twitter mention.

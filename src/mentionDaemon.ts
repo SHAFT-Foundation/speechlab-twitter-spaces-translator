@@ -16,7 +16,7 @@ import {
 } from './services/twitterInteractionService';
 import { downloadAndUploadAudio } from './services/audioService';
 import { createDubbingProject, waitForProjectCompletion, generateSharingLink, getProjectByThirdPartyID } from './services/speechlabApiService';
-import { detectLanguage, getLanguageName } from './utils/languageUtils';
+import { detectLanguage, detectLanguages, getLanguageName } from './utils/languageUtils';
 import { v4 as uuidv4 } from 'uuid';
 import { downloadFile } from './utils/fileUtils';
 import { exec } from 'child_process';
@@ -46,6 +46,8 @@ interface InitiationResult {
     spaceId: string;
     spaceTitle: string | null;
     mentionInfo: MentionInfo; // Pass original mention info
+    sourceLanguageCode: string;
+    sourceLanguageName: string;
     targetLanguageCode: string;
     targetLanguageName: string;
 }
@@ -684,10 +686,9 @@ async function initiateProcessing(mentionInfo: MentionInfo, page: Page): Promise
     // Rename variable to reflect it might be article OR button
     let playElementLocator: Locator | null = null;
 
-    // Detect target language early
-    const targetLanguageCode = detectLanguage(mentionInfo.text);
-    const targetLanguageName = getLanguageName(targetLanguageCode);
-    logger.info(`[🚀 Initiate] Target language: ${targetLanguageName} (${targetLanguageCode})`);
+    // Detect source and target languages
+    const { sourceLanguageCode, sourceLanguageName, targetLanguageCode, targetLanguageName } = detectLanguages(mentionInfo.text);
+    logger.info(`[🚀 Initiate] Detected languages: Source: ${sourceLanguageName} (${sourceLanguageCode}), Target: ${targetLanguageName} (${targetLanguageCode})`);
 
     // 1. Navigate & Find Article
     try {
@@ -858,7 +859,7 @@ async function initiateProcessing(mentionInfo: MentionInfo, page: Page): Promise
     // 6. Post preliminary acknowledgement reply
     try {
         logger.info(`[🚀 Initiate] Posting preliminary acknowledgement reply...`);
-        const ackMessage = `${mentionInfo.username} Received! I've started processing this Space into ${targetLanguageName}. Please check back here in ~10-15 minutes for the translated link.`;
+        const ackMessage = `${mentionInfo.username} Received! I've started processing this Space from ${sourceLanguageName} to ${targetLanguageName}. Please check back here in ~10-15 minutes for the translated link.`;
         // --- ADDED: Log acknowledgement reply before sending ---
         logger.info(`[🚀 Initiate] Full Ack Reply Text: ${ackMessage}`);
         // --- END ADDED SECTION ---
@@ -876,6 +877,8 @@ async function initiateProcessing(mentionInfo: MentionInfo, page: Page): Promise
         spaceId,
         spaceTitle,
         mentionInfo, // Include original mention info
+        sourceLanguageCode,
+        sourceLanguageName,
         targetLanguageCode,
         targetLanguageName,
     };
@@ -887,13 +890,13 @@ async function initiateProcessing(mentionInfo: MentionInfo, page: Page): Promise
  * Does NOT interact with the browser page.
  */
 async function performBackendProcessing(initData: InitiationResult): Promise<BackendResult> {
-    const { m3u8Url, spaceId, spaceTitle, targetLanguageCode, mentionInfo } = initData;
+    const { m3u8Url, spaceId, spaceTitle, sourceLanguageCode, targetLanguageCode, mentionInfo } = initData;
     const TEMP_AUDIO_DIR = path.join(process.cwd(), 'temp_audio'); 
     // Remove video dir if not generating video
     // const TEMP_VIDEO_DIR = path.join(process.cwd(), 'temp_video'); 
     // const PLACEHOLDER_IMAGE_PATH = path.join(process.cwd(), 'placeholder.jpg');
 
-    logger.info(`[⚙️ Backend] Starting backend processing for Space ID: ${spaceId}, Lang: ${targetLanguageCode}`);
+    logger.info(`[⚙️ Backend] Starting backend processing for Space ID: ${spaceId}, Source Lang: ${sourceLanguageCode}, Target Lang: ${targetLanguageCode}`);
 
     let downloadedAudioPath: string | undefined = undefined;
     // let generatedVideoPath: string | undefined = undefined;
@@ -903,7 +906,7 @@ async function performBackendProcessing(initData: InitiationResult): Promise<Bac
     // Initialize thirdPartyID at the top level
     const projectName = spaceTitle || `Twitter Space ${spaceId}`; 
     const sanitizedProjectName = projectName.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
-    const thirdPartyID = `${sanitizedProjectName}-${targetLanguageCode}`;
+    const thirdPartyID = `${sanitizedProjectName}-${sourceLanguageCode}-to-${targetLanguageCode}`;
 
     try {
         await fs.mkdir(TEMP_AUDIO_DIR, { recursive: true });
@@ -998,12 +1001,13 @@ async function performBackendProcessing(initData: InitiationResult): Promise<Bac
             // Mark as initiated in our tracking system
             await updateProjectStatus(thirdPartyID, 'initiated', mentionInfo.tweetId);
             
-            logger.info(`[⚙️ Backend] Creating SpeechLab project: Name="${projectName}", Lang=${targetLanguageCode}, 3rdPartyID=${thirdPartyID}`);
+            logger.info(`[⚙️ Backend] Creating SpeechLab project: Name="${projectName}", Source=${sourceLanguageCode}, Target=${targetLanguageCode}, 3rdPartyID=${thirdPartyID}`);
             projectId = await createDubbingProject(
                 audioUploadResult, 
                 projectName, 
                 targetLanguageCode, 
-                thirdPartyID
+                thirdPartyID,
+                sourceLanguageCode // Added source language code parameter
             );
             if (!projectId) {
                 // Update status to failed
@@ -1213,7 +1217,7 @@ async function runFinalReplyQueue(page: Page): Promise<void> {
 
     // Construct the final message based on success and link availability
     if (backendResult.success) {
-        const languageName = getLanguageName(detectLanguage(mentionInfo.text)); 
+        const { sourceLanguageName, targetLanguageName } = detectLanguages(mentionInfo.text);
         const hasSharingLink = !!backendResult.sharingLink;
         const hasMp3Link = !!backendResult.publicMp3Url;
         
@@ -1227,13 +1231,13 @@ async function runFinalReplyQueue(page: Page): Promise<void> {
                  // Sharing Link comes second if available
                 linkParts.push(`Link: ${backendResult.sharingLink}`);
             }
-            // Construct success message with links in the desired order
-            finalMessage = `${mentionInfo.username} Your ${languageName} dub is ready! 🎉 ${linkParts.join(' | ')}`;
+            // Construct success message with links in the desired order - ensure both usernames have @ symbols
+            finalMessage = `@RyanAtSpeechlab ${mentionInfo.username} Your ${sourceLanguageName} to ${targetLanguageName} dub is ready! 🎉 ${linkParts.join(' | ')}`;
             
         } else {
             // MP3 is MISSING, even though backendResult.success is true. Treat as partial failure for reply.
             logger.warn(`[↩️ Reply Queue] Backend succeeded for ${mentionInfo.tweetId} but MP3 link is missing. Posting alternative message.`);
-            let partialFailureMessage = `${mentionInfo.username} Processing finished for the ${languageName} dub, but I couldn't prepare the MP3 audio file. 😥`;
+            let partialFailureMessage = `${mentionInfo.username} Processing finished for the ${sourceLanguageName} to ${targetLanguageName} dub, but I couldn't prepare the MP3 audio file. 😥`;
             if (hasSharingLink) {
                 partialFailureMessage += ` You might find project details here: ${backendResult.sharingLink}`;
             }
@@ -1248,8 +1252,9 @@ async function runFinalReplyQueue(page: Page): Promise<void> {
 
     } else {
         // Construct error message for the single reply (original logic)
+        const { sourceLanguageName, targetLanguageName } = detectLanguages(mentionInfo.text);
         const errorReason = backendResult.error || 'processing failed';
-         finalMessage = `${mentionInfo.username} Oops! 😥 Couldn't complete the ${getLanguageName(detectLanguage(mentionInfo.text))} dub for this Space (${errorReason}). Maybe try again later?`;
+         finalMessage = `${mentionInfo.username} Oops! 😥 Couldn't complete the ${sourceLanguageName} to ${targetLanguageName} dub for this Space (${errorReason}). Maybe try again later?`;
          mediaPathToAttach = undefined; // Ensure no media attached on failure
     }
     
@@ -1318,17 +1323,17 @@ async function runFinalReplyQueue(page: Page): Promise<void> {
 
             // --- Clean up DOWNLOADED MP3 --- 
             if (backendResult.success && backendResult.publicMp3Url) { // Only cleanup if backend succeeded AND MP3 link existed (meaning download likely happened)
-                 // Extract thirdPartyID for potential audio file cleanup
-                 const targetLanguageCode = detectLanguage(mentionInfo.text);
-                 // !! This title reconstruction for cleanup is FRAGILE !!
-                 // It assumes the title used during backend processing was 'temp' if original was missing.
-                 // A better approach would be to pass the actual used thirdPartyID back in BackendResult.
-                 const spaceTitle = 'temp'; 
-                 const sanitizedProjectName = spaceTitle.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
-                 const thirdPartyID = `${sanitizedProjectName}-${targetLanguageCode}`;
-                 const TEMP_AUDIO_DIR = path.join(process.cwd(), 'temp_audio');
-                 const assumedAudioFilename = `${thirdPartyID}_dubbed.mp3`;
-                 const assumedDownloadedAudioPath = path.join(TEMP_AUDIO_DIR, assumedAudioFilename);
+                // Extract language codes for potential audio file cleanup
+                const { sourceLanguageCode, targetLanguageCode } = detectLanguages(mentionInfo.text);
+                // !! This title reconstruction for cleanup is FRAGILE !!
+                // It assumes the title used during backend processing was 'temp' if original was missing.
+                // A better approach would be to pass the actual used thirdPartyID back in BackendResult.
+                const spaceTitle = 'temp'; 
+                const sanitizedProjectName = spaceTitle.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
+                const thirdPartyID = `${sanitizedProjectName}-${sourceLanguageCode}-to-${targetLanguageCode}`;
+                const TEMP_AUDIO_DIR = path.join(process.cwd(), 'temp_audio');
+                const assumedAudioFilename = `${thirdPartyID}_dubbed.mp3`;
+                const assumedDownloadedAudioPath = path.join(TEMP_AUDIO_DIR, assumedAudioFilename);
 
                 logger.info(`[↩️ Reply Queue] Attempting cleanup of temporary audio file: ${assumedDownloadedAudioPath}`);
                 try {

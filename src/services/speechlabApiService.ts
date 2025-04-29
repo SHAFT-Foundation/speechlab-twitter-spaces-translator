@@ -195,15 +195,17 @@ async function getAuthToken(): Promise<string | null> {
  * @param projectName The desired name for the project.
  * @param targetLanguageCode The detected target language code (e.g., 'es').
  * @param thirdPartyId The unique identifier for this job (e.g., spaceId-langCode).
+ * @param sourceLanguageCode Optional source language code. If not provided, uses config.SOURCE_LANGUAGE.
  * @returns {Promise<string | null>} The projectId if successful, otherwise null.
  */
 export async function createDubbingProject(
     publicAudioUrl: string, 
     projectName: string, 
     targetLanguageCode: string, 
-    thirdPartyId: string 
+    thirdPartyId: string,
+    sourceLanguageCode?: string
 ): Promise<string | null> {
-    logger.info(`[🤖 SpeechLab] Attempting to create dubbing project: Name="${projectName}", Lang=${targetLanguageCode}, 3rdPartyID=${thirdPartyId}`);
+    logger.info(`[🤖 SpeechLab] Attempting to create dubbing project: Name="${projectName}", Source=${sourceLanguageCode || config.SOURCE_LANGUAGE}, Target=${targetLanguageCode}, 3rdPartyID=${thirdPartyId}`);
     
     let attempt = 1;
     const maxAttempts = 2; // Initial attempt + 1 retry
@@ -218,7 +220,7 @@ export async function createDubbingProject(
 
     const payload: CreateDubPayload = {
         name: finalProjectName,
-        sourceLanguage: config.SOURCE_LANGUAGE,
+        sourceLanguage: sourceLanguageCode || config.SOURCE_LANGUAGE,
         targetLanguage: apiTargetLanguage, // Use mapped code
         dubAccent: apiDubAccent,          // Use mapped code
         unitType: "whiteGlove",
@@ -449,7 +451,7 @@ export async function waitForProjectCompletion(
         lastProjectDetails = project; // Store the latest result
         
         if (!project) {
-            logger.warn(`[🤖 SpeechLab] ⚠️ Poll #${pollCount} - Could not retrieve project details, will retry in ${checkIntervalMs/1000}s...`);
+            logger.warn(`[�� SpeechLab] ⚠️ Poll #${pollCount} - Could not retrieve project details, will retry in ${checkIntervalMs/1000}s...`);
         } else if (project.job?.status === "COMPLETE") {
             const elapsedMinutes = ((Date.now() - startTime) / 1000 / 60).toFixed(1);
             logger.info(`[🤖 SpeechLab] ✅ Poll #${pollCount} - Project completed successfully after ${elapsedMinutes} minutes!`);
