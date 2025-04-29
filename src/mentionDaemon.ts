@@ -32,6 +32,10 @@ const finalReplyQueue: { mentionInfo: MentionInfo, backendResult: BackendResult 
 let isInitiatingProcessing = false; // Flag for browser task (initiation)
 let isPostingFinalReply = false;   // Flag for browser task (final reply)
 
+// --- Added for better queue logging ---
+let processedCount = 0; // Track how many mentions processed since startup
+// --- End added section ---
+
 // --- MOVED: Global Set for Processed Mentions ---
 let processedMentions: Set<string> = new Set();
 // --- END MOVED SECTION ---
@@ -1130,7 +1134,12 @@ async function runInitiationQueue(page: Page): Promise<void> {
     }
 
     isInitiatingProcessing = true;
-    logger.info(`[🚀 Initiate Queue] Starting worker. Queue size: ${mentionQueue.length}`);
+    
+    // --- Enhanced Queue Logging ---
+    const queuePreview = mentionQueue.slice(0, 5).map(m => `${m.tweetId} (${m.username})`).join(', ');
+    const remainingCount = Math.max(0, mentionQueue.length - 5);
+    logger.info(`[🚀 Initiate Queue] Starting worker. Queue size: ${mentionQueue.length}. Next 5 mentions: [${queuePreview}]${remainingCount > 0 ? ` and ${remainingCount} more...` : ''}`);
+    // --- End Enhanced Logging ---
 
     const mentionToProcess = mentionQueue.shift(); 
     if (!mentionToProcess) {
@@ -1139,7 +1148,8 @@ async function runInitiationQueue(page: Page): Promise<void> {
         return; // Should not happen, but safety check
     }
 
-    logger.info(`[🚀 Initiate Queue] Processing mention ${mentionToProcess.tweetId}. Remaining: ${mentionQueue.length}`);
+    processedCount++; // Increment processed count for stats
+    logger.info(`[🚀 Initiate Queue] Processing mention ${mentionToProcess.tweetId} (${mentionToProcess.username}). Remaining: ${mentionQueue.length}. This is mention #${processedCount} processed since startup.`);
     
     try {
         // Perform browser initiation steps
@@ -1165,7 +1175,7 @@ async function runInitiationQueue(page: Page): Promise<void> {
         // Do not re-queue or add to reply queue if initiation failed, as an error reply was likely attempted.
     }
 
-    logger.info(`[🚀 Initiate Queue] Finished browser initiation work for ${mentionToProcess.tweetId}.`);
+    logger.info(`[🚀 Initiate Queue] Finished browser initiation work for ${mentionToProcess.tweetId}. Queue status: ${mentionQueue.length} remaining.`);
     isInitiatingProcessing = false; // Free up the flag for the next check
 }
 
@@ -1338,6 +1348,37 @@ async function runFinalReplyQueue(page: Page): Promise<void> {
     } finally {
         logger.info(`[↩️ Reply Queue] Finished ${postMethod} reply work for ${mentionInfo.tweetId}.`);
         isPostingFinalReply = false; 
+    }
+}
+
+/**
+ * Logs a comprehensive summary of current queue status
+ */
+function logQueueStatus() {
+    try {
+        // Get info about what's currently processing
+        const currentStatus = isInitiatingProcessing ? "BUSY - Processing a mention" : 
+                             isPostingFinalReply ? "BUSY - Posting a final reply" : 
+                             "IDLE - Ready for next task";
+        
+        // Count processed mentions since startup
+        const processedSoFar = processedCount;
+        
+        // Get queue previews
+        const initQueuePreview = mentionQueue.length > 0 
+            ? mentionQueue.slice(0, 3).map(m => `${m.tweetId} (${m.username})`).join(', ')
+            : "empty";
+            
+        const replyQueuePreview = finalReplyQueue.length > 0
+            ? finalReplyQueue.slice(0, 3).map(r => `${r.mentionInfo.tweetId} (${r.mentionInfo.username})`).join(', ')
+            : "empty";
+        
+        // Log comprehensive status
+        logger.info(`[📊 Queue Status] Browser: ${currentStatus} | Processed: ${processedSoFar} mentions`);
+        logger.info(`[📊 Queue Status] Init Queue (${mentionQueue.length}): ${initQueuePreview}${mentionQueue.length > 3 ? ` + ${mentionQueue.length - 3} more` : ''}`);
+        logger.info(`[📊 Queue Status] Reply Queue (${finalReplyQueue.length}): ${replyQueuePreview}${finalReplyQueue.length > 3 ? ` + ${finalReplyQueue.length - 3} more` : ''}`);
+    } catch (error) {
+        logger.error(`[📊 Queue Status] Error generating queue status: ${error}`);
     }
 }
 
@@ -1522,6 +1563,16 @@ async function main() {
                 const mentions = await scrapeMentions(page);
                 logger.info(`[😈 Daemon Polling] Scraped ${mentions.length} mentions.`);
                 let newMentionsFound = 0;
+                
+                // Log count of already processed mentions for visibility
+                const alreadyProcessedCount = mentions.filter(m => processedMentions.has(m.tweetId)).length;
+                if (alreadyProcessedCount > 0) {
+                    logger.info(`[😈 Daemon Polling] Found ${alreadyProcessedCount} already processed mentions (skipping).`);
+                }
+                
+                // Create a preview of new mentions being added
+                const newMentions: MentionInfo[] = [];
+                
                 for (const mention of mentions) {
                     // First check if the mention is already in the processed set
                     if (!processedMentions.has(mention.tweetId)) {
@@ -1542,20 +1593,28 @@ async function main() {
                         } else {
                             // No associated project found, process as new mention
                             newMentionsFound++;
-                            logger.info(`[🔔 Mention] Found new unprocessed mention: ID=${mention.tweetId}, User=${mention.username}`);
+                            logger.info(`[🔔 Mention] Found new unprocessed mention: ID=${mention.tweetId}, User=${mention.username}, Text="${mention.text?.substring(0, 50)}${mention.text?.length > 50 ? '...' : ''}"`);
                             mentionQueue.push(mention);
+                            newMentions.push(mention);
                             logger.info(`[⚙️ Queue] Mention ${mention.tweetId} added to initiation queue. Queue size: ${mentionQueue.length}`);
                         }
                     } 
                 }
-                 if (newMentionsFound > 0) {
-                    logger.info(`[😈 Daemon Polling] Added ${newMentionsFound} new mentions to the queue.`);
-                    // Trigger initiation worker check immediately after finding new mentions
-                    // The browser task loop will handle actually running it if idle
-                    // triggerInitiationWorker(page); 
-                    } else {
-                      logger.info('[😈 Daemon Polling] No new mentions found.');
-                    }
+                
+                if (newMentionsFound > 0) {
+                    // Generate a summary of newly added mentions
+                    const mentionSummary = newMentions.map(m => 
+                        `${m.tweetId} (${m.username}): "${m.text?.substring(0, 30)}${m.text?.length > 30 ? '...' : ''}"`
+                    ).join('\n  - ');
+                    
+                    logger.info(`[😈 Daemon Polling] Added ${newMentionsFound} new mentions to the queue:\n  - ${mentionSummary}`);
+                    
+                    // Log comprehensive queue status after adding new mentions
+                    logQueueStatus();
+                } else {
+                    logger.info('[😈 Daemon Polling] No new mentions found.');
+                }
+                
             } catch (error) {
                 logger.error('[😈 Daemon Polling] Error during mention polling cycle:', error);
                  // Basic recovery attempt
@@ -1633,7 +1692,18 @@ async function main() {
         // This ensures they don't block the main polling loop and manage page access.
         const BROWSER_TASK_INTERVAL_MS = 5000; // Check queues every 5 seconds
         logger.info(`[😈 Daemon] Starting browser task worker loop (Interval: ${BROWSER_TASK_INTERVAL_MS / 1000}s)`);
+        
+        // Add counter for status reporting
+        let taskLoopCounter = 0;
+        
         browserTaskIntervalId = setInterval(() => {
+            taskLoopCounter++;
+            
+            // Log queue status every 12 iterations (~ every minute)
+            if (taskLoopCounter % 12 === 0) {
+                logQueueStatus();
+            }
+            
             // logger.debug('[😈 Daemon Task Loop] Checking queues for browser tasks...');
             if (!page || page.isClosed()) {
                 logger.error('[😈 Daemon Task Loop] Page is closed. Stopping task loop.');
