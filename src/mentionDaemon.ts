@@ -1232,7 +1232,7 @@ async function runFinalReplyQueue(page: Page): Promise<void> {
                 linkParts.push(`Link: ${backendResult.sharingLink}`);
             }
             // Construct success message with links in the desired order - ensure both usernames have @ symbols
-            finalMessage = `@RyanAtSpeechlab ${mentionInfo.username} Your ${sourceLanguageName} to ${targetLanguageName} dub is ready! 🎉 ${linkParts.join(' | ')}`;
+            finalMessage = `@RyanAtSpeechlab ${mentionInfo.username} Your ${sourceLanguageName} to ${targetLanguageName} dub is ready! $shaft 🎉 ${linkParts.join(' | ')}`;
             
         } else {
             // MP3 is MISSING, even though backendResult.success is true. Treat as partial failure for reply.
