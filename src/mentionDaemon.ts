@@ -23,6 +23,7 @@ import { exec } from 'child_process';
 import util from 'util';
 import { postTweetReplyWithMediaApi } from './services/twitterApiService';
 import { uploadLocalFileToS3 } from './services/audioService';
+import * as fsExtra from 'fs-extra';
 
 const execPromise = util.promisify(exec);
 
@@ -82,6 +83,62 @@ const PROCESSED_MENTIONS_PATH = path.join(process.cwd(), 'processed_mentions.jso
 const POLLING_INTERVAL_MS = 10 * 60 * 1000; // Check every 10 minutes (10 * 60 * 1000 ms)
 const SCREENSHOT_DIR = path.join(process.cwd(), 'debug-screenshots');
 const MANUAL_LOGIN_WAIT_MS = 60 * 1000; // Wait 60 seconds for manual login if needed
+
+const ERROR_LOG_PATH = path.join(process.cwd(), 'error_log.json');
+
+/**
+ * Log error for a specific mention to prevent reprocessing
+ * @param mentionId The mention ID that failed
+ * @param error The error message or object
+ * @param phase The processing phase where the error occurred
+ */
+async function logMentionError(mentionId: string, error: any, phase: 'initiation' | 'backend' | 'reply'): Promise<void> {
+    try {
+        let errorLog: Record<string, any> = {};
+        
+        // Load existing errors if file exists
+        if (await fsExtra.pathExists(ERROR_LOG_PATH)) {
+            const data = await fsExtra.readFile(ERROR_LOG_PATH, 'utf-8');
+            try {
+                errorLog = JSON.parse(data);
+            } catch (parseError) {
+                logger.error(`[❌ Error Log] Failed to parse error log JSON: ${parseError}`);
+                errorLog = {};
+            }
+        }
+        
+        // Format error message
+        let errorMessage = '';
+        if (error instanceof Error) {
+            errorMessage = `${error.name}: ${error.message}`;
+            if (error.stack) {
+                errorMessage += `\n${error.stack}`;
+            }
+        } else if (typeof error === 'string') {
+            errorMessage = error;
+        } else {
+            errorMessage = JSON.stringify(error);
+        }
+        
+        // Add or update error entry
+        errorLog[mentionId] = {
+            phase,
+            error: errorMessage,
+            timestamp: new Date().toISOString(),
+            count: (errorLog[mentionId]?.count || 0) + 1
+        };
+        
+        // Write back to file
+        await fsExtra.writeFile(ERROR_LOG_PATH, JSON.stringify(errorLog, null, 2));
+        logger.info(`[❌ Error Log] Logged error for mention ${mentionId} in phase ${phase}`);
+        
+        // Also mark the mention as processed to prevent reprocessing
+        await markMentionAsProcessed(mentionId, processedMentions);
+        logger.info(`[❌ Error Log] Marked failed mention ${mentionId} as processed to prevent requeuing`);
+    } catch (logError) {
+        logger.error(`[❌ Error Log] Failed to log error for mention ${mentionId}: ${logError}`);
+    }
+}
 
 /**
  * Logs into Twitter using provided credentials with an option for manual intervention.
@@ -1171,12 +1228,17 @@ async function runInitiationQueue(page: Page): Promise<void> {
                 logger.error(`[💥 Backend ERROR] Uncaught error in background processing for ${mentionToProcess.tweetId}:`, backendError);
                 // Add a failure result to the reply queue so we can notify the user
                 addToFinalReplyQueue(mentionToProcess, { success: false, error: 'Backend processing failed unexpectedly' });
+                
+                // Also log error and mark as processed to prevent requeuing
+                logMentionError(mentionToProcess.tweetId, backendError, 'backend');
             });
             
     } catch (initError) {
         // Errors during initiateProcessing (including posting error replies) are logged within the function
         logger.error(`[🚀 Initiate Queue] Initiation phase failed explicitly for ${mentionToProcess.tweetId}. Error should already be logged.`);
-        // Do not re-queue or add to reply queue if initiation failed, as an error reply was likely attempted.
+        
+        // Log error and mark as processed to prevent requeuing
+        logMentionError(mentionToProcess.tweetId, initError, 'initiation');
     }
 
     logger.info(`[🚀 Initiate Queue] Finished browser initiation work for ${mentionToProcess.tweetId}. Queue status: ${mentionQueue.length} remaining.`);
@@ -1307,7 +1369,9 @@ async function runFinalReplyQueue(page: Page): Promise<void> {
                     logger.error(`[↩️ Reply Queue] CRITICAL: Failed to mark mention ${mentionInfo.tweetId} as processed after successful reply:`, markError);
                 }
              } else {
-                 logger.info(`[↩️ Reply Queue] Backend failed, not marking mention ${mentionInfo.tweetId} as processed.`);
+                 logger.info(`[↩️ Reply Queue] Backend failed, marking mention ${mentionInfo.tweetId} as processed to prevent requeuing.`);
+                 // Always mark as processed even if backend failed
+                 await markMentionAsProcessed(mentionInfo.tweetId, processedMentions);
                  
                  // If we have a thirdPartyID, update the project status to 'failed'
                  if (backendResult.thirdPartyID) {
@@ -1319,6 +1383,9 @@ async function runFinalReplyQueue(page: Page): Promise<void> {
                          backendResult.projectId
                      );
                  }
+                 
+                 // Log to error log file
+                 logMentionError(mentionInfo.tweetId, backendResult.error || 'Unknown backend error', 'backend');
              }
 
             // --- Clean up DOWNLOADED MP3 --- 
@@ -1346,10 +1413,18 @@ async function runFinalReplyQueue(page: Page): Promise<void> {
             }
             // -----------------------------
         } else {
-             logger.warn(`[↩️ Reply Queue] Failed to post final reply via ${postMethod} for ${mentionInfo.tweetId}. Mention not marked processed.`);
+            logger.warn(`[↩️ Reply Queue] Failed to post final reply via ${postMethod} for ${mentionInfo.tweetId}. Marking as processed anyway to prevent requeuing.`);
+            // Mark as processed even if reply failed
+            await markMentionAsProcessed(mentionInfo.tweetId, processedMentions);
+            // Log to error log file
+            logMentionError(mentionInfo.tweetId, 'Failed to post reply', 'reply');
         }
     } catch (replyError) {
         logger.error(`[↩️ Reply Queue] CRITICAL: Error posting final ${postMethod} reply for ${mentionInfo.tweetId}:`, replyError);
+        // Mark as processed even if reply throws error
+        await markMentionAsProcessed(mentionInfo.tweetId, processedMentions);
+        // Log to error log file
+        logMentionError(mentionInfo.tweetId, replyError, 'reply');
     } finally {
         logger.info(`[↩️ Reply Queue] Finished ${postMethod} reply work for ${mentionInfo.tweetId}.`);
         isPostingFinalReply = false; 
@@ -1554,13 +1629,13 @@ async function main() {
 
         // --- Main Polling Loop Setup ---
         const pollMentions = async () => {
-             if (!page || page.isClosed()) { 
-                 logger.error('[😈 Daemon Polling] Page closed. Stopping polling loop.');
-                 if (mainLoopIntervalId) clearInterval(mainLoopIntervalId);
-                 mainLoopIntervalId = null;
-                 if (browserTaskIntervalId) clearInterval(browserTaskIntervalId);
-                 browserTaskIntervalId = null;
-                 await shutdown('Polling Page Closed');
+            if (!page || page.isClosed()) { 
+                logger.error('[😈 Daemon Polling] Page closed. Stopping polling loop.');
+                if (mainLoopIntervalId) clearInterval(mainLoopIntervalId);
+                mainLoopIntervalId = null;
+                if (browserTaskIntervalId) clearInterval(browserTaskIntervalId);
+                browserTaskIntervalId = null;
+                await shutdown('Polling Page Closed');
                 return; 
             }
             logger.info('[😈 Daemon Polling] Polling for new mentions...');
@@ -1577,33 +1652,44 @@ async function main() {
                 
                 // Create a preview of new mentions being added
                 const newMentions: MentionInfo[] = [];
+                // Track mentions we've seen in this batch to avoid duplicates in the same poll
+                const seenInThisBatch = new Set<string>();
+                // Check current queue IDs to avoid adding duplicates
+                const currentQueueIds = new Set(mentionQueue.map(m => m.tweetId));
                 
                 for (const mention of mentions) {
-                    // First check if the mention is already in the processed set
-                    if (!processedMentions.has(mention.tweetId)) {
-                        // Then check if it's associated with a project
-                        const associatedProject = await getProjectForMention(mention.tweetId);
+                    // Skip if already in processed set, already in the current queue, or already seen in this batch
+                    if (processedMentions.has(mention.tweetId) || 
+                        currentQueueIds.has(mention.tweetId) || 
+                        seenInThisBatch.has(mention.tweetId)) {
+                        continue;
+                    }
+                    
+                    // Mark as seen in this batch
+                    seenInThisBatch.add(mention.tweetId);
+                    
+                    // Then check if it's associated with a project
+                    const associatedProject = await getProjectForMention(mention.tweetId);
+                    
+                    if (associatedProject) {
+                        logger.info(`[🔔 Mention] Found mention ID=${mention.tweetId} already associated with project ${associatedProject.thirdPartyID} (status: ${associatedProject.status})`);
                         
-                        if (associatedProject) {
-                            logger.info(`[🔔 Mention] Found mention ID=${mention.tweetId} already associated with project ${associatedProject.thirdPartyID} (status: ${associatedProject.status})`);
-                            
-                            // If project is already completed or failed, mark the mention as processed
-                            if (associatedProject.status === 'complete' || associatedProject.status === 'failed') {
-                                logger.info(`[🔔 Mention] Project ${associatedProject.thirdPartyID} is already ${associatedProject.status}. Marking mention as processed.`);
-                                await markMentionAsProcessed(mention.tweetId, processedMentions);
-                            } else {
-                                // Project is still in progress, don't add to queue but log the state
-                                logger.info(`[🔔 Mention] Project ${associatedProject.thirdPartyID} is still ${associatedProject.status}. Not queuing duplicate mention.`);
-                            }
+                        // If project is already completed or failed, mark the mention as processed
+                        if (associatedProject.status === 'complete' || associatedProject.status === 'failed') {
+                            logger.info(`[🔔 Mention] Project ${associatedProject.thirdPartyID} is already ${associatedProject.status}. Marking mention as processed.`);
+                            await markMentionAsProcessed(mention.tweetId, processedMentions);
                         } else {
-                            // No associated project found, process as new mention
-                            newMentionsFound++;
-                            logger.info(`[🔔 Mention] Found new unprocessed mention: ID=${mention.tweetId}, User=${mention.username}, Text="${mention.text?.substring(0, 50)}${mention.text?.length > 50 ? '...' : ''}"`);
-                            mentionQueue.push(mention);
-                            newMentions.push(mention);
-                            logger.info(`[⚙️ Queue] Mention ${mention.tweetId} added to initiation queue. Queue size: ${mentionQueue.length}`);
+                            // Project is still in progress, don't add to queue but log the state
+                            logger.info(`[🔔 Mention] Project ${associatedProject.thirdPartyID} is still ${associatedProject.status}. Not queuing duplicate mention.`);
                         }
-                    } 
+                    } else {
+                        // No associated project found, process as new mention
+                        newMentionsFound++;
+                        logger.info(`[🔔 Mention] Found new unprocessed mention: ID=${mention.tweetId}, User=${mention.username}, Text="${mention.text?.substring(0, 50)}${mention.text?.length > 50 ? '...' : ''}"`);
+                        mentionQueue.push(mention);
+                        newMentions.push(mention);
+                        logger.info(`[⚙️ Queue] Mention ${mention.tweetId} added to initiation queue. Queue size: ${mentionQueue.length}`);
+                    }
                 }
                 
                 if (newMentionsFound > 0) {
@@ -1622,18 +1708,18 @@ async function main() {
                 
             } catch (error) {
                 logger.error('[😈 Daemon Polling] Error during mention polling cycle:', error);
-                 // Basic recovery attempt
-                 try {
-                     if (page && !page.isClosed()) {
-                         await page.goto('https://twitter.com/home', { waitUntil: 'domcontentloaded', timeout: 15000 });
-                         logger.info('[😈 Daemon Polling] Attempted recovery by navigating home.');
-                     } else {
-                         throw new Error('Page closed during polling error handling.');
-                     }
-                     } catch (recoveryError) {
-                     logger.error('[😈 Daemon Polling] Recovery failed. Stopping polling.', recoveryError);
-                     await shutdown('Polling Recovery Failed');
-                 }
+                // Basic recovery attempt
+                try {
+                    if (page && !page.isClosed()) {
+                        await page.goto('https://twitter.com/home', { waitUntil: 'domcontentloaded', timeout: 15000 });
+                        logger.info('[😈 Daemon Polling] Attempted recovery by navigating home.');
+                    } else {
+                        throw new Error('Page closed during polling error handling.');
+                    }
+                } catch (recoveryError) {
+                    logger.error('[😈 Daemon Polling] Recovery failed. Stopping polling.', recoveryError);
+                    await shutdown('Polling Recovery Failed');
+                }
             }
         };
 
