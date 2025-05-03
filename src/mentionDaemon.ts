@@ -1288,7 +1288,7 @@ async function runFinalReplyQueue(page: Page): Promise<void> {
             // MP3 is available - construct the success message
             let linkParts = [];
             // MP3 Link comes first
-            linkParts.push(`MP3: ${backendResult.publicMp3Url}`);
+            linkParts.push(`CLICK HERE FOR MP3: ${backendResult.publicMp3Url}`);
             if (hasSharingLink) {
                  // Sharing Link comes second if available
                 linkParts.push(`Link: ${backendResult.sharingLink}`);
