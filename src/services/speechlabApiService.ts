@@ -5,7 +5,7 @@ import path from 'path';
 import fs from 'fs';
 import fsPromises from 'fs/promises';
 
-const API_BASE_URL = 'https://translate-api.speechlab.ai';
+const API_BASE_URL = config.SPEECHLAB_API_URL || 'https://api-translate-dev.speechlab.ai/v1';
 
 // Interfaces for API Payloads and Responses (based on user examples)
 interface LoginPayload {
@@ -95,6 +95,11 @@ export interface Project {
         status: string; 
     };
     translations?: Translation[]; 
+    thirdPartyID?: string; // Ensuring thirdPartyID is part of the Project interface
+    transcription?: {
+        transcriptionText?: string;
+        // ... other potential transcription properties from the API response
+    };
     // Include other fields from the API response as needed
 }
 
@@ -343,7 +348,7 @@ export async function getProjectByThirdPartyID(thirdPartyID: string): Promise<Pr
     const maxAttempts = 2; // Initial attempt + 1 retry
 
     const encodedThirdPartyID = encodeURIComponent(thirdPartyID);
-    const url = `/v1/projects?sortBy=createdAt%3Aasc&limit=10&page=1&expand=true&thirdPartyIDs=${encodedThirdPartyID}`;
+    const url = `/v1/projects?sortBy=createdAt%3Aasc&limit=1&expand=true&thirdPartyIDs=${encodedThirdPartyID}`;
         
     logger.debug(`[🤖 SpeechLab] 🔍 Fetching project status from API URL (Attempt ${attempt}): ${API_BASE_URL}${url}`);
 
@@ -451,7 +456,7 @@ export async function waitForProjectCompletion(
         lastProjectDetails = project; // Store the latest result
         
         if (!project) {
-            logger.warn(`[�� SpeechLab] ⚠️ Poll #${pollCount} - Could not retrieve project details, will retry in ${checkIntervalMs/1000}s...`);
+            logger.warn(`[🤖 SpeechLab] ⚠️ Poll #${pollCount} - Could not retrieve project details, will retry in ${checkIntervalMs/1000}s...`);
         } else if (project.job?.status === "COMPLETE") {
             const elapsedMinutes = ((Date.now() - startTime) / 1000 / 60).toFixed(1);
             logger.info(`[🤖 SpeechLab] ✅ Poll #${pollCount} - Project completed successfully after ${elapsedMinutes} minutes!`);
@@ -484,4 +489,143 @@ export async function waitForProjectCompletion(
     const maxWaitMinutes = (maxWaitTimeMs/1000/60).toFixed(1);
     logger.warn(`[🤖 SpeechLab] ⏰ Poll #${pollCount} - Maximum wait time of ${maxWaitMinutes} minutes exceeded without project completion.`);
     return lastProjectDetails?.job?.status === "COMPLETE" ? lastProjectDetails : null; // Return last details only if complete, else null
+}
+
+interface CreateDubbingProjectResponse {
+    id: string;
+    // ... other properties
+}
+
+interface ProjectStatusResponse {
+    id: string;
+    thirdPartyID?: string;
+    job?: {
+        status: string; // e.g., QUEUED, PROCESSING, COMPLETE, FAILED
+        // ... other job properties
+    };
+    translations?: {
+        dub?: {
+            medias?: { category: string; format: string; operationType: string, presignedURL: string }[];
+        }[];
+    }[];
+    // ---- ADDED FOR TRANSCRIPTION ----
+    transcription?: {
+        transcriptionText?: string;
+        // ... other transcription properties
+    };
+    // ---- END ADDED ----
+}
+
+// --- Interface for createProjectAndTranscribe API ---
+export interface CreateProjectAndTranscribePayload {
+    fileUuid: string;
+    fileKey: string; // S3 key
+    name: string; // Project name
+    filenameToReturn: string; // e.g., original_filename.mp3
+    language: string; // source language code e.g., "en"
+    contentDuration: number; // in seconds
+    thumbnail?: string; // base64 encoded image, optional
+    unitType: 'whiteGlove'; // As per cURL
+    thirdPartyID: string; // For tracking
+    collectionRef: string; // As per cURL, from config
+}
+
+export interface CreateProjectAndTranscribeResponse {
+    id: string; // SpeechLab project ID
+    // ... any other relevant fields from the API response
+}
+
+/**
+ * Creates a new transcription project with SpeechLab API.
+ * @param payload - The data for creating the transcription project.
+ * @returns The SpeechLab project ID if successful, otherwise null.
+ */
+export async function createProjectAndTranscribe(
+    payload: CreateProjectAndTranscribePayload
+): Promise<string | null> {
+    const authToken = await getAuthToken();
+    if (!authToken) {
+        logger.error('[SpeechLab API] Failed to get auth token for createProjectAndTranscribe.');
+        return null;
+    }
+
+    const apiUrl = `${API_BASE_URL}/projects/createProjectAndTranscribe`;
+    logger.info(`[SpeechLab API] Calling createProjectAndTranscribe for thirdPartyID: ${payload.thirdPartyID}`);
+    logger.debug(`[SpeechLab API] CreateProjectAndTranscribe payload: ${JSON.stringify(payload)}`);
+
+    try {
+        const response = await fetch(apiUrl, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${authToken}`,
+                'Accept': 'application/json',
+            },
+            body: JSON.stringify(payload),
+        });
+
+        if (!response.ok) {
+            const errorBody = await response.text();
+            logger.error(`[SpeechLab API] Error creating transcription project: ${response.status} ${response.statusText} - ${errorBody}`);
+            return null;
+        }
+
+        const result: CreateProjectAndTranscribeResponse = await response.json();
+        logger.info(`[SpeechLab API] Successfully created transcription project. Project ID: ${result.id}, ThirdPartyID: ${payload.thirdPartyID}`);
+        return result.id;
+    } catch (error) {
+        logger.error('[SpeechLab API] Exception during createProjectAndTranscribe:', error);
+        return null;
+    }
+}
+
+/**
+ * Waits for a SpeechLab transcription project to complete.
+ * Polls the project status using thirdPartyID.
+ * @param thirdPartyID The third-party ID of the project.
+ * @param timeoutMs Maximum time to wait in milliseconds.
+ * @returns The completed project data including transcriptionText, or null if timeout or error.
+ */
+export async function waitForTranscriptionCompletion(
+    thirdPartyID: string,
+    timeoutMs: number = 30 * 60 * 1000 // Default 30 minutes timeout
+): Promise<Project | null> {
+    const pollIntervalMs = 30 * 1000; // Poll every 30 seconds
+    const startTime = Date.now();
+
+    logger.info(`[SpeechLab API] Waiting for transcription project completion (thirdPartyID: ${thirdPartyID}). Timeout: ${timeoutMs / 60000}m`);
+
+    while (Date.now() - startTime < timeoutMs) {
+        try {
+            const project = await getProjectByThirdPartyID(thirdPartyID);
+
+            if (project) {
+                logger.debug(`[SpeechLab API] Polling transcription status for ${thirdPartyID}: ${project.job?.status}`);
+                if (project.job?.status === 'COMPLETE') {
+                    if (project.transcription?.transcriptionText) {
+                        logger.info(`[SpeechLab API] Transcription project ${thirdPartyID} COMPLETED successfully with transcription text.`);
+                        return project;
+                    } else {
+                        logger.warn(`[SpeechLab API] Transcription project ${thirdPartyID} COMPLETED but no transcriptionText found.`);
+                        // Treat as failure for summarization if text is missing
+                        return { ...project, job: { ...(project.job || {}), status: 'FAILED_NO_TEXT' } } as Project;
+                    }
+                } else if (project.job?.status === 'FAILED') {
+                    logger.error(`[SpeechLab API] Transcription project ${thirdPartyID} FAILED.`);
+                    return project; // Return the failed project details
+                }
+                // Continue polling for QUEUED, PROCESSING, or other statuses
+            } else {
+                logger.warn(`[SpeechLab API] Could not retrieve project status for thirdPartyID: ${thirdPartyID} during polling.`);
+                // Optionally, could implement a retry limit for consecutive null responses
+            }
+        } catch (error) {
+            logger.error(`[SpeechLab API] Error polling transcription project status for ${thirdPartyID}:`, error);
+            // Depending on error, might break or continue polling
+        }
+        await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+    }
+
+    logger.error(`[SpeechLab API] Timeout waiting for transcription project ${thirdPartyID} to complete.`);
+    return null;
 } 

@@ -1,25 +1,42 @@
 import { spawn } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
-import { S3Client, PutObjectCommand, PutObjectCommandInput } from "@aws-sdk/client-s3";
+import { S3Client, PutObjectCommand, PutObjectCommandInput, S3ClientConfig } from "@aws-sdk/client-s3";
 import { config } from '../utils/config';
 import logger from '../utils/logger';
 import { v4 as uuidv4 } from 'uuid'; // Using uuid for unique filenames
+import * as fsPromises from 'fs/promises';
+import { exec } from 'child_process';
+import util from 'util';
 
-// Configure AWS S3 Client
-// The SDK automatically picks up credentials from environment variables, EC2 instance profiles, etc.
-// Region can be optionally specified if not default or in env variables.
-const s3Client = new S3Client({ region: config.AWS_REGION }); // Use region from config if available
+const execPromise = util.promisify(exec);
+const TEMP_AUDIO_DIR = path.join(process.cwd(), 'temp_audio');
 
-const TEMP_DIR = path.join(process.cwd(), 'temp_audio'); // Define a directory for temporary downloads
+let s3Client: S3Client | null = null;
+
+if (config.AWS_REGION && config.AWS_ACCESS_KEY_ID && config.AWS_SECRET_ACCESS_KEY && config.AWS_S3_BUCKET) {
+    const s3Config: S3ClientConfig = {
+        region: config.AWS_REGION,
+        credentials: {
+            accessKeyId: config.AWS_ACCESS_KEY_ID,
+            secretAccessKey: config.AWS_SECRET_ACCESS_KEY,
+        },
+    };
+    s3Client = new S3Client(s3Config);
+    logger.info('[Audio Service] AWS S3 client initialized.');
+} else {
+    logger.warn('[Audio Service] AWS S3 client not fully configured. S3 operations will fail. Please check AWS_REGION, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, and AWS_S3_BUCKET in your environment variables.');
+}
 
 /**
- * Ensures the temporary directory for audio downloads exists.
+ * Ensures the temporary audio directory exists.
  */
-function ensureTempDirExists(): void {
-    if (!fs.existsSync(TEMP_DIR)) {
-        logger.debug(`[🎧 Audio] Creating temporary directory: ${TEMP_DIR}`);
-        fs.mkdirSync(TEMP_DIR, { recursive: true });
+async function ensureTempDirExists(): Promise<void> {
+    try {
+        await fsPromises.mkdir(TEMP_AUDIO_DIR, { recursive: true });
+    } catch (error) {
+        logger.error('[Audio Service] Error creating temp audio directory:', error);
+        throw error; // Re-throw to indicate failure
     }
 }
 
@@ -237,66 +254,149 @@ async function uploadToS3(localFilePath: string, s3Key: string): Promise<string>
 }
 
 /**
- * Downloads audio from an M3U8 URL using ffmpeg and uploads it to S3.
+ * Downloads audio from an M3U8 URL to a local MP3 file using ffmpeg.
  * @param m3u8Url The URL of the M3U8 playlist.
- * @param spaceName Optional name for the space, used for naming the S3 file.
- * @returns Promise resolving with the public S3 URL of the uploaded audio.
+ * @param localPath The local path to save the MP3 file.
+ * @returns True if successful, false otherwise.
  */
-export async function downloadAndUploadAudio(m3u8Url: string, spaceName?: string | null): Promise<string | null> {
-    ensureTempDirExists();
-    const uniqueId = uuidv4();
-    const sanitizedNamePart = spaceName ? spaceName.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 50) : uniqueId;
-    const outputFilename = `${sanitizedNamePart}_${uniqueId}.aac`;
-    const localFilePath = path.join(TEMP_DIR, outputFilename);
-    const s3Key = `twitter-space-audio/${outputFilename}`;
-
-    logger.info(`[🎧 Audio] 🔄 Processing Twitter Space "${spaceName || 'Unnamed Space'}"`);
-    logger.info(`[🎧 Audio] Output filename: ${outputFilename}`);
-    logger.info(`[🎧 Audio] Download queue initialized`);
-
+async function downloadM3u8ToMp3(m3u8Url: string, localPath: string): Promise<boolean> {
     try {
-        // Step 1: Download using ffmpeg
-        logger.info(`[🎧 Audio] 🔽 Step 1/3: Downloading audio stream...`);
-        const downloadStartTime = Date.now();
-        await runFfmpegDownload(m3u8Url, localFilePath);
-        const downloadEndTime = Date.now();
-        const downloadElapsedSec = ((downloadEndTime - downloadStartTime) / 1000).toFixed(1);
-        logger.info(`[🎧 Audio] ✓ Download step completed in ${downloadElapsedSec}s`);
-
-        // Step 2: Upload the downloaded file to S3
-        logger.info(`[🎧 Audio] 🔼 Step 2/3: Uploading to S3...`);
-        const uploadStartTime = Date.now();
-        const publicUrl = await uploadToS3(localFilePath, s3Key);
-        const uploadEndTime = Date.now();
-        const uploadElapsedSec = ((uploadEndTime - uploadStartTime) / 1000).toFixed(1);
-        logger.info(`[🎧 Audio] ✓ Upload step completed in ${uploadElapsedSec}s`);
-
-        // Step 3: Clean up the local temporary file
-        logger.info(`[🎧 Audio] 🗑️ Step 3/3: Cleaning up temporary file...`);
-        fs.unlink(localFilePath, (err) => {
-            if (err) {
-                logger.warn(`[🎧 Audio] ⚠️ Failed to delete temporary file ${localFilePath}:`, err);
-            } else {
-                 logger.info(`[🎧 Audio] ✓ Successfully deleted temporary file`);
-            }
-        });
-
-        const totalElapsedSec = ((Date.now() - downloadStartTime) / 1000).toFixed(1);
-        logger.info(`[🎧 Audio] ✅ Audio processing completed in ${totalElapsedSec}s`);
-        return publicUrl;
-
-    } catch (error) {
-        logger.error(`[🎧 Audio] ❌ Failed to process audio for ${m3u8Url}:`, error);
-
-        // Attempt cleanup even on error
-        if (fs.existsSync(localFilePath)) {
-            logger.debug(`[🎧 Audio] Cleaning up temporary file after error: ${localFilePath}`);
-            fs.unlink(localFilePath, (err) => {
-                if (err) logger.warn(`[🎧 Audio] Failed to delete temporary file ${localFilePath} after error:`, err);
-            });
+        logger.info(`[Audio Service] Downloading M3U8: ${m3u8Url} to ${localPath}`);
+        const { stderr } = await execPromise(`ffmpeg -y -protocol_whitelist file,http,https,tcp,tls,crypto -i "${m3u8Url}" -c copy "${localPath}"`, { timeout: 300000 }); // 5 min timeout
+        // ffmpeg often outputs to stderr for verbose info, so check for actual error keywords if necessary, or ignore if primarily informational
+        if (stderr && !stderr.includes('conversion rate') && !stderr.includes('bytes received') && !stderr.toLowerCase().includes('ffmpeg version')) {
+            logger.warn(`[Audio Service] ffmpeg stderr during download: ${stderr}`);
         }
-        return null; // Indicate failure
+        logger.info(`[Audio Service] Successfully downloaded audio to ${localPath}`);
+        return true;
+    } catch (error) {
+        logger.error(`[Audio Service] Error downloading M3U8 to MP3 (${localPath}):`, error);
+        return false;
     }
+}
+
+/**
+ * Gets the duration of a local audio/video file using ffprobe.
+ * @param localPath Path to the local media file.
+ * @returns Duration in seconds, or null if an error occurs.
+ */
+async function getMediaDuration(localPath: string): Promise<number | null> {
+    try {
+        logger.info(`[Audio Service] Getting duration for: ${localPath}`);
+        const { stdout, stderr } = await execPromise(`ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${localPath}"`);
+        if (stderr) {
+            logger.warn(`[Audio Service] ffprobe stderr during duration check: ${stderr}`);
+        }
+        const duration = parseFloat(stdout);
+        if (isNaN(duration) || duration <= 0) {
+            logger.error(`[Audio Service] ffprobe output was not a valid positive number for duration: ${stdout}`);
+            return null;
+        }
+        logger.info(`[Audio Service] Extracted duration: ${duration} seconds for ${localPath}`);
+        return duration;
+    } catch (error) {
+        logger.error(`[Audio Service] Error getting media duration for ${localPath}:`, error);
+        return null;
+    }
+}
+
+/**
+ * Uploads a local file to S3.
+ * @param localPath Path to the local file.
+ * @param s3Key The S3 key (path) for the uploaded file.
+ * @param contentType The content type of the file.
+ * @returns The public S3 URL of the uploaded file, or null if an error occurs.
+ */
+async function uploadFileToS3(localPath: string, s3Key: string, contentType: string = 'audio/mpeg'): Promise<string | null> {
+    if (!s3Client) {
+        logger.error('[Audio Service] S3 client not initialized. Cannot upload file. AWS configuration might be missing.');
+        return null;
+    }
+    if (!config.AWS_S3_BUCKET) {
+        logger.error('[Audio Service] AWS_S3_BUCKET not configured. Cannot upload file.');
+        return null;
+    }
+    try {
+        logger.info(`[Audio Service] Uploading ${localPath} to S3 as ${s3Key}`);
+        const fileContent = await fsPromises.readFile(localPath);
+        const params = {
+            Bucket: config.AWS_S3_BUCKET,
+            Key: s3Key,
+            Body: fileContent,
+            ContentType: contentType,
+        };
+        await s3Client.send(new PutObjectCommand(params));
+        const publicUrl = `https://${config.AWS_S3_BUCKET}.s3.${config.AWS_REGION}.amazonaws.com/${s3Key}`;
+        logger.info(`[Audio Service] Successfully uploaded to S3: ${publicUrl}`);
+        return publicUrl;
+    } catch (error) {
+        logger.error(`[Audio Service] Error uploading ${localPath} to S3 as ${s3Key}:`, error);
+        return null;
+    }
+}
+
+export interface PreparedAudioInfo {
+    fileUuid: string;
+    fileKey: string; // S3 Key
+    duration: number;
+    s3Url: string;
+    localPath: string; // Keep local path for potential direct use or cleanup
+}
+
+/**
+ * Downloads audio from M3U8, gets duration, uploads to S3 for transcription.
+ * @param m3u8Url The M3U8 URL of the Twitter Space audio.
+ * @param nameHint A hint for naming, e.g., spaceId or a generated unique part for S3 key.
+ * @returns An object with fileUuid, fileKey (S3), duration, and s3Url, or null on failure.
+ */
+export async function prepareAudioForTranscription(
+    m3u8Url: string,
+    nameHint: string = 'space-audio'
+): Promise<PreparedAudioInfo | null> {
+    await ensureTempDirExists();
+
+    const fileUuid = uuidv4();
+    const s3FileName = `${fileUuid}.mp3`;
+    // Standardized S3 key structure for transcription inputs
+    const fileKey = `transcription-input/${nameHint}/${s3FileName}`;
+    const localAudioPath = path.join(TEMP_AUDIO_DIR, s3FileName);
+
+    logger.info(`[Audio Service - Transcribe Prep] Preparing audio. UUID: ${fileUuid}, M3U8: ${m3u8Url}`);
+
+    const downloadSuccess = await downloadM3u8ToMp3(m3u8Url, localAudioPath);
+    if (!downloadSuccess) {
+        logger.error('[Audio Service - Transcribe Prep] Download failed.');
+        return null;
+    }
+
+    const duration = await getMediaDuration(localAudioPath);
+    if (duration === null) {
+        logger.error('[Audio Service - Transcribe Prep] Failed to get media duration.');
+        try {
+            await fsPromises.unlink(localAudioPath);
+            logger.debug(`[Audio Service - Transcribe Prep] Temp file ${localAudioPath} deleted after duration error.`);
+        } catch (err) {
+            logger.warn(`[Audio Service - Transcribe Prep] Failed to delete temp audio file ${localAudioPath} after duration error:`, err);
+        }
+        return null;
+    }
+
+    const s3Url = await uploadFileToS3(localAudioPath, fileKey, 'audio/mpeg');
+    if (!s3Url) {
+        logger.error('[Audio Service - Transcribe Prep] S3 upload failed.');
+        // Not deleting local file on S3 upload failure, might be useful for manual retry or inspection
+        return null;
+    }
+
+    logger.info(`[Audio Service - Transcribe Prep] Successfully prepared audio: ${s3Url}, Duration: ${duration}s`);
+    
+    return {
+        fileUuid,
+        fileKey,
+        duration,
+        s3Url,
+        localPath: localAudioPath
+    };
 }
 
 /**
@@ -306,80 +406,35 @@ export async function downloadAndUploadAudio(m3u8Url: string, spaceName?: string
  * @returns Promise resolving with the public URL of the uploaded object, or null on failure.
  */
 export async function uploadLocalFileToS3(localFilePath: string, s3Key: string): Promise<string | null> {
-    const MAX_RETRIES = 3;
-    let attempt = 0;
-    let lastError: any = null;
-
-    logger.info(`[☁️ S3] Attempting to upload local file to S3.`);
-    logger.debug(`[☁️ S3]   Local Path: ${localFilePath}`);
-    logger.debug(`[☁️ S3]   Target Key: ${s3Key}`);
-    logger.debug(`[☁️ S3]   Target Bucket: ${config.AWS_S3_BUCKET}`);
-
     try {
-        if (!fs.existsSync(localFilePath)) {
-            logger.error(`[☁️ S3] ❌ File does not exist at local path: ${localFilePath}`);
-            return null;
-        }
-        const stats = fs.statSync(localFilePath);
-        if (stats.size <= 0) {
-            logger.error(`[☁️ S3] ❌ File exists but has zero bytes: ${localFilePath}`);
-            return null;
-        }
-        const fileSizeMB = (stats.size / (1024 * 1024)).toFixed(2);
-        logger.info(`[☁️ S3] File verified locally (${fileSizeMB} MB). Proceeding with upload attempts...`);
-
+        await fsPromises.access(localFilePath); // Check if file is accessible
     } catch (error) {
-        logger.error(`[☁️ S3] ❌ Error accessing local file ${localFilePath}:`, error);
+        logger.error(`[Audio Service] Local file not accessible for S3 upload: ${localFilePath}`, error);
         return null;
     }
+    return uploadFileToS3(localFilePath, s3Key, 'audio/mpeg');
+}
 
-    while (attempt < MAX_RETRIES) {
-        attempt++;
-        try {
-            logger.info(`[☁️ S3] Starting upload attempt ${attempt}/${MAX_RETRIES}...`);
-            const startTime = Date.now();
-            const fileStream = fs.createReadStream(localFilePath);
+/**
+ * Downloads audio from an M3U8 URL, converts to MP3, and uploads to S3 for DUBBING.
+ */
+export async function downloadAndUploadAudio(m3u8Url: string, spaceId: string): Promise<string | null> {
+    await ensureTempDirExists();
+    const filename = `${spaceId}.mp3`;
+    const localAudioPath = path.join(TEMP_AUDIO_DIR, filename);
+    const s3Key = `spaces/${filename}`;
 
-            // Dynamically determine content type based on extension (basic implementation)
-            let contentType = 'application/octet-stream'; // Default
-            const ext = path.extname(localFilePath).toLowerCase();
-            if (ext === '.mp3') contentType = 'audio/mpeg';
-            else if (ext === '.aac') contentType = 'audio/aac';
-            else if (ext === '.mp4') contentType = 'video/mp4';
-            // Add other types as needed
-            logger.debug(`[☁️ S3] Determined Content-Type: ${contentType}`);
+    const downloadSuccess = await downloadM3u8ToMp3(m3u8Url, localAudioPath);
+    if (!downloadSuccess) return null;
 
-            const uploadParams: PutObjectCommandInput = {
-                Bucket: config.AWS_S3_BUCKET,
-                Key: s3Key,
-                Body: fileStream,
-                ContentType: contentType,
-                // Consider adding ACL: 'public-read' if bucket policy doesn't automatically make it public
-                // ACL: 'public-read' 
-            };
-
-            const command = new PutObjectCommand(uploadParams);
-            await s3Client.send(command);
-
-            const region = config.AWS_REGION || await s3Client.config.region() || 'us-east-1';
-            const publicUrl = `https://${config.AWS_S3_BUCKET}.s3.${region}.amazonaws.com/${s3Key}`;
-
-            const endTime = Date.now();
-            const elapsedSeconds = ((endTime - startTime) / 1000).toFixed(1);
-            logger.info(`[☁️ S3] ✅ S3 upload successful (attempt ${attempt}, ${elapsedSeconds}s). Public URL: ${publicUrl}`);
-            return publicUrl;
-            
-        } catch (error) {
-            lastError = error;
-            logger.error(`[☁️ S3] ❌ S3 upload attempt ${attempt}/${MAX_RETRIES} failed:`, error);
-            if (attempt < MAX_RETRIES) {
-                const delayMs = Math.min(1000 * Math.pow(2, attempt) + Math.random() * 1000, 10000);
-                logger.info(`[☁️ S3] ⏳ Retrying in ${(delayMs/1000).toFixed(1)}s...`);
-                await new Promise(resolve => setTimeout(resolve, delayMs));
-            }
-        }
+    const s3Url = await uploadFileToS3(localAudioPath, s3Key, 'audio/mpeg');
+    
+    try {
+        await fsPromises.unlink(localAudioPath);
+        logger.debug(`[Audio Service] Temp file ${localAudioPath} deleted after dubbing upload.`);
+    } catch (err) {
+        logger.warn(`[Audio Service] Failed to delete temp audio file ${localAudioPath} after dubbing upload:`, err);
     }
     
-    logger.error(`[☁️ S3] ❌ All ${MAX_RETRIES} S3 upload attempts failed for key: ${s3Key}`);
-    return null; // Return null if all retries fail
+    return s3Url;
 } 
