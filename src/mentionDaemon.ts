@@ -15,14 +15,15 @@ import {
     extractSpaceTitleFromModal
 } from './services/twitterInteractionService';
 import { downloadAndUploadAudio } from './services/audioService';
-import { createDubbingProject, waitForProjectCompletion, generateSharingLink } from './services/speechlabApiService';
-import { detectLanguage, getLanguageName } from './utils/languageUtils';
+import { createDubbingProject, waitForProjectCompletion, generateSharingLink, getProjectByThirdPartyID } from './services/speechlabApiService';
+import { detectLanguage, detectLanguages, getLanguageName } from './utils/languageUtils';
 import { v4 as uuidv4 } from 'uuid';
 import { downloadFile } from './utils/fileUtils';
 import { exec } from 'child_process';
 import util from 'util';
 import { postTweetReplyWithMediaApi } from './services/twitterApiService';
 import { uploadLocalFileToS3 } from './services/audioService';
+import * as fsExtra from 'fs-extra';
 
 const execPromise = util.promisify(exec);
 
@@ -31,6 +32,10 @@ const mentionQueue: MentionInfo[] = []; // Queue for incoming mentions
 const finalReplyQueue: { mentionInfo: MentionInfo, backendResult: BackendResult }[] = []; // Queue for final replies
 let isInitiatingProcessing = false; // Flag for browser task (initiation)
 let isPostingFinalReply = false;   // Flag for browser task (final reply)
+
+// --- Added for better queue logging ---
+let processedCount = 0; // Track how many mentions processed since startup
+// --- End added section ---
 
 // --- MOVED: Global Set for Processed Mentions ---
 let processedMentions: Set<string> = new Set();
@@ -42,6 +47,8 @@ interface InitiationResult {
     spaceId: string;
     spaceTitle: string | null;
     mentionInfo: MentionInfo; // Pass original mention info
+    sourceLanguageCode: string;
+    sourceLanguageName: string;
     targetLanguageCode: string;
     targetLanguageName: string;
 }
@@ -51,15 +58,87 @@ interface BackendResult {
     sharingLink?: string;   // Link to SpeechLab project page
     publicMp3Url?: string;  // Link to the uploaded dubbed MP3 on S3
     projectId?: string;
+    thirdPartyID?: string;  // Added thirdPartyID to track in processed mentions
     error?: string;
     // Path to the FINAL generated video file
     // generatedVideoPath?: string; 
+}
+
+// New interfaces for processed mentions tracking
+interface ProcessedMentionData {
+    mentions: string[];
+    projects: Record<string, ProjectStatusInfo>;
+}
+
+interface ProjectStatusInfo {
+    thirdPartyID: string;
+    projectId?: string;
+    status: 'initiated' | 'processing' | 'complete' | 'failed';
+    createdAt: string;
+    updatedAt: string;
+    mentionIds: string[];
 }
 
 const PROCESSED_MENTIONS_PATH = path.join(process.cwd(), 'processed_mentions.json');
 const POLLING_INTERVAL_MS = 10 * 60 * 1000; // Check every 10 minutes (10 * 60 * 1000 ms)
 const SCREENSHOT_DIR = path.join(process.cwd(), 'debug-screenshots');
 const MANUAL_LOGIN_WAIT_MS = 60 * 1000; // Wait 60 seconds for manual login if needed
+
+const ERROR_LOG_PATH = path.join(process.cwd(), 'error_log.json');
+
+/**
+ * Log error for a specific mention to prevent reprocessing
+ * @param mentionId The mention ID that failed
+ * @param error The error message or object
+ * @param phase The processing phase where the error occurred
+ */
+async function logMentionError(mentionId: string, error: any, phase: 'initiation' | 'backend' | 'reply'): Promise<void> {
+    try {
+        let errorLog: Record<string, any> = {};
+        
+        // Load existing errors if file exists
+        if (await fsExtra.pathExists(ERROR_LOG_PATH)) {
+            const data = await fsExtra.readFile(ERROR_LOG_PATH, 'utf-8');
+            try {
+                errorLog = JSON.parse(data);
+            } catch (parseError) {
+                logger.error(`[❌ Error Log] Failed to parse error log JSON: ${parseError}`);
+                errorLog = {};
+            }
+        }
+        
+        // Format error message
+        let errorMessage = '';
+        if (error instanceof Error) {
+            errorMessage = `${error.name}: ${error.message}`;
+            if (error.stack) {
+                errorMessage += `\n${error.stack}`;
+            }
+        } else if (typeof error === 'string') {
+            errorMessage = error;
+        } else {
+            errorMessage = JSON.stringify(error);
+        }
+        
+        // Add or update error entry
+        errorLog[mentionId] = {
+            phase,
+            error: errorMessage,
+            timestamp: new Date().toISOString(),
+            count: (errorLog[mentionId]?.count || 0) + 1
+        };
+        
+        // Write back to file
+        await fsExtra.writeFile(ERROR_LOG_PATH, JSON.stringify(errorLog, null, 2));
+        logger.info(`[❌ Error Log] Logged error for mention ${mentionId} in phase ${phase}`);
+        
+        // Also mark the mention as processed to prevent reprocessing
+        await markMentionAsProcessed(mentionId, processedMentions);
+        logger.info(`[❌ Error Log] Marked failed mention ${mentionId} as processed to prevent requeuing`);
+    } catch (logError) {
+        logger.error(`[❌ Error Log] Failed to log error for mention ${mentionId}: ${logError}`);
+    }
+}
 
 /**
  * Logs into Twitter using provided credentials with an option for manual intervention.
@@ -405,20 +484,40 @@ async function attemptAutomatedLogin(page: Page, username: string, password: str
 }
 
 /**
- * Loads processed mention IDs from the JSON file.
+ * Loads processed mention IDs and project status info from the JSON file.
  * Creates the file if it doesn't exist.
  */
 async function loadProcessedMentions(): Promise<Set<string>> {
     try {
         await fs.access(PROCESSED_MENTIONS_PATH);
         const data = await fs.readFile(PROCESSED_MENTIONS_PATH, 'utf-8');
-        const ids: string[] = JSON.parse(data);
-        logger.info(`[😈 Daemon] Loaded ${ids.length} processed mention IDs from ${PROCESSED_MENTIONS_PATH}.`);
-        return new Set(ids);
+        let mentionData: ProcessedMentionData;
+        
+        try {
+            mentionData = JSON.parse(data);
+            // Check if data has the new structure, if not convert it
+            if (!mentionData.mentions && Array.isArray(mentionData)) {
+                logger.info(`[😈 Daemon] Converting old processed_mentions.json format to new structure.`);
+                mentionData = {
+                    mentions: mentionData as any, // Convert the array directly to mentions
+                    projects: {}
+                };
+                // Save the converted structure
+                await fs.writeFile(PROCESSED_MENTIONS_PATH, JSON.stringify(mentionData, null, 2));
+            }
+        } catch (parseError) {
+            logger.error(`[😈 Daemon] Error parsing ${PROCESSED_MENTIONS_PATH}, creating new structure:`, parseError);
+            mentionData = { mentions: [], projects: {} };
+            await fs.writeFile(PROCESSED_MENTIONS_PATH, JSON.stringify(mentionData, null, 2));
+        }
+        
+        logger.info(`[😈 Daemon] Loaded ${mentionData.mentions.length} processed mention IDs and ${Object.keys(mentionData.projects).length} project statuses from ${PROCESSED_MENTIONS_PATH}.`);
+        return new Set(mentionData.mentions);
     } catch (error: any) {
         if (error.code === 'ENOENT') {
-            logger.info(`[😈 Daemon] ${PROCESSED_MENTIONS_PATH} not found. Creating a new one.`);
-            await fs.writeFile(PROCESSED_MENTIONS_PATH, JSON.stringify([]));
+            logger.info(`[😈 Daemon] ${PROCESSED_MENTIONS_PATH} not found. Creating a new one with updated structure.`);
+            const newData: ProcessedMentionData = { mentions: [], projects: {} };
+            await fs.writeFile(PROCESSED_MENTIONS_PATH, JSON.stringify(newData, null, 2));
             return new Set<string>();
         } else {
             logger.error('[😈 Daemon] Error loading processed mentions:', error);
@@ -434,18 +533,144 @@ async function markMentionAsProcessed(mentionId: string, processedMentions: Set<
     if (processedMentions.has(mentionId)) {
         logger.debug(`[😈 Daemon] Mention ${mentionId} is already in the processed set.`);
         return;
-     }
+    }
 
     processedMentions.add(mentionId);
     try {
-        const idsArray = Array.from(processedMentions);
-        await fs.writeFile(PROCESSED_MENTIONS_PATH, JSON.stringify(idsArray, null, 2));
+        // Load the current data first
+        await fs.access(PROCESSED_MENTIONS_PATH);
+        const data = await fs.readFile(PROCESSED_MENTIONS_PATH, 'utf-8');
+        let mentionData: ProcessedMentionData;
+        
+        try {
+            mentionData = JSON.parse(data);
+            // Ensure proper structure
+            if (!mentionData.mentions) {
+                mentionData = { mentions: [], projects: {} };
+            }
+        } catch (parseError) {
+            mentionData = { mentions: [], projects: {} };
+        }
+        
+        // Add the new mention ID to the array if not already there
+        if (!mentionData.mentions.includes(mentionId)) {
+            mentionData.mentions.push(mentionId);
+        }
+        
+        await fs.writeFile(PROCESSED_MENTIONS_PATH, JSON.stringify(mentionData, null, 2));
         logger.debug(`[😈 Daemon] Marked mention ${mentionId} as processed and saved to file.`);
     } catch (error) {
         logger.error(`[😈 Daemon] Error saving processed mention ${mentionId} to ${PROCESSED_MENTIONS_PATH}:`, error);
         // Remove from the set in memory if save fails to allow retry on next poll
         processedMentions.delete(mentionId);
         logger.warn(`[😈 Daemon] Removed ${mentionId} from in-memory set due to save failure.`);
+    }
+}
+
+/**
+ * Updates project status information in the processed mentions file.
+ * @param thirdPartyID The unique third-party ID used to identify the project
+ * @param projectId The SpeechLab project ID (optional)
+ * @param status The current status of the project
+ * @param mentionId The mention ID associated with this project
+ */
+async function updateProjectStatus(
+    thirdPartyID: string, 
+    status: 'initiated' | 'processing' | 'complete' | 'failed',
+    mentionId: string,
+    projectId?: string
+): Promise<void> {
+    logger.info(`[😈 Daemon] Updating project status: thirdPartyID=${thirdPartyID}, projectId=${projectId || 'N/A'}, status=${status}, mentionId=${mentionId}`);
+    
+    try {
+        // Load current data
+        await fs.access(PROCESSED_MENTIONS_PATH);
+        const data = await fs.readFile(PROCESSED_MENTIONS_PATH, 'utf-8');
+        let mentionData: ProcessedMentionData;
+        
+        try {
+            mentionData = JSON.parse(data);
+            // Ensure proper structure
+            if (!mentionData.projects) {
+                mentionData.projects = {};
+            }
+            if (!mentionData.mentions) {
+                mentionData.mentions = [];
+            }
+        } catch (parseError) {
+            mentionData = { mentions: [], projects: {} };
+        }
+        
+        const now = new Date().toISOString();
+        
+        // Update or create project status entry
+        if (mentionData.projects[thirdPartyID]) {
+            // Update existing project
+            const project = mentionData.projects[thirdPartyID];
+            // Log previous status if it's changing
+            if (project.status !== status) {
+                logger.info(`[😈 Daemon] Project ${thirdPartyID} status changing: ${project.status} → ${status}`);
+            }
+            project.status = status;
+            project.updatedAt = now;
+            
+            // Add projectId if provided and not already set
+            if (projectId && !project.projectId) {
+                logger.info(`[😈 Daemon] Adding SpeechLab projectId ${projectId} to project ${thirdPartyID}`);
+                project.projectId = projectId;
+            }
+            
+            // Add mentionId if not already in the list
+            if (!project.mentionIds.includes(mentionId)) {
+                logger.info(`[😈 Daemon] Adding mention ${mentionId} to project ${thirdPartyID}`);
+                project.mentionIds.push(mentionId);
+            }
+        } else {
+            // Create new project entry
+            logger.info(`[😈 Daemon] Creating new project tracking entry: thirdPartyID=${thirdPartyID}, status=${status}`);
+            mentionData.projects[thirdPartyID] = {
+                thirdPartyID,
+                projectId,
+                status,
+                createdAt: now,
+                updatedAt: now,
+                mentionIds: [mentionId]
+            };
+        }
+        
+        await fs.writeFile(PROCESSED_MENTIONS_PATH, JSON.stringify(mentionData, null, 2));
+        logger.info(`[😈 Daemon] Successfully updated project status for ${thirdPartyID} to ${status}.`);
+    } catch (error) {
+        logger.error(`[😈 Daemon] Error updating project status for ${thirdPartyID}:`, error);
+    }
+}
+
+/**
+ * Checks if a project with the given thirdPartyID exists and retrieves its status.
+ * @param thirdPartyID The unique third-party ID 
+ * @returns The project status info or null if not found
+ */
+async function getProjectStatus(thirdPartyID: string): Promise<ProjectStatusInfo | null> {
+    try {
+        await fs.access(PROCESSED_MENTIONS_PATH);
+        const data = await fs.readFile(PROCESSED_MENTIONS_PATH, 'utf-8');
+        let mentionData: ProcessedMentionData;
+        
+        try {
+            mentionData = JSON.parse(data);
+            
+            // Check if project exists
+            if (mentionData.projects && mentionData.projects[thirdPartyID]) {
+                return mentionData.projects[thirdPartyID];
+            }
+        } catch (parseError) {
+            logger.error(`[😈 Daemon] Error parsing processed mentions file while checking project status:`, parseError);
+        }
+        
+        return null;
+    } catch (error) {
+        logger.error(`[😈 Daemon] Error checking project status for ${thirdPartyID}:`, error);
+        return null;
     }
 }
 
@@ -518,10 +743,9 @@ async function initiateProcessing(mentionInfo: MentionInfo, page: Page): Promise
     // Rename variable to reflect it might be article OR button
     let playElementLocator: Locator | null = null;
 
-    // Detect target language early
-    const targetLanguageCode = detectLanguage(mentionInfo.text);
-    const targetLanguageName = getLanguageName(targetLanguageCode);
-    logger.info(`[🚀 Initiate] Target language: ${targetLanguageName} (${targetLanguageCode})`);
+    // Detect source and target languages
+    const { sourceLanguageCode, sourceLanguageName, targetLanguageCode, targetLanguageName } = detectLanguages(mentionInfo.text);
+    logger.info(`[🚀 Initiate] Detected languages: Source: ${sourceLanguageName} (${sourceLanguageCode}), Target: ${targetLanguageName} (${targetLanguageCode})`);
 
     // 1. Navigate & Find Article
     try {
@@ -692,7 +916,7 @@ async function initiateProcessing(mentionInfo: MentionInfo, page: Page): Promise
     // 6. Post preliminary acknowledgement reply
     try {
         logger.info(`[🚀 Initiate] Posting preliminary acknowledgement reply...`);
-        const ackMessage = `${mentionInfo.username} Received! I've started processing this Space into ${targetLanguageName}. Please check back here in ~10-15 minutes for the translated link.`;
+        const ackMessage = `${mentionInfo.username} Received! I've started processing this Space from ${sourceLanguageName} to ${targetLanguageName}. Please check back here in ~10-15 minutes for the translated link.`;
         // --- ADDED: Log acknowledgement reply before sending ---
         logger.info(`[🚀 Initiate] Full Ack Reply Text: ${ackMessage}`);
         // --- END ADDED SECTION ---
@@ -710,6 +934,8 @@ async function initiateProcessing(mentionInfo: MentionInfo, page: Page): Promise
         spaceId,
         spaceTitle,
         mentionInfo, // Include original mention info
+        sourceLanguageCode,
+        sourceLanguageName,
         targetLanguageCode,
         targetLanguageName,
     };
@@ -721,22 +947,28 @@ async function initiateProcessing(mentionInfo: MentionInfo, page: Page): Promise
  * Does NOT interact with the browser page.
  */
 async function performBackendProcessing(initData: InitiationResult): Promise<BackendResult> {
-    const { m3u8Url, spaceId, spaceTitle, targetLanguageCode, mentionInfo } = initData;
+    const { m3u8Url, spaceId, spaceTitle, sourceLanguageCode, targetLanguageCode, mentionInfo } = initData;
     const TEMP_AUDIO_DIR = path.join(process.cwd(), 'temp_audio'); 
     // Remove video dir if not generating video
     // const TEMP_VIDEO_DIR = path.join(process.cwd(), 'temp_video'); 
     // const PLACEHOLDER_IMAGE_PATH = path.join(process.cwd(), 'placeholder.jpg');
 
-    logger.info(`[⚙️ Backend] Starting backend processing for Space ID: ${spaceId}, Lang: ${targetLanguageCode}`);
+    logger.info(`[⚙️ Backend] Starting backend processing for Space ID: ${spaceId}, Source Lang: ${sourceLanguageCode}, Target Lang: ${targetLanguageCode}`);
 
     let downloadedAudioPath: string | undefined = undefined;
     // let generatedVideoPath: string | undefined = undefined;
     let publicMp3Url: string | undefined = undefined;
+    let projectId: string | null = null; // Initialize projectId
+    
+    // Initialize thirdPartyID at the top level
+    const projectName = spaceTitle || `Twitter Space ${spaceId}`; 
+    const sanitizedProjectName = projectName.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
+    const thirdPartyID = `${sanitizedProjectName}-${sourceLanguageCode}-to-${targetLanguageCode}`;
 
     try {
         await fs.mkdir(TEMP_AUDIO_DIR, { recursive: true });
         // await fs.mkdir(TEMP_VIDEO_DIR, { recursive: true }); // No video dir needed now
-
+        
         // 1. Download original Space audio and upload to S3 (for project creation)
         logger.info(`[⚙️ Backend] Downloading/uploading original Space audio for ${spaceId}...`);
         const audioUploadResult = await downloadAndUploadAudio(m3u8Url, spaceId);
@@ -744,31 +976,129 @@ async function performBackendProcessing(initData: InitiationResult): Promise<Bac
             throw new Error('Failed to download/upload original Space audio');
         }
         logger.info(`[⚙️ Backend] Original audio uploaded to S3: ${audioUploadResult}`);
-
-        // 2. Create SpeechLab project
-        const projectName = spaceTitle || `Twitter Space ${spaceId}`; 
-        const sanitizedProjectName = projectName.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
-        const thirdPartyID = `${sanitizedProjectName}-${targetLanguageCode}`;
-        logger.info(`[⚙️ Backend] Creating SpeechLab project: Name="${projectName}", Lang=${targetLanguageCode}, 3rdPartyID=${thirdPartyID}`);
-        const projectId = await createDubbingProject(
-            audioUploadResult, 
-            projectName, 
-            targetLanguageCode, 
-            thirdPartyID
-        );
-        if (!projectId) {
-            throw new Error('Failed to create SpeechLab project');
+        
+        // First check our local status tracking
+        logger.info(`[⚙️ Backend] Checking local project status for thirdPartyID: ${thirdPartyID}...`);
+        const existingProjectStatus = await getProjectStatus(thirdPartyID);
+        
+        if (existingProjectStatus) {
+            logger.info(`[⚙️ Backend] ✅ Found existing project tracking: ${JSON.stringify(existingProjectStatus)}`);
+            
+            // Check the status to decide what to do
+            if (existingProjectStatus.status === 'complete') {
+                logger.info(`[⚙️ Backend] Project already completed successfully, no need to process again.`);
+                projectId = existingProjectStatus.projectId || null;
+                
+                // Return success immediately, client can use the existing project data
+                if (projectId) {
+                    const sharingLink = await generateSharingLink(projectId);
+                    return { 
+                        success: true, 
+                        sharingLink: sharingLink || undefined,
+                        projectId: projectId,
+                        thirdPartyID: thirdPartyID
+                    };
+                }
+            } else if (existingProjectStatus.status === 'failed') {
+                logger.info(`[⚙️ Backend] Previous project attempt failed. Will retry processing.`);
+                // Continue with processing to retry
+            } else {
+                logger.info(`[⚙️ Backend] Project is already being processed (status: ${existingProjectStatus.status}).`);
+                projectId = existingProjectStatus.projectId || null;
+                
+                // Update the existing project tracking to add this mention ID
+                await updateProjectStatus(thirdPartyID, existingProjectStatus.status, mentionInfo.tweetId, projectId || undefined);
+                
+                // We'll continue with checking SpeechLab API to get the latest status
+            }
         }
-        logger.info(`[⚙️ Backend] SpeechLab project created: ${projectId} (using thirdPartyID: ${thirdPartyID})`);
+        
+        // Check with SpeechLab API regardless
+        logger.info(`[⚙️ Backend] Checking for existing SpeechLab project with thirdPartyID: ${thirdPartyID}...`);
+        const existingProject = await getProjectByThirdPartyID(thirdPartyID);
 
-        // 3. Wait for project completion (with increased timeout)
-        logger.info(`[⚙️ Backend] Waiting up to 3 hours for SpeechLab project completion (thirdPartyID: ${thirdPartyID})...`);
-        const maxWaitTimeMs = 3 * 60 * 60 * 1000; // 3 hours in milliseconds
+        if (existingProject) {
+            logger.info(`[⚙️ Backend] ✅ Found existing project with ID: ${existingProject.id} (Status: ${existingProject.job?.status || 'UNKNOWN'}). Reusing this project.`);
+            projectId = existingProject.id;
+            
+            // Update our local tracking with the actual project status
+            const apiStatus = existingProject.job?.status || 'UNKNOWN';
+            let localStatus: 'initiated' | 'processing' | 'complete' | 'failed';
+            
+            switch (apiStatus) {
+                case 'COMPLETE':
+                    localStatus = 'complete';
+                    break;
+                case 'FAILED':
+                    localStatus = 'failed';
+                    break;
+                case 'PROCESSING':
+                case 'QUEUED':
+                    localStatus = 'processing';
+                    break;
+                default:
+                    localStatus = 'initiated';
+            }
+            
+            await updateProjectStatus(thirdPartyID, localStatus, mentionInfo.tweetId, projectId);
+            
+            // If project is already complete, we can skip waiting
+            if (apiStatus === 'COMPLETE') {
+                logger.info(`[⚙️ Backend] Project is already complete according to SpeechLab API.`);
+                // Skip to sharing link generation
+            } else if (apiStatus === 'FAILED') {
+                // If project has failed, throw an error
+                throw new Error(`SpeechLab project ${thirdPartyID} failed to process according to API`);
+            } else {
+                // For any other status, continue with waiting for completion
+                logger.info(`[⚙️ Backend] Project is still processing. Will wait for completion.`);
+            }
+        } else {
+            logger.info(`[⚙️ Backend] No existing project found. Creating a new SpeechLab project...`);
+            // Mark as initiated in our tracking system
+            await updateProjectStatus(thirdPartyID, 'initiated', mentionInfo.tweetId);
+            
+            logger.info(`[⚙️ Backend] Creating SpeechLab project: Name="${projectName}", Source=${sourceLanguageCode}, Target=${targetLanguageCode}, 3rdPartyID=${thirdPartyID}`);
+            projectId = await createDubbingProject(
+                audioUploadResult, 
+                projectName, 
+                targetLanguageCode, 
+                thirdPartyID,
+                sourceLanguageCode // Added source language code parameter
+            );
+            if (!projectId) {
+                // Update status to failed
+                await updateProjectStatus(thirdPartyID, 'failed', mentionInfo.tweetId);
+                throw new Error('Failed to create SpeechLab project after check');
+            }
+            logger.info(`[⚙️ Backend] New SpeechLab project created: ${projectId} (using thirdPartyID: ${thirdPartyID})`);
+            
+            // Update our tracking with the new project ID and status
+            await updateProjectStatus(thirdPartyID, 'processing', mentionInfo.tweetId, projectId);
+        }
+        // --- END MODIFIED SECTION ---
+
+        // Ensure we have a project ID before proceeding
+        if (!projectId) {
+            // Update status to failed
+            await updateProjectStatus(thirdPartyID, 'failed', mentionInfo.tweetId);
+            throw new Error('Could not determine SpeechLab project ID (existing or new).');
+        }
+
+        // 3. Wait for project completion (using the determined projectId and thirdPartyID)
+        logger.info(`[⚙️ Backend] Waiting up to 6 hours for SpeechLab project completion (thirdPartyID: ${thirdPartyID})...`);
+        const maxWaitTimeMs = 6 * 60 * 60 * 1000; // 6 hours in milliseconds
+        // Pass thirdPartyID to wait function, as it uses that for polling
         const completedProject = await waitForProjectCompletion(thirdPartyID, maxWaitTimeMs); 
         if (!completedProject || completedProject.job?.status !== 'COMPLETE') {
             const finalStatus = completedProject?.job?.status || 'TIMEOUT';
+            // Update our tracking with failed status
+            await updateProjectStatus(thirdPartyID, 'failed', mentionInfo.tweetId, projectId);
             throw new Error(`SpeechLab project ${thirdPartyID} did not complete successfully (Status: ${finalStatus})`);
         }
+        
+        // Update our tracking with completed status
+        await updateProjectStatus(thirdPartyID, 'complete', mentionInfo.tweetId, projectId);
         logger.info(`[⚙️ Backend] SpeechLab project ${thirdPartyID} completed successfully.`);
 
         // 4. Find and Download DUBBED MP3 Audio
@@ -821,7 +1151,8 @@ async function performBackendProcessing(initData: InitiationResult): Promise<Bac
             success: true, 
             sharingLink: sharingLink || undefined, 
             publicMp3Url: publicMp3Url, // Will be undefined if download or S3 upload failed
-            projectId 
+            projectId: projectId,
+            thirdPartyID: thirdPartyID
         };
 
     } catch (error: any) {
@@ -831,7 +1162,11 @@ async function performBackendProcessing(initData: InitiationResult): Promise<Bac
              logger.info(`[⚙️ Backend] Cleaning up temporary audio file due to error: ${downloadedAudioPath}`);
              await fs.unlink(downloadedAudioPath).catch(()=>{}); // Best effort cleanup
         }
-        return { success: false, error: error.message || 'Unknown backend error' };
+        return { 
+            success: false, 
+            error: error.message || 'Unknown backend error', 
+            thirdPartyID: thirdPartyID 
+        };
     }
 }
 
@@ -860,7 +1195,12 @@ async function runInitiationQueue(page: Page): Promise<void> {
     }
 
     isInitiatingProcessing = true;
-    logger.info(`[🚀 Initiate Queue] Starting worker. Queue size: ${mentionQueue.length}`);
+    
+    // --- Enhanced Queue Logging ---
+    const queuePreview = mentionQueue.slice(0, 5).map(m => `${m.tweetId} (${m.username})`).join(', ');
+    const remainingCount = Math.max(0, mentionQueue.length - 5);
+    logger.info(`[🚀 Initiate Queue] Starting worker. Queue size: ${mentionQueue.length}. Next 5 mentions: [${queuePreview}]${remainingCount > 0 ? ` and ${remainingCount} more...` : ''}`);
+    // --- End Enhanced Logging ---
 
     const mentionToProcess = mentionQueue.shift(); 
     if (!mentionToProcess) {
@@ -869,7 +1209,8 @@ async function runInitiationQueue(page: Page): Promise<void> {
         return; // Should not happen, but safety check
     }
 
-    logger.info(`[🚀 Initiate Queue] Processing mention ${mentionToProcess.tweetId}. Remaining: ${mentionQueue.length}`);
+    processedCount++; // Increment processed count for stats
+    logger.info(`[🚀 Initiate Queue] Processing mention ${mentionToProcess.tweetId} (${mentionToProcess.username}). Remaining: ${mentionQueue.length}. This is mention #${processedCount} processed since startup.`);
     
     try {
         // Perform browser initiation steps
@@ -887,15 +1228,20 @@ async function runInitiationQueue(page: Page): Promise<void> {
                 logger.error(`[💥 Backend ERROR] Uncaught error in background processing for ${mentionToProcess.tweetId}:`, backendError);
                 // Add a failure result to the reply queue so we can notify the user
                 addToFinalReplyQueue(mentionToProcess, { success: false, error: 'Backend processing failed unexpectedly' });
+                
+                // Also log error and mark as processed to prevent requeuing
+                logMentionError(mentionToProcess.tweetId, backendError, 'backend');
             });
             
     } catch (initError) {
         // Errors during initiateProcessing (including posting error replies) are logged within the function
         logger.error(`[🚀 Initiate Queue] Initiation phase failed explicitly for ${mentionToProcess.tweetId}. Error should already be logged.`);
-        // Do not re-queue or add to reply queue if initiation failed, as an error reply was likely attempted.
+        
+        // Log error and mark as processed to prevent requeuing
+        logMentionError(mentionToProcess.tweetId, initError, 'initiation');
     }
 
-    logger.info(`[🚀 Initiate Queue] Finished browser initiation work for ${mentionToProcess.tweetId}.`);
+    logger.info(`[🚀 Initiate Queue] Finished browser initiation work for ${mentionToProcess.tweetId}. Queue status: ${mentionQueue.length} remaining.`);
     isInitiatingProcessing = false; // Free up the flag for the next check
 }
 
@@ -933,36 +1279,44 @@ async function runFinalReplyQueue(page: Page): Promise<void> {
 
     // Construct the final message based on success and link availability
     if (backendResult.success) {
-        const languageName = getLanguageName(detectLanguage(mentionInfo.text)); 
+        const { sourceLanguageName, targetLanguageName } = detectLanguages(mentionInfo.text);
         const hasSharingLink = !!backendResult.sharingLink;
         const hasMp3Link = !!backendResult.publicMp3Url;
         
-        // --- Determine Reply Strategy (Single Message) ---
-        let linkParts = [];
+        // --- MODIFIED: Check for MP3 Link presence FIRST for success message ---
         if (hasMp3Link) {
-             // MP3 Link comes first
-            linkParts.push(`MP3: ${backendResult.publicMp3Url}`);
-        }
-        if (hasSharingLink) {
-             // Sharing Link comes second
-            linkParts.push(`Link: ${backendResult.sharingLink}`);
-        }
-        
-        if (linkParts.length > 0) {
-            // Construct success message with links in the desired order
-            finalMessage = `${mentionInfo.username} Your ${languageName} dub is ready! 🎉 ${linkParts.join(' | ')}`;
+            // MP3 is available - construct the success message
+            let linkParts = [];
+            // MP3 Link comes first
+            linkParts.push(`CLICK HERE FOR MP3: ${backendResult.publicMp3Url}`);
+            if (hasSharingLink) {
+                 // Sharing Link comes second if available
+                linkParts.push(`Link: ${backendResult.sharingLink}`);
+            }
+            // Construct success message with links in the desired order - ensure both usernames have @ symbols
+            finalMessage = `@RyanAtSpeechlab ${mentionInfo.username} Your ${sourceLanguageName} to ${targetLanguageName} dub is ready! $shaft 🎉 ${linkParts.join(' | ')}`;
+            
         } else {
-            // Strategy: No links available (edge case)
-             logger.warn(`[↩️ Reply Queue] Posting success reply for ${mentionInfo.tweetId} without any links.`);
-             finalMessage = `${mentionInfo.username} Your ${languageName} dub processing finished, but link generation failed. 🤔 Please check the SpeechLab project directly (ID: ${backendResult.projectId || 'unknown'}).`;
+            // MP3 is MISSING, even though backendResult.success is true. Treat as partial failure for reply.
+            logger.warn(`[↩️ Reply Queue] Backend succeeded for ${mentionInfo.tweetId} but MP3 link is missing. Posting alternative message.`);
+            let partialFailureMessage = `${mentionInfo.username} Processing finished for the ${sourceLanguageName} to ${targetLanguageName} dub, but I couldn't prepare the MP3 audio file. 😥`;
+            if (hasSharingLink) {
+                partialFailureMessage += ` You might find project details here: ${backendResult.sharingLink}`;
+            }
+            if (backendResult.projectId) {
+                 partialFailureMessage += ` (Project ID: ${backendResult.projectId})`;
+            }
+             finalMessage = partialFailureMessage;
+             // Keep mediaPathToAttach as undefined in this case too
+             mediaPathToAttach = undefined;
         }
-        
-        // Removed video check placeholder
+        // --- END MODIFIED SECTION ---
 
     } else {
-        // Construct error message for the single reply
+        // Construct error message for the single reply (original logic)
+        const { sourceLanguageName, targetLanguageName } = detectLanguages(mentionInfo.text);
         const errorReason = backendResult.error || 'processing failed';
-         finalMessage = `${mentionInfo.username} Oops! 😥 Couldn't complete the ${getLanguageName(detectLanguage(mentionInfo.text))} dub for this Space (${errorReason}). Maybe try again later?`;
+         finalMessage = `${mentionInfo.username} Oops! 😥 Couldn't complete the ${sourceLanguageName} to ${targetLanguageName} dub for this Space (${errorReason}). Maybe try again later?`;
          mediaPathToAttach = undefined; // Ensure no media attached on failure
     }
     
@@ -995,31 +1349,58 @@ async function runFinalReplyQueue(page: Page): Promise<void> {
             logger.info(`[↩️ Reply Queue] Successfully posted final reply via ${postMethod} for ${mentionInfo.tweetId}.`);
             
             // --- Mark Processed After Successful Reply --- 
-             if (backendResult.success) { // Only mark processed if the backend succeeded
+            if (backendResult.success) { // Only mark processed if the backend succeeded
                 logger.info(`[↩️ Reply Queue] Marking mention ${mentionInfo.tweetId} as processed now.`);
                 try {
                     await markMentionAsProcessed(mentionInfo.tweetId, processedMentions); 
+                    
+                    // If we have a thirdPartyID, update the project status to 'complete'
+                    if (backendResult.thirdPartyID) {
+                        logger.info(`[↩️ Reply Queue] Updating project status for ${backendResult.thirdPartyID} to 'complete'.`);
+                        await updateProjectStatus(
+                            backendResult.thirdPartyID, 
+                            'complete', 
+                            mentionInfo.tweetId, 
+                            backendResult.projectId
+                        );
+                    }
                 } catch (markError) {
                     // Log critical error but continue if possible
                     logger.error(`[↩️ Reply Queue] CRITICAL: Failed to mark mention ${mentionInfo.tweetId} as processed after successful reply:`, markError);
                 }
              } else {
-                 logger.info(`[↩️ Reply Queue] Backend failed, not marking mention ${mentionInfo.tweetId} as processed.`);
+                 logger.info(`[↩️ Reply Queue] Backend failed, marking mention ${mentionInfo.tweetId} as processed to prevent requeuing.`);
+                 // Always mark as processed even if backend failed
+                 await markMentionAsProcessed(mentionInfo.tweetId, processedMentions);
+                 
+                 // If we have a thirdPartyID, update the project status to 'failed'
+                 if (backendResult.thirdPartyID) {
+                     logger.info(`[↩️ Reply Queue] Updating project status for ${backendResult.thirdPartyID} to 'failed'.`);
+                     await updateProjectStatus(
+                         backendResult.thirdPartyID, 
+                         'failed', 
+                         mentionInfo.tweetId, 
+                         backendResult.projectId
+                     );
+                 }
+                 
+                 // Log to error log file
+                 logMentionError(mentionInfo.tweetId, backendResult.error || 'Unknown backend error', 'backend');
              }
 
             // --- Clean up DOWNLOADED MP3 --- 
             if (backendResult.success && backendResult.publicMp3Url) { // Only cleanup if backend succeeded AND MP3 link existed (meaning download likely happened)
-                 // Extract thirdPartyID for potential audio file cleanup
-                 const targetLanguageCode = detectLanguage(mentionInfo.text);
-                 // !! This title reconstruction for cleanup is FRAGILE !!
-                 // It assumes the title used during backend processing was 'temp' if original was missing.
-                 // A better approach would be to pass the actual used thirdPartyID back in BackendResult.
-                 const spaceTitle = 'temp'; 
-                 const sanitizedProjectName = spaceTitle.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
-                 const thirdPartyID = `${sanitizedProjectName}-${targetLanguageCode}`;
-                 const TEMP_AUDIO_DIR = path.join(process.cwd(), 'temp_audio');
-                 const assumedAudioFilename = `${thirdPartyID}_dubbed.mp3`;
-                 const assumedDownloadedAudioPath = path.join(TEMP_AUDIO_DIR, assumedAudioFilename);
+                // Extract language codes for potential audio file cleanup
+                const { sourceLanguageCode, targetLanguageCode } = detectLanguages(mentionInfo.text);
+                // !! This title reconstruction for cleanup is FRAGILE !!
+                // It assumes the title used during backend processing was 'temp' if original was missing.
+                // A better approach would be to pass the actual used thirdPartyID back in BackendResult.
+                const spaceTitle = 'temp'; 
+                const sanitizedProjectName = spaceTitle.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
+                const thirdPartyID = `${sanitizedProjectName}-${sourceLanguageCode}-to-${targetLanguageCode}`;
+                const TEMP_AUDIO_DIR = path.join(process.cwd(), 'temp_audio');
+                const assumedAudioFilename = `${thirdPartyID}_dubbed.mp3`;
+                const assumedDownloadedAudioPath = path.join(TEMP_AUDIO_DIR, assumedAudioFilename);
 
                 logger.info(`[↩️ Reply Queue] Attempting cleanup of temporary audio file: ${assumedDownloadedAudioPath}`);
                 try {
@@ -1032,13 +1413,52 @@ async function runFinalReplyQueue(page: Page): Promise<void> {
             }
             // -----------------------------
         } else {
-             logger.warn(`[↩️ Reply Queue] Failed to post final reply via ${postMethod} for ${mentionInfo.tweetId}. Mention not marked processed.`);
+            logger.warn(`[↩️ Reply Queue] Failed to post final reply via ${postMethod} for ${mentionInfo.tweetId}. Marking as processed anyway to prevent requeuing.`);
+            // Mark as processed even if reply failed
+            await markMentionAsProcessed(mentionInfo.tweetId, processedMentions);
+            // Log to error log file
+            logMentionError(mentionInfo.tweetId, 'Failed to post reply', 'reply');
         }
     } catch (replyError) {
         logger.error(`[↩️ Reply Queue] CRITICAL: Error posting final ${postMethod} reply for ${mentionInfo.tweetId}:`, replyError);
+        // Mark as processed even if reply throws error
+        await markMentionAsProcessed(mentionInfo.tweetId, processedMentions);
+        // Log to error log file
+        logMentionError(mentionInfo.tweetId, replyError, 'reply');
     } finally {
         logger.info(`[↩️ Reply Queue] Finished ${postMethod} reply work for ${mentionInfo.tweetId}.`);
         isPostingFinalReply = false; 
+    }
+}
+
+/**
+ * Logs a comprehensive summary of current queue status
+ */
+function logQueueStatus() {
+    try {
+        // Get info about what's currently processing
+        const currentStatus = isInitiatingProcessing ? "BUSY - Processing a mention" : 
+                             isPostingFinalReply ? "BUSY - Posting a final reply" : 
+                             "IDLE - Ready for next task";
+        
+        // Count processed mentions since startup
+        const processedSoFar = processedCount;
+        
+        // Get queue previews
+        const initQueuePreview = mentionQueue.length > 0 
+            ? mentionQueue.slice(0, 3).map(m => `${m.tweetId} (${m.username})`).join(', ')
+            : "empty";
+            
+        const replyQueuePreview = finalReplyQueue.length > 0
+            ? finalReplyQueue.slice(0, 3).map(r => `${r.mentionInfo.tweetId} (${r.mentionInfo.username})`).join(', ')
+            : "empty";
+        
+        // Log comprehensive status
+        logger.info(`[📊 Queue Status] Browser: ${currentStatus} | Processed: ${processedSoFar} mentions`);
+        logger.info(`[📊 Queue Status] Init Queue (${mentionQueue.length}): ${initQueuePreview}${mentionQueue.length > 3 ? ` + ${mentionQueue.length - 3} more` : ''}`);
+        logger.info(`[📊 Queue Status] Reply Queue (${finalReplyQueue.length}): ${replyQueuePreview}${finalReplyQueue.length > 3 ? ` + ${finalReplyQueue.length - 3} more` : ''}`);
+    } catch (error) {
+        logger.error(`[📊 Queue Status] Error generating queue status: ${error}`);
     }
 }
 
@@ -1082,6 +1502,7 @@ async function main() {
     let page: Page | null = null;
     let mainLoopIntervalId: NodeJS.Timeout | null = null; // Keep track of main polling interval
     let browserTaskIntervalId: NodeJS.Timeout | null = null; // Keep track of browser task interval
+    let projectLogIntervalId: NodeJS.Timeout | null = null; // Keep track of project logging interval
 
     // Graceful shutdown handler
     const shutdown = async (signal: string) => {
@@ -1090,6 +1511,8 @@ async function main() {
         mainLoopIntervalId = null; // Prevent further polling calls
         if (browserTaskIntervalId) clearInterval(browserTaskIntervalId);
         browserTaskIntervalId = null; // Prevent further browser task calls
+        if (projectLogIntervalId) clearInterval(projectLogIntervalId);
+        projectLogIntervalId = null; // Prevent further project logging
 
         try {
             if (page && !page.isClosed()) {
@@ -1120,6 +1543,18 @@ async function main() {
 
     try {
         processedMentions = await loadProcessedMentions();
+        
+        // Log active projects at startup
+        logger.info('[😈 Daemon] Logging active projects at startup:');
+        await logActiveProjects();
+        
+        // Set up periodic project logging (every 30 minutes)
+        const PROJECT_LOG_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
+        logger.info(`[😈 Daemon] Setting up periodic project logging (every ${PROJECT_LOG_INTERVAL_MS/60000} minutes)`);
+        projectLogIntervalId = setInterval(async () => {
+            logger.info('[😈 Daemon] Periodic active project log:');
+            await logActiveProjects();
+        }, PROJECT_LOG_INTERVAL_MS);
 
         logger.info('[😈 Daemon] Initializing browser and logging into Twitter...');
         const browserInfo = await initializeDaemonBrowser(); // Use the imported function
@@ -1190,16 +1625,17 @@ async function main() {
 
         logger.info('[😈 Daemon] Twitter login confirmed via cookies. Ready to monitor mentions.');
 
-        // --- Main Polling Loop --- 
-        logger.info(`[😈 Daemon] Starting mention polling loop (Interval: ${POLLING_INTERVAL_MS / 1000}s)`);
+        const skipInitialMentions = process.env.SKIP_INITIAL_MENTIONS === 'true'; // Check environment variable
+
+        // --- Main Polling Loop Setup ---
         const pollMentions = async () => {
-             if (!page || page.isClosed()) { 
-                 logger.error('[😈 Daemon Polling] Page closed. Stopping polling loop.');
-                 if (mainLoopIntervalId) clearInterval(mainLoopIntervalId);
-                 mainLoopIntervalId = null;
-                 if (browserTaskIntervalId) clearInterval(browserTaskIntervalId);
-                 browserTaskIntervalId = null;
-                 await shutdown('Polling Page Closed');
+            if (!page || page.isClosed()) { 
+                logger.error('[😈 Daemon Polling] Page closed. Stopping polling loop.');
+                if (mainLoopIntervalId) clearInterval(mainLoopIntervalId);
+                mainLoopIntervalId = null;
+                if (browserTaskIntervalId) clearInterval(browserTaskIntervalId);
+                browserTaskIntervalId = null;
+                await shutdown('Polling Page Closed');
                 return; 
             }
             logger.info('[😈 Daemon Polling] Polling for new mentions...');
@@ -1207,50 +1643,158 @@ async function main() {
                 const mentions = await scrapeMentions(page);
                 logger.info(`[😈 Daemon Polling] Scraped ${mentions.length} mentions.`);
                 let newMentionsFound = 0;
-                for (const mention of mentions) {
-                    if (!processedMentions.has(mention.tweetId)) {
-                        newMentionsFound++;
-                        logger.info(`[🔔 Mention] Found new mention: ID=${mention.tweetId}, User=${mention.username}`);
-                             mentionQueue.push(mention);
-                             // await markMentionAsProcessed(mention.tweetId, processedMentions); // REMOVED: Moved to runFinalReplyQueue on success
-                        logger.info(`[⚙️ Queue] Mention ${mention.tweetId} added to initiation queue. Queue size: ${mentionQueue.length}`);
-                    } 
+                
+                // Log count of already processed mentions for visibility
+                const alreadyProcessedCount = mentions.filter(m => processedMentions.has(m.tweetId)).length;
+                if (alreadyProcessedCount > 0) {
+                    logger.info(`[😈 Daemon Polling] Found ${alreadyProcessedCount} already processed mentions (skipping).`);
                 }
-                 if (newMentionsFound > 0) {
-                    logger.info(`[😈 Daemon Polling] Added ${newMentionsFound} new mentions to the queue.`);
-                    // Trigger initiation worker check immediately after finding new mentions
-                    // The browser task loop will handle actually running it if idle
-                    // triggerInitiationWorker(page); 
-                    } else {
-                      logger.info('[😈 Daemon Polling] No new mentions found.');
+                
+                // Create a preview of new mentions being added
+                const newMentions: MentionInfo[] = [];
+                // Track mentions we've seen in this batch to avoid duplicates in the same poll
+                const seenInThisBatch = new Set<string>();
+                // Check current queue IDs to avoid adding duplicates
+                const currentQueueIds = new Set(mentionQueue.map(m => m.tweetId));
+                
+                for (const mention of mentions) {
+                    // Skip if already in processed set, already in the current queue, or already seen in this batch
+                    if (processedMentions.has(mention.tweetId) || 
+                        currentQueueIds.has(mention.tweetId) || 
+                        seenInThisBatch.has(mention.tweetId)) {
+                        continue;
                     }
+                    
+                    // Mark as seen in this batch
+                    seenInThisBatch.add(mention.tweetId);
+                    
+                    // Then check if it's associated with a project
+                    const associatedProject = await getProjectForMention(mention.tweetId);
+                    
+                    if (associatedProject) {
+                        logger.info(`[🔔 Mention] Found mention ID=${mention.tweetId} already associated with project ${associatedProject.thirdPartyID} (status: ${associatedProject.status})`);
+                        
+                        // If project is already completed or failed, mark the mention as processed
+                        if (associatedProject.status === 'complete' || associatedProject.status === 'failed') {
+                            logger.info(`[🔔 Mention] Project ${associatedProject.thirdPartyID} is already ${associatedProject.status}. Marking mention as processed.`);
+                            await markMentionAsProcessed(mention.tweetId, processedMentions);
+                        } else {
+                            // Project is still in progress, don't add to queue but log the state
+                            logger.info(`[🔔 Mention] Project ${associatedProject.thirdPartyID} is still ${associatedProject.status}. Not queuing duplicate mention.`);
+                        }
+                    } else {
+                        // No associated project found, process as new mention
+                        newMentionsFound++;
+                        logger.info(`[🔔 Mention] Found new unprocessed mention: ID=${mention.tweetId}, User=${mention.username}, Text="${mention.text?.substring(0, 50)}${mention.text?.length > 50 ? '...' : ''}"`);
+                        mentionQueue.push(mention);
+                        newMentions.push(mention);
+                        logger.info(`[⚙️ Queue] Mention ${mention.tweetId} added to initiation queue. Queue size: ${mentionQueue.length}`);
+                    }
+                }
+                
+                if (newMentionsFound > 0) {
+                    // Generate a summary of newly added mentions
+                    const mentionSummary = newMentions.map(m => 
+                        `${m.tweetId} (${m.username}): "${m.text?.substring(0, 30)}${m.text?.length > 30 ? '...' : ''}"`
+                    ).join('\n  - ');
+                    
+                    logger.info(`[😈 Daemon Polling] Added ${newMentionsFound} new mentions to the queue:\n  - ${mentionSummary}`);
+                    
+                    // Log comprehensive queue status after adding new mentions
+                    logQueueStatus();
+                } else {
+                    logger.info('[😈 Daemon Polling] No new mentions found.');
+                }
+                
             } catch (error) {
                 logger.error('[😈 Daemon Polling] Error during mention polling cycle:', error);
-                 // Basic recovery attempt
-                 try {
-                     if (page && !page.isClosed()) {
-                         await page.goto('https://twitter.com/home', { waitUntil: 'domcontentloaded', timeout: 15000 });
-                         logger.info('[😈 Daemon Polling] Attempted recovery by navigating home.');
-                     } else {
-                         throw new Error('Page closed during polling error handling.');
-                     }
-                     } catch (recoveryError) {
-                     logger.error('[😈 Daemon Polling] Recovery failed. Stopping polling.', recoveryError);
-                     await shutdown('Polling Recovery Failed');
-                 }
+                // Basic recovery attempt
+                try {
+                    if (page && !page.isClosed()) {
+                        await page.goto('https://twitter.com/home', { waitUntil: 'domcontentloaded', timeout: 15000 });
+                        logger.info('[😈 Daemon Polling] Attempted recovery by navigating home.');
+                    } else {
+                        throw new Error('Page closed during polling error handling.');
+                    }
+                } catch (recoveryError) {
+                    logger.error('[😈 Daemon Polling] Recovery failed. Stopping polling.', recoveryError);
+                    await shutdown('Polling Recovery Failed');
+                }
             }
         };
 
-        // Initial poll, then set interval
-        await pollMentions(); 
-        mainLoopIntervalId = setInterval(pollMentions, POLLING_INTERVAL_MS);
+        if (skipInitialMentions) {
+            logger.warn(`[😈 Daemon] SKIP_INITIAL_MENTIONS flag is set. Performing initial scrape to mark mentions as processed WITHOUT queueing...`);
+            try {
+                if (!page || page.isClosed()) {
+                    throw new Error("Page closed before initial skip scrape could run.");
+                }
+                // Scrape mentions once
+                const initialMentions = await scrapeMentions(page);
+                logger.info(`[😈 Daemon] Initial scrape found ${initialMentions.length} mentions.`);
+                let skippedCount = 0;
+                for (const mention of initialMentions) {
+                    // Check if it's *not* already processed, just in case
+                    if (!processedMentions.has(mention.tweetId)) {
+                        // For initial skipping, we'll mark as processed but also create a placeholder project entry
+                        // to indicate that this mention was intentionally skipped
+                        logger.info(`[😈 Daemon] Marking initially found mention ${mention.tweetId} as processed (skipping queue).`);
+                        
+                        // Create a placeholder thirdPartyID for the skipped mention
+                        const placeholderThirdPartyID = `skipped-${mention.tweetId}`;
+                        
+                        // Mark the mention as processed
+                        await markMentionAsProcessed(mention.tweetId, processedMentions);
+                        
+                        // Create a placeholder project entry with 'complete' status to prevent future processing
+                        await updateProjectStatus(
+                            placeholderThirdPartyID,
+                            'complete',  // Mark as complete to avoid reprocessing
+                            mention.tweetId,
+                            undefined    // No actual project ID since this was skipped
+                        );
+                        
+                        skippedCount++;
+                    } else {
+                         logger.debug(`[😈 Daemon] Initially found mention ${mention.tweetId} was already marked as processed.`);
+                    }
+                }
+                logger.info(`[😈 Daemon] Finished marking ${skippedCount} initial mentions as processed.`);
 
-        // --- Browser Task Worker Loop --- 
+                // Now, just start the interval WITHOUT the initial poll call
+                logger.info(`[😈 Daemon] Starting regular mention polling loop (Interval: ${POLLING_INTERVAL_MS / 1000}s) after initial skip.`);
+                mainLoopIntervalId = setInterval(pollMentions, POLLING_INTERVAL_MS);
+
+            } catch (error) {
+                logger.error('[😈 Daemon] Error during initial mention skip scrape:', error);
+                logger.error('[😈 Daemon] Proceeding to normal polling interval, but backlog may not have been skipped.');
+                // Fallback: Start interval without initial poll on error during skip attempt
+                mainLoopIntervalId = setInterval(pollMentions, POLLING_INTERVAL_MS);
+            }
+        } else {
+            // --- Original Behavior: Initial poll, then set interval ---
+            logger.info(`[😈 Daemon] Starting mention polling loop (Interval: ${POLLING_INTERVAL_MS / 1000}s)`);
+            await pollMentions(); // Perform the first poll immediately (adds to queue)
+            mainLoopIntervalId = setInterval(pollMentions, POLLING_INTERVAL_MS); // Then set the interval
+        }
+
+        // --- Browser Task Worker Loop ---
         // Separate interval to trigger browser-based queue workers (initiation & final reply)
         // This ensures they don't block the main polling loop and manage page access.
         const BROWSER_TASK_INTERVAL_MS = 5000; // Check queues every 5 seconds
         logger.info(`[😈 Daemon] Starting browser task worker loop (Interval: ${BROWSER_TASK_INTERVAL_MS / 1000}s)`);
+        
+        // Add counter for status reporting
+        let taskLoopCounter = 0;
+        
         browserTaskIntervalId = setInterval(() => {
+            taskLoopCounter++;
+            
+            // Log queue status every 12 iterations (~ every minute)
+            if (taskLoopCounter % 12 === 0) {
+                logQueueStatus();
+            }
+            
             // logger.debug('[😈 Daemon Task Loop] Checking queues for browser tasks...');
             if (!page || page.isClosed()) {
                 logger.error('[😈 Daemon Task Loop] Page is closed. Stopping task loop.');
@@ -1302,6 +1846,84 @@ async function main() {
           logger.info('[😈 Daemon] Interval timer not set or cleared. Exiting.');
           process.exit(0); // Exit if polling stopped
      }
+}
+
+/**
+ * Retrieves project information associated with a specific mention ID.
+ * This helps determine if a mention is already being processed as part of a project.
+ * @param mentionId The mention ID to check
+ * @returns Project status info or null if no associated project found
+ */
+async function getProjectForMention(mentionId: string): Promise<ProjectStatusInfo | null> {
+    try {
+        await fs.access(PROCESSED_MENTIONS_PATH);
+        const data = await fs.readFile(PROCESSED_MENTIONS_PATH, 'utf-8');
+        let mentionData: ProcessedMentionData;
+        
+        try {
+            mentionData = JSON.parse(data);
+            
+            // If the structure is not valid, return null
+            if (!mentionData.projects) {
+                return null;
+            }
+            
+            // Check each project to see if it includes this mention ID
+            for (const projectId in mentionData.projects) {
+                const project = mentionData.projects[projectId];
+                if (project.mentionIds && project.mentionIds.includes(mentionId)) {
+                    logger.info(`[😈 Daemon] Found project ${projectId} associated with mention ${mentionId}`);
+                    return project;
+                }
+            }
+        } catch (parseError) {
+            logger.error(`[😈 Daemon] Error parsing processed mentions file while checking mention-project association:`, parseError);
+        }
+        
+        return null;
+    } catch (error) {
+        logger.error(`[😈 Daemon] Error checking project for mention ${mentionId}:`, error);
+        return null;
+    }
+}
+
+/**
+ * Helper function to log all active projects (for debugging)
+ */
+async function logActiveProjects(): Promise<void> {
+    try {
+        await fs.access(PROCESSED_MENTIONS_PATH);
+        const data = await fs.readFile(PROCESSED_MENTIONS_PATH, 'utf-8');
+        let mentionData: ProcessedMentionData;
+        
+        try {
+            mentionData = JSON.parse(data);
+            
+            if (!mentionData.projects || Object.keys(mentionData.projects).length === 0) {
+                logger.info(`[😈 Daemon] No active projects found.`);
+                return;
+            }
+            
+            logger.info(`[😈 Daemon] === Current Projects (${Object.keys(mentionData.projects).length}) ===`);
+            
+            for (const thirdPartyID in mentionData.projects) {
+                const project = mentionData.projects[thirdPartyID];
+                logger.info(`[😈 Daemon] Project: ${thirdPartyID}`);
+                logger.info(`[😈 Daemon]   - Status: ${project.status}`);
+                logger.info(`[😈 Daemon]   - SpeechLab ID: ${project.projectId || 'N/A'}`);
+                logger.info(`[😈 Daemon]   - Created: ${project.createdAt}`);
+                logger.info(`[😈 Daemon]   - Updated: ${project.updatedAt}`);
+                logger.info(`[😈 Daemon]   - Associated Mentions: ${project.mentionIds.length}`);
+                logger.info(`[😈 Daemon]   - Mention IDs: ${project.mentionIds.join(', ')}`);
+            }
+            
+            logger.info(`[😈 Daemon] === End Projects ===`);
+        } catch (parseError) {
+            logger.error(`[😈 Daemon] Error parsing processed mentions file while logging active projects:`, parseError);
+        }
+    } catch (error) {
+        logger.error(`[😈 Daemon] Error reading file for logging active projects:`, error);
+    }
 }
 
 main(); 
