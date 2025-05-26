@@ -24,6 +24,8 @@ import util from 'util';
 import { postTweetReplyWithMediaApi } from './services/twitterApiService';
 import { uploadLocalFileToS3 } from './services/audioService';
 import * as fsExtra from 'fs-extra';
+// Add transcription and summarization imports
+import { transcribeAndSummarize, TranscriptionRequest } from './services/transcriptionSummarizationService';
 
 const execPromise = util.promisify(exec);
 
@@ -52,6 +54,17 @@ interface InitiationResult {
     targetLanguageCode: string;
     targetLanguageName: string;
 }
+
+// Interface for transcription initiation result
+interface TranscriptionInitiationResult {
+    fileUuid: string;
+    fileKey: string;
+    spaceTitle: string | null;
+    mentionInfo: MentionInfo;
+    contentDuration: number;
+    thumbnail?: string;
+}
+
 // Interface for backend result
 interface BackendResult {
     success: boolean;
@@ -60,6 +73,9 @@ interface BackendResult {
     projectId?: string;
     thirdPartyID?: string;  // Added thirdPartyID to track in processed mentions
     error?: string;
+    // For transcription results
+    transcriptionText?: string;
+    summary?: string;
     // Path to the FINAL generated video file
     // generatedVideoPath?: string; 
 }
@@ -138,6 +154,30 @@ async function logMentionError(mentionId: string, error: any, phase: 'initiation
     } catch (logError) {
         logger.error(`[❌ Error Log] Failed to log error for mention ${mentionId}: ${logError}`);
     }
+}
+
+/**
+ * Detects if a mention is requesting transcription/summarization instead of dubbing
+ * @param mentionText The text content of the mention
+ * @returns {boolean} True if transcription is requested, false for dubbing
+ */
+export function isTranscriptionRequest(mentionText: string): boolean {
+    const lowerText = mentionText.toLowerCase();
+    const transcriptionKeywords = [
+        'summarize',
+        'summary',
+        'transcribe',
+        'transcription',
+        'transcript',
+        'text',
+        'notes',
+        'what was said',
+        'what did they say',
+        'recap',
+        'overview'
+    ];
+    
+    return transcriptionKeywords.some(keyword => lowerText.includes(keyword));
 }
 
 /**
@@ -941,6 +981,212 @@ async function initiateProcessing(mentionInfo: MentionInfo, page: Page): Promise
     };
 }
 
+/**
+ * Handles transcription initiation processing for mentions requesting summarization
+ * @param mentionInfo The mention information
+ * @param page The Playwright page
+ * @returns {Promise<TranscriptionInitiationResult>} Transcription initiation data
+ */
+async function initiateTranscriptionProcessing(mentionInfo: MentionInfo, page: Page): Promise<TranscriptionInitiationResult> {
+    logger.info(`[📝 Transcription Initiate] Starting transcription initiation for ${mentionInfo.tweetId}`);
+    let playElementLocator: Locator | null = null;
+    let spaceTitle: string | null = null;
+
+    // 1. Navigate & Find Article
+    try {
+        logger.info(`[📝 Transcription Initiate] Navigating to mention tweet: ${mentionInfo.tweetUrl}`);
+        await page.goto(mentionInfo.tweetUrl, { waitUntil: 'domcontentloaded', timeout: 90000 });
+        logger.info('[📝 Transcription Initiate] Waiting 60 seconds after navigation...');
+        await page.waitForTimeout(60000);
+
+        playElementLocator = await findArticleWithPlayButton(page);
+        if (!playElementLocator) {
+            logger.info('[📝 Transcription Initiate] Play button/article not immediately visible. Scrolling up...');
+            const MAX_SCROLL_UP = 5;
+            for (let i = 0; i < MAX_SCROLL_UP && !playElementLocator; i++) {
+                await page.evaluate(() => window.scrollBy(0, -window.innerHeight));
+                logger.info(`[📝 Transcription Initiate] Waiting 60 seconds after scroll attempt ${i+1}...`);
+                await page.waitForTimeout(60000);
+                playElementLocator = await findArticleWithPlayButton(page);
+            }
+        }
+
+        if (!playElementLocator) {
+            const errMsg = `Could not find playable Space element for transcription request ${mentionInfo.tweetId}.`;
+            logger.warn(`[📝 Transcription Initiate] ${errMsg}`);
+            const errorReplyText = `${mentionInfo.username} Sorry, I couldn't find a playable Twitter Space associated with this tweet for transcription.`;
+            logger.info(`[📝 Transcription Initiate] Posting error reply: ${errorReplyText}`);
+            await postReplyToTweet(page, mentionInfo.tweetUrl, errorReplyText);
+            throw new Error(errMsg);
+        }
+        logger.info(`[📝 Transcription Initiate] Found potential Space element for transcription.`);
+
+    } catch (error) {
+        logger.error(`[📝 Transcription Initiate] Error during navigation/article finding for ${mentionInfo.tweetId}:`, error);
+        if (!(error instanceof Error && error.message.includes('Playable Space element not found'))) {
+            try {
+                const errorReplyText = `${mentionInfo.username} Sorry, I had trouble loading the tweet to find the Space for transcription.`;
+                logger.info(`[📝 Transcription Initiate] Posting error reply: ${errorReplyText}`);
+                await postReplyToTweet(page, mentionInfo.tweetUrl, errorReplyText);
+            } catch (replyError) { /* Ignore */ }
+        }
+        throw error;
+    }
+
+    // 2. Extract Title from Article (similar to dubbing workflow)
+    try {
+        logger.debug(`[📝 Transcription Initiate] Attempting to extract Space title...`);
+        
+        // Strategy 1: Check aria-label of the button first
+        let parsedFromAriaLabel = false;
+        try {
+            const tagName = await playElementLocator.evaluate(el => el.tagName.toLowerCase()).catch(() => '');
+            if (tagName === 'button') {
+                const ariaLabel = await playElementLocator.getAttribute('aria-label');
+                const prefix = 'Play recording of ';
+                if (ariaLabel && ariaLabel.startsWith(prefix)) {
+                    const potentialTitle = ariaLabel.substring(prefix.length).trim();
+                    if (potentialTitle && potentialTitle.length > 0) {
+                        spaceTitle = potentialTitle.substring(0, 150);
+                        logger.info(`[📝 Transcription Initiate] Extracted title from button aria-label: "${spaceTitle}"`);
+                        parsedFromAriaLabel = true;
+                    }
+                }
+            }
+        } catch (ariaError) {
+            logger.warn('[📝 Transcription Initiate] Minor error checking button aria-label for title:', ariaError);
+        }
+        
+        // Strategy 2: If not found in aria-label, check the main tweet text
+        if (!parsedFromAriaLabel) {
+            logger.debug(`[📝 Transcription Initiate] Trying title extraction from associated tweet text...`);
+            try {
+                const tweetTextElement = playElementLocator.locator('div[data-testid="tweetText"]').first();
+                
+                if (await tweetTextElement.isVisible({ timeout: 1000 })) {
+                    const potentialTitle = await tweetTextElement.textContent({ timeout: 1000 });
+                    if (potentialTitle && potentialTitle.trim().length > 3) {
+                        const cleanedTitle = potentialTitle.trim().replace(/^@[^\s]+\s*/, ''); 
+                        spaceTitle = cleanedTitle.substring(0, 150);
+                        logger.info(`[📝 Transcription Initiate] Extracted title from associated tweet text: "${spaceTitle}"`);
+                    } else {
+                        logger.debug('[📝 Transcription Initiate] tweetText element found, but content too short or empty.');
+                    }
+                } else {
+                    logger.debug('[📝 Transcription Initiate] Could not find visible tweetText element.');
+                }
+            } catch (tweetTextError) {
+                logger.warn('[📝 Transcription Initiate] Error trying to extract title from tweet text:', tweetTextError);
+            }
+        }
+
+        if (!spaceTitle) {
+            logger.info('[📝 Transcription Initiate] Could not extract Space title pre-click. Will rely on modal extraction.');
+        }
+
+    } catch (titleError) {
+        logger.warn('[📝 Transcription Initiate] Error during pre-click title extraction:', titleError);
+    }
+
+    // 3. Click Play and capture M3U8 for transcription
+    let m3u8Url: string | null = null;
+    try {
+        logger.info(`[📝 Transcription Initiate] Clicking Play button and capturing M3U8 for transcription...`);
+        m3u8Url = await clickPlayButtonAndCaptureM3u8(page, playElementLocator); 
+        if (!m3u8Url) {
+            const errMsg = `Failed to capture M3U8 URL for transcription request ${mentionInfo.tweetId}.`;
+            logger.error(`[📝 Transcription Initiate] ${errMsg}`);
+            const errorReplyText = `${mentionInfo.username} Sorry, I could find the Space but couldn't get its audio stream for transcription. It might be finished or protected.`;
+            logger.info(`[📝 Transcription Initiate] Posting error reply: ${errorReplyText}`);
+            await postReplyToTweet(page, mentionInfo.tweetUrl, errorReplyText);
+            throw new Error(errMsg);
+        }
+        logger.info(`[📝 Transcription Initiate] Captured M3U8 URL for transcription.`);
+        
+        // 4. Try to extract title from modal
+        try {
+            logger.info('[📝 Transcription Initiate] Waiting 60 seconds before extracting modal title...');
+            await page.waitForTimeout(60000);
+            logger.info('[📝 Transcription Initiate] Attempting to extract Space title from modal...');
+            const modalTitle = await extractSpaceTitleFromModal(page);
+            if (modalTitle) {
+                logger.info(`[📝 Transcription Initiate] Successfully extracted Space title from modal: "${modalTitle}"`);
+                spaceTitle = modalTitle;
+            } else {
+                logger.warn('[📝 Transcription Initiate] Could not extract Space title from modal.');
+            }
+        } catch (modalTitleError) {
+            logger.warn('[📝 Transcription Initiate] Error extracting Space title from modal:', modalTitleError);
+        }
+    } catch (error) {
+        logger.error(`[📝 Transcription Initiate] Error during M3U8 capture for transcription ${mentionInfo.tweetId}:`, error);
+        try {
+            const errorReplyText = `${mentionInfo.username} Sorry, I encountered an error trying to access the Space audio for transcription.`;
+            logger.info(`[📝 Transcription Initiate] Posting error reply: ${errorReplyText}`);
+            await postReplyToTweet(page, mentionInfo.tweetUrl, errorReplyText);
+        } catch(replyError) { /* Ignore */ }
+        throw error;
+    }
+
+    // 5. Download and upload audio to get file info for transcription
+    logger.info(`[📝 Transcription Initiate] Downloading and uploading audio for transcription...`);
+    const spaceId = m3u8Url.match(/([a-zA-Z0-9_-]+)\/(?:chunk|playlist)/)?.[1] || `space_${mentionInfo.tweetId || uuidv4()}`;
+    
+    try {
+        const audioUploadResult = await downloadAndUploadAudio(m3u8Url, spaceId);
+        if (!audioUploadResult) {
+            throw new Error('Failed to download/upload audio for transcription');
+        }
+        logger.info(`[📝 Transcription Initiate] Audio uploaded for transcription: ${audioUploadResult}`);
+
+        // Extract file info from the upload result
+        // The audioUploadResult should be in format: s3://bucket/path/filename
+        const s3Match = audioUploadResult.match(/s3:\/\/[^\/]+\/(.+)/);
+        if (!s3Match) {
+            throw new Error('Could not parse S3 key from upload result');
+        }
+        
+        const fileKey = s3Match[1];
+        const fileUuid = uuidv4(); // Generate a UUID for the file
+        const projectName = spaceTitle || `Twitter Space Transcription ${spaceId}`;
+        
+        // Estimate content duration (we'll use a placeholder for now)
+        const contentDuration = 1800; // 30 minutes placeholder - could be improved with actual duration detection
+        
+        // 6. Post preliminary acknowledgement reply
+        try {
+            logger.info(`[📝 Transcription Initiate] Posting preliminary acknowledgement reply...`);
+            const ackMessage = `${mentionInfo.username} Received! I've started transcribing and summarizing this Twitter Space. Please check back here in ~10-15 minutes for the summary.`;
+            logger.info(`[📝 Transcription Initiate] Full Ack Reply Text: ${ackMessage}`);
+            const ackSuccess = await postReplyToTweet(page, mentionInfo.tweetUrl, ackMessage);
+            if (!ackSuccess) {
+                logger.warn(`[📝 Transcription Initiate] Failed to post acknowledgement reply (non-critical).`);
+            }
+        } catch (ackError) {
+            logger.warn(`[📝 Transcription Initiate] Error posting acknowledgement reply (non-critical):`, ackError);
+        }
+
+        logger.info(`[📝 Transcription Initiate] Transcription initiation complete for ${mentionInfo.tweetId}.`);
+        return {
+            fileUuid,
+            fileKey,
+            spaceTitle,
+            mentionInfo,
+            contentDuration,
+            thumbnail: undefined // Could add thumbnail support later
+        };
+
+    } catch (uploadError) {
+        logger.error(`[📝 Transcription Initiate] Error during audio upload for transcription:`, uploadError);
+        try {
+            const errorReplyText = `${mentionInfo.username} Sorry, I encountered an error preparing the audio for transcription.`;
+            logger.info(`[📝 Transcription Initiate] Posting error reply: ${errorReplyText}`);
+            await postReplyToTweet(page, mentionInfo.tweetUrl, errorReplyText);
+        } catch(replyError) { /* Ignore */ }
+        throw uploadError;
+    }
+}
+
 // --- NEW FUNCTION: Backend Processing Function (No Browser) --- 
 /**
  * Handles backend processing: download, upload, SpeechLab tasks, and video download.
@@ -1170,6 +1416,59 @@ async function performBackendProcessing(initData: InitiationResult): Promise<Bac
     }
 }
 
+/**
+ * Handles backend transcription processing: transcribe and summarize the audio
+ * @param initData The transcription initiation data
+ * @returns {Promise<BackendResult>} Backend result with transcription and summary
+ */
+async function performTranscriptionBackendProcessing(initData: TranscriptionInitiationResult): Promise<BackendResult> {
+    const { fileUuid, fileKey, spaceTitle, mentionInfo, contentDuration, thumbnail } = initData;
+    
+    logger.info(`[📝 Transcription Backend] Starting transcription backend processing for ${mentionInfo.tweetId}`);
+    
+    try {
+        // Create transcription request
+        const transcriptionRequest: TranscriptionRequest = {
+            fileUuid,
+            fileKey,
+            name: spaceTitle || `Twitter Space Transcription ${mentionInfo.tweetId}`,
+            filenameToReturn: `${spaceTitle || 'twitter-space'}.mov`,
+            language: 'en', // Default to English for now
+            contentDuration,
+            thumbnail
+        };
+        
+        logger.info(`[📝 Transcription Backend] Starting transcription and summarization workflow...`);
+        const result = await transcribeAndSummarize(transcriptionRequest);
+        
+        if (result.success) {
+            logger.info(`[📝 Transcription Backend] ✅ Transcription and summarization completed successfully for ${mentionInfo.tweetId}`);
+            return {
+                success: true,
+                transcriptionText: result.transcriptionText,
+                summary: result.summary,
+                projectId: result.projectId,
+                thirdPartyID: `transcription-${mentionInfo.tweetId}`
+            };
+        } else {
+            logger.error(`[📝 Transcription Backend] ❌ Transcription and summarization failed: ${result.errorMessage}`);
+            return {
+                success: false,
+                error: result.errorMessage || 'Transcription and summarization failed',
+                thirdPartyID: `transcription-${mentionInfo.tweetId}`
+            };
+        }
+        
+    } catch (error: any) {
+        logger.error(`[📝 Transcription Backend] Error during transcription backend processing for ${mentionInfo.tweetId}:`, error);
+        return {
+            success: false,
+            error: error.message || 'Unknown transcription backend error',
+            thirdPartyID: `transcription-${mentionInfo.tweetId}`
+        };
+    }
+}
+
 // --- Queues & Workers --- 
 /**
  * Adds a completed backend job to the final reply queue and triggers the worker.
@@ -1213,25 +1512,53 @@ async function runInitiationQueue(page: Page): Promise<void> {
     logger.info(`[🚀 Initiate Queue] Processing mention ${mentionToProcess.tweetId} (${mentionToProcess.username}). Remaining: ${mentionQueue.length}. This is mention #${processedCount} processed since startup.`);
     
     try {
-        // Perform browser initiation steps
-        const initData = await initiateProcessing(mentionToProcess, page);
+        // Check if this is a transcription request
+        const isTranscription = isTranscriptionRequest(mentionToProcess.text);
+        logger.info(`[🚀 Initiate Queue] Mention ${mentionToProcess.tweetId} detected as ${isTranscription ? 'TRANSCRIPTION' : 'DUBBING'} request`);
         
-        // If initiation is successful, start backend processing asynchronously
-        logger.info(`[🚀 Initiate Queue] Initiation successful for ${mentionToProcess.tweetId}. Starting background backend task.`);
-        
-        // No 'await' here - let it run in the background
-        performBackendProcessing(initData)
-            .then(backendResult => {
-                addToFinalReplyQueue(mentionToProcess, backendResult);
-            })
-            .catch(backendError => {
-                logger.error(`[💥 Backend ERROR] Uncaught error in background processing for ${mentionToProcess.tweetId}:`, backendError);
-                // Add a failure result to the reply queue so we can notify the user
-                addToFinalReplyQueue(mentionToProcess, { success: false, error: 'Backend processing failed unexpectedly' });
-                
-                // Also log error and mark as processed to prevent requeuing
-                logMentionError(mentionToProcess.tweetId, backendError, 'backend');
-            });
+        if (isTranscription) {
+            // Handle transcription workflow
+            logger.info(`[📝 Transcription Initiate] Starting transcription workflow for ${mentionToProcess.tweetId}`);
+            const transcriptionInitData = await initiateTranscriptionProcessing(mentionToProcess, page);
+            
+            // If transcription initiation is successful, start transcription backend processing asynchronously
+            logger.info(`[📝 Transcription Initiate] Transcription initiation successful for ${mentionToProcess.tweetId}. Starting background transcription task.`);
+            
+            // No 'await' here - let it run in the background
+            performTranscriptionBackendProcessing(transcriptionInitData)
+                .then(backendResult => {
+                    addToFinalReplyQueue(mentionToProcess, backendResult);
+                })
+                .catch(backendError => {
+                    logger.error(`[💥 Transcription Backend ERROR] Uncaught error in background transcription processing for ${mentionToProcess.tweetId}:`, backendError);
+                    // Add a failure result to the reply queue so we can notify the user
+                    addToFinalReplyQueue(mentionToProcess, { success: false, error: 'Transcription processing failed unexpectedly' });
+                    
+                    // Also log error and mark as processed to prevent requeuing
+                    logMentionError(mentionToProcess.tweetId, backendError, 'backend');
+                });
+        } else {
+            // Handle dubbing workflow (original logic)
+            logger.info(`[🚀 Initiate] Starting dubbing workflow for ${mentionToProcess.tweetId}`);
+            const initData = await initiateProcessing(mentionToProcess, page);
+            
+            // If initiation is successful, start backend processing asynchronously
+            logger.info(`[🚀 Initiate Queue] Initiation successful for ${mentionToProcess.tweetId}. Starting background backend task.`);
+            
+            // No 'await' here - let it run in the background
+            performBackendProcessing(initData)
+                .then(backendResult => {
+                    addToFinalReplyQueue(mentionToProcess, backendResult);
+                })
+                .catch(backendError => {
+                    logger.error(`[💥 Backend ERROR] Uncaught error in background processing for ${mentionToProcess.tweetId}:`, backendError);
+                    // Add a failure result to the reply queue so we can notify the user
+                    addToFinalReplyQueue(mentionToProcess, { success: false, error: 'Backend processing failed unexpectedly' });
+                    
+                    // Also log error and mark as processed to prevent requeuing
+                    logMentionError(mentionToProcess.tweetId, backendError, 'backend');
+                });
+        }
             
     } catch (initError) {
         // Errors during initiateProcessing (including posting error replies) are logged within the function
@@ -1279,45 +1606,70 @@ async function runFinalReplyQueue(page: Page): Promise<void> {
 
     // Construct the final message based on success and link availability
     if (backendResult.success) {
-        const { sourceLanguageName, targetLanguageName } = detectLanguages(mentionInfo.text);
-        const hasSharingLink = !!backendResult.sharingLink;
-        const hasMp3Link = !!backendResult.publicMp3Url;
-        
-        // --- MODIFIED: Check for MP3 Link presence FIRST for success message ---
-        if (hasMp3Link) {
-            // MP3 is available - construct the success message
-            let linkParts = [];
-            // MP3 Link comes first
-            linkParts.push(`CLICK HERE FOR MP3: ${backendResult.publicMp3Url}`);
-            if (hasSharingLink) {
-                 // Sharing Link comes second if available
-                linkParts.push(`Link: ${backendResult.sharingLink}`);
+        // Check if this is a transcription result or dubbing result
+        if (backendResult.transcriptionText && backendResult.summary) {
+            // This is a transcription result
+            logger.info(`[↩️ Reply Queue] Constructing transcription success reply for ${mentionInfo.tweetId}`);
+            
+            // Truncate summary if it's too long for Twitter
+            const maxSummaryLength = 200; // Leave room for username and other text
+            let summary = backendResult.summary;
+            if (summary.length > maxSummaryLength) {
+                summary = summary.substring(0, maxSummaryLength - 3) + '...';
             }
-            // Construct success message with links in the desired order - ensure both usernames have @ symbols
-            finalMessage = `@RyanAtSpeechlab ${mentionInfo.username} Your ${sourceLanguageName} to ${targetLanguageName} dub is ready! $shaft 🎉 ${linkParts.join(' | ')}`;
+            
+            finalMessage = `${mentionInfo.username} Here's your Twitter Space summary! 📝\n\n${summary}`;
             
         } else {
-            // MP3 is MISSING, even though backendResult.success is true. Treat as partial failure for reply.
-            logger.warn(`[↩️ Reply Queue] Backend succeeded for ${mentionInfo.tweetId} but MP3 link is missing. Posting alternative message.`);
-            let partialFailureMessage = `${mentionInfo.username} Processing finished for the ${sourceLanguageName} to ${targetLanguageName} dub, but I couldn't prepare the MP3 audio file. 😥`;
-            if (hasSharingLink) {
-                partialFailureMessage += ` You might find project details here: ${backendResult.sharingLink}`;
+            // This is a dubbing result (original logic)
+            const { sourceLanguageName, targetLanguageName } = detectLanguages(mentionInfo.text);
+            const hasSharingLink = !!backendResult.sharingLink;
+            const hasMp3Link = !!backendResult.publicMp3Url;
+            
+            // --- MODIFIED: Check for MP3 Link presence FIRST for success message ---
+            if (hasMp3Link) {
+                // MP3 is available - construct the success message
+                let linkParts = [];
+                // MP3 Link comes first
+                linkParts.push(`CLICK HERE FOR MP3: ${backendResult.publicMp3Url}`);
+                if (hasSharingLink) {
+                     // Sharing Link comes second if available
+                    linkParts.push(`Link: ${backendResult.sharingLink}`);
+                }
+                // Construct success message with links in the desired order - ensure both usernames have @ symbols
+                finalMessage = `@RyanAtSpeechlab ${mentionInfo.username} Your ${sourceLanguageName} to ${targetLanguageName} dub is ready! $shaft 🎉 ${linkParts.join(' | ')}`;
+                
+            } else {
+                // MP3 is MISSING, even though backendResult.success is true. Treat as partial failure for reply.
+                logger.warn(`[↩️ Reply Queue] Backend succeeded for ${mentionInfo.tweetId} but MP3 link is missing. Posting alternative message.`);
+                let partialFailureMessage = `${mentionInfo.username} Processing finished for the ${sourceLanguageName} to ${targetLanguageName} dub, but I couldn't prepare the MP3 audio file. 😥`;
+                if (hasSharingLink) {
+                    partialFailureMessage += ` You might find project details here: ${backendResult.sharingLink}`;
+                }
+                if (backendResult.projectId) {
+                     partialFailureMessage += ` (Project ID: ${backendResult.projectId})`;
+                }
+                 finalMessage = partialFailureMessage;
+                 // Keep mediaPathToAttach as undefined in this case too
+                 mediaPathToAttach = undefined;
             }
-            if (backendResult.projectId) {
-                 partialFailureMessage += ` (Project ID: ${backendResult.projectId})`;
-            }
-             finalMessage = partialFailureMessage;
-             // Keep mediaPathToAttach as undefined in this case too
-             mediaPathToAttach = undefined;
+            // --- END MODIFIED SECTION ---
         }
-        // --- END MODIFIED SECTION ---
 
     } else {
         // Construct error message for the single reply (original logic)
-        const { sourceLanguageName, targetLanguageName } = detectLanguages(mentionInfo.text);
-        const errorReason = backendResult.error || 'processing failed';
-         finalMessage = `${mentionInfo.username} Oops! 😥 Couldn't complete the ${sourceLanguageName} to ${targetLanguageName} dub for this Space (${errorReason}). Maybe try again later?`;
-         mediaPathToAttach = undefined; // Ensure no media attached on failure
+        // Check if this was a transcription request to customize the error message
+        const isTranscription = isTranscriptionRequest(mentionInfo.text);
+        
+        if (isTranscription) {
+            const errorReason = backendResult.error || 'transcription failed';
+            finalMessage = `${mentionInfo.username} Oops! 😥 Couldn't complete the transcription and summary for this Space (${errorReason}). Maybe try again later?`;
+        } else {
+            const { sourceLanguageName, targetLanguageName } = detectLanguages(mentionInfo.text);
+            const errorReason = backendResult.error || 'processing failed';
+            finalMessage = `${mentionInfo.username} Oops! 😥 Couldn't complete the ${sourceLanguageName} to ${targetLanguageName} dub for this Space (${errorReason}). Maybe try again later?`;
+        }
+        mediaPathToAttach = undefined; // Ensure no media attached on failure
     }
     
     // --- ADDED: Log the final constructed message before sending ---

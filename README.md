@@ -1,27 +1,61 @@
-# 🎙️ SpeechLab Twitter Space Translator Agent 🌎
+# 🎙️ SpeechLab Twitter Space Translator & Transcription Agent 🌎
 
 [![Node.js](https://img.shields.io/badge/Node.js-20.x-green)](https://nodejs.org/) [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-blue)](https://www.typescriptlang.org/) [![License: ISC](https://img.shields.io/badge/License-ISC-yellow.svg)](https://opensource.org/licenses/ISC)
 
 **Unlock Global Audiences for Your Twitter Spaces!** ✨
 
-Ever wished your insightful Twitter Space conversations could reach listeners worldwide? This intelligent agent automatically finds popular recorded Twitter Spaces, downloads the audio, uses the cutting-edge [SpeechLab AI](https://translate.speechlab.ai/) platform to dub them into another language (currently Latin American Spanish!), and even posts a link to the dubbed version right back to the original tweet! 🚀
+Ever wished your insightful Twitter Space conversations could reach listeners worldwide? This intelligent agent automatically finds popular recorded Twitter Spaces, downloads the audio, and provides two powerful services:
 
-Imagine your content seamlessly translated and shared, expanding your reach and impact across language barriers – all automated!
+1. **🎭 AI Dubbing**: Uses the cutting-edge [SpeechLab AI](https://translate.speechlab.ai/) platform to dub them into another language (currently Latin American Spanish!)
+2. **📝 AI Transcription & Summarization**: Uses SpeechLab's transcription API and OpenAI GPT to provide detailed summaries of Twitter Space content
 
-![Screenshot 2025-04-23 at 11 00 09 AM](https://github.com/user-attachments/assets/5824dc2a-c8a0-4a7a-be3d-3fb7de04bb36)
+The agent posts results directly back to the original tweet, expanding your reach and impact across language barriers – all automated!
+
+![Screenshot 2025-04-23 at 11 00 09 AM](https://github.com/user-attachments/assets/5824dc2a-c8a0-4a7a-be3d-3fb7de04bb36)
 
 
 ## ✨ Key Features
 
+### 🎭 AI Dubbing (Original Feature)
 *   **🔍 Finds Top Spaces:** (Future) Scans leaderboards like SpacesDashboard to identify influential Twitter profiles.
 *   **🎧 Identifies Recordings:** Automatically detects recent *recorded* Twitter Spaces on target profiles.
 *   **🔗 Extracts Audio:** Intelligently captures the direct audio stream link (`.m3u8`) from the recorded Space.
 *   **☁️ Cloud Powered:** Downloads the audio and securely uploads it to AWS S3 for processing.
 *   **🤖 AI Dubbing:** Leverages the powerful SpeechLab API to create high-quality voice-cloned dubs in the target language (`es_la`).
 *   **🌐 Generates Sharing Link:** Retrieves a unique link to the dubbed version hosted on SpeechLab.
-*   **💬 Posts Back (Automated):** Replies to the original tweet with the sharing link, notifying the host and audience! (Requires careful setup/login).
+*   **💬 Posts Back (Automated):** Replies to the original tweet with the sharing link, notifying the host and audience!
+
+### 📝 AI Transcription & Summarization (New Feature)
+*   **🎯 Smart Detection:** Automatically detects when users request transcription vs. dubbing based on keywords
+*   **📄 AI Transcription:** Uses SpeechLab's transcription API to convert audio to text
+*   **🧠 GPT-Powered Summaries:** Leverages OpenAI GPT to generate detailed, coherent summaries
+*   **🔄 Seamless Integration:** Uses the same infrastructure as dubbing for reliable processing
+*   **💬 Natural Language:** Users can request summaries using natural language like "summarize this space"
+
+### ⚙️ Shared Features
 *   **⚙️ Configurable:** Set target languages, API keys, and processing parameters easily.
 *   **🪵 Detailed Logging:** Provides clear, step-by-step logs (with icons!) to monitor the agent's progress.
+*   **🔄 Dual Mode Operation:** Batch processing or real-time mention monitoring
+
+## 🎯 Usage Examples
+
+### For AI Dubbing (Original)
+Users mention the bot with language requests:
+- `@DubbingAgent translate this to Spanish`
+- `@DubbingAgent dub this space in French`
+- `@DubbingAgent convert to German`
+
+**Response**: The bot replies with dubbed audio files and sharing links.
+
+### For AI Transcription & Summarization (New)
+Users mention the bot with transcription keywords:
+- `@DubbingAgent please summarize this space`
+- `@DubbingAgent can you transcribe this?`
+- `@DubbingAgent what was said in this Twitter Space?`
+- `@DubbingAgent give me a summary of this`
+- `@DubbingAgent recap this space`
+
+**Response**: The bot replies with a detailed summary of the Twitter Space content.
 
 ## 📋 Prerequisites
 
@@ -31,7 +65,8 @@ Before you begin, ensure you have the following installed and configured:
 2.  **npm:** Usually comes with Node.js.
 3.  **FFmpeg:** A command-line tool for handling audio/video. You need to install it separately and make sure it's available in your system's PATH. ([Download & Installation Guide](https://ffmpeg.org/download.html))
 4.  **SpeechLab Account:** You need an account at [translate.speechlab.ai](https://translate.speechlab.ai/) to get API credentials.
-5.  **AWS Account & Credentials:** An AWS account is needed for storing the audio files on S3. The agent uses the `speechlab-test-files-public` bucket by default (ensure this bucket exists or change it in `.env`). Your AWS credentials (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`) should be configured in your environment *or* placed in the `.env` file.
+5.  **OpenAI Account:** You need an OpenAI API key for the transcription and summarization features. ([Get API Key](https://platform.openai.com/api-keys))
+6.  **AWS Account & Credentials:** An AWS account is needed for storing the audio files on S3. The agent uses the `speechlab-test-files-public` bucket by default (ensure this bucket exists or change it in `.env`). Your AWS credentials (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`) should be configured in your environment *or* placed in the `.env` file.
 
 ## 🛠️ Setup & Configuration
 
@@ -46,7 +81,12 @@ Before you begin, ensure you have the following installed and configured:
     npm install
     ```
 
-3.  **Configure Environment Variables:**
+3.  **Install Playwright Browsers:**
+    ```bash
+    npx playwright install
+    ```
+
+4.  **Configure Environment Variables:**
     *   Copy the example environment file:
         ```bash
         cp .env.example .env
@@ -54,6 +94,7 @@ Before you begin, ensure you have the following installed and configured:
     *   **Edit the `.env` file** with your actual credentials and settings:
         *   `SPEECHLAB_EMAIL`: Your SpeechLab login email.
         *   `SPEECHLAB_PASSWORD`: Your SpeechLab login password.
+        *   `OPENAI_API_KEY`: Your OpenAI API key (required for transcription/summarization).
         *   `AWS_S3_BUCKET`: The S3 bucket name (defaults to `speechlab-test-files-public`).
         *   `AWS_REGION`: Your S3 bucket's region (if not configured globally, e.g., `us-east-1`).
         *   *(Optional)* `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`: Only needed if not configured in your system environment.
@@ -72,11 +113,13 @@ This agent can run in two primary modes:
     *   **Run:** `npm start` (after build) or `npm run dev` (development mode).
     *   **Data Source:** Reads `leaderboard_data_playwright.json` (generated by the Python scraper).
 
-2.  **Mention Monitoring Daemon Mode:**
+2.  **Mention Monitoring Daemon Mode (Recommended):**
     *   Runs continuously as a background process.
     *   Monitors the Twitter account specified by `TWITTER_USERNAME` for new mentions (`@YourAgentHandle`).
-    *   If a mention contains a valid Twitter Space URL (`https://twitter.com/i/spaces/...`), it triggers the dubbing workflow.
-    *   Replies directly to the mentioning user with the SpeechLab sharing link.
+    *   **Intelligent Request Detection**: Automatically detects whether users want dubbing or transcription based on their message content.
+    *   **For Dubbing**: If a mention contains a valid Twitter Space URL and language request (`translate to Spanish`), it triggers the dubbing workflow.
+    *   **For Transcription**: If a mention contains transcription keywords (`summarize`, `transcribe`, `what was said`), it triggers the transcription and summarization workflow.
+    *   Replies directly to the mentioning user with either the dubbed link or summary.
     *   Tracks processed mentions in `processed_mentions.json` to avoid duplicates.
     *   **Run:** `npm run start:daemon`
     *   **Requires:** `TWITTER_USERNAME` and `TWITTER_PASSWORD` must be set in `.env`.
@@ -105,15 +148,22 @@ The agent will start, log its initialization, and begin processing the profile s
 
 ### Mention Monitoring Daemon Mode
 
-1.  Ensure `TWITTER_USERNAME` and `TWITTER_PASSWORD` are set in your `.env` file.
+1.  Ensure `TWITTER_USERNAME`, `TWITTER_PASSWORD`, and `OPENAI_API_KEY` are set in your `.env` file.
 2.  Start the daemon:
     ```bash
     npm run start:daemon
     ```
 3.  The agent will log in and start polling for mentions.
-4.  To test, mention the agent account (`@<TWITTER_USERNAME>`) from another account in a tweet containing a link to a recorded Twitter Space.
-5.  The daemon will process the request and reply with the dubbed link.
-6.  To stop the daemon, press `Ctrl+C`.
+4.  **To test dubbing**, mention the agent account (`@<TWITTER_USERNAME>`) from another account in a tweet containing a link to a recorded Twitter Space and a language request:
+    ```
+    @DubbingAgent translate this space to Spanish https://twitter.com/i/spaces/1234567890
+    ```
+5.  **To test transcription**, mention the agent account with transcription keywords:
+    ```
+    @DubbingAgent please summarize this space https://twitter.com/i/spaces/1234567890
+    ```
+6.  The daemon will process the request and reply with either the dubbed link or summary.
+7.  To stop the daemon, press `Ctrl+C`.
 
 ## 🧪 Testing Utilities
 
@@ -150,6 +200,22 @@ The project includes several standalone test scripts in the `src` directory that
      node dist/test-reply-posting.js
      ```
    * **Configuration**: Configurable tweet URL and reply text in the script or via command line parameters.
+
+4. **Transcription Test** (`test-transcription-summarization.ts`):
+   * **Purpose**: Tests the transcription and summarization workflow end-to-end.
+   * **What it does**: Tests the SpeechLab transcription API and OpenAI summarization with sample data.
+   * **How to run**:
+     ```bash
+     npm run test:transcription
+     ```
+
+5. **Integration Test** (`test-transcription-integration.ts`):
+   * **Purpose**: Tests the integration of transcription functionality into the mention daemon.
+   * **What it does**: Verifies keyword detection, service imports, and workflow routing.
+   * **How to run**:
+     ```bash
+     npm run test:transcription-integration
+     ```
 
 ### Usage Tips
 
@@ -255,11 +321,46 @@ The data format for both files is:
 
 ## ⚙️ Configuration Details (.env)
 
-*   `SPEECHLAB_EMAIL`/`PASSWORD`: Essential for accessing the SpeechLab API.
+### Required Configuration
+*   `SPEECHLAB_EMAIL`/`SPEECHLAB_PASSWORD`: Essential for accessing the SpeechLab API.
+*   `OPENAI_API_KEY`: Required for transcription and summarization features.
 *   `AWS_S3_BUCKET`/`AWS_REGION`: Defines where intermediate audio files are stored. Ensure the bucket allows public-read access for the SpeechLab API.
+
+### Optional Configuration
 *   `TARGET_LANGUAGE`/`DUB_ACCENT`: Set the desired output language/accent (e.g., `es_la`).
 *   `LOG_LEVEL`: Control log verbosity (`debug`, `info`, `warn`, `error`).
 *   `TEST_PROFILE_URL`: The specific Twitter profile to process during development/single runs.
+*   `TWITTER_USERNAME`/`TWITTER_PASSWORD`: Required for mention monitoring daemon mode.
+
+## 🤖 How the AI Detection Works
+
+The agent uses intelligent keyword detection to automatically route requests:
+
+### Transcription Keywords (triggers summarization)
+- "summarize", "summary"
+- "transcribe", "transcription", "transcript"
+- "text", "notes"
+- "what was said", "what did they say"
+- "recap", "overview"
+
+### Dubbing Keywords (triggers translation)
+- Language names: "Spanish", "French", "German", etc.
+- Action words: "translate", "dub", "convert"
+- "to [language]" patterns
+
+### Examples in Action
+
+**Transcription Request:**
+```
+@DubbingAgent can you summarize this Twitter Space for me?
+```
+→ **Result**: AI transcribes the audio and provides a detailed summary
+
+**Dubbing Request:**
+```
+@DubbingAgent please translate this space to Spanish
+```
+→ **Result**: AI dubs the audio into Spanish and provides download links
 
 ## ⚠️ Important Notes & Troubleshooting
 
@@ -272,7 +373,13 @@ The data format for both files is:
     *   Use Twitter API v2 (requires developer account setup and API keys) instead of browser automation for posting, which is more robust but has usage limits/costs.
 *   **Rate Limiting:** Running the agent too frequently or against many profiles might trigger rate limits or CAPTCHAs from Twitter. The `DELAY_BETWEEN_PROFILES_MS` config is intended for future multi-profile processing.
 *   **FFmpeg Path:** Ensure the `ffmpeg` command is globally accessible in your terminal's PATH.
+*   **OpenAI API Costs:** The transcription and summarization features use OpenAI's API, which has usage costs. Monitor your usage on the OpenAI dashboard.
+
+## 📚 Additional Documentation
+
+- **[Transcription Integration Guide](TRANSCRIPTION_INTEGRATION.md)** - Detailed technical documentation of the transcription and summarization integration
+- **[Original Transcription Documentation](TRANSCRIPTION_SUMMARIZATION.md)** - Documentation of the standalone transcription functionality
 
 ---
 
-Enjoy automating your Twitter Space translations! Feel free to contribute or report issues.
+Enjoy automating your Twitter Space translations and summaries! Feel free to contribute or report issues.
