@@ -11,6 +11,7 @@
     "login:twitter": "tsx src/manualTwitterLogin.ts",
     "save:cookies": "tsx src/saveCookies.ts",
     "save:cookies:simple": "tsx src/saveToCookiesFile.ts",
+    "test:transcription": "tsx src/test-transcription-summarization.ts",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "repository": {
@@ -31,6 +32,7 @@
     "cheerio": "^1.0.0",
     "dotenv": "^16.4.7",
     "fs-extra": "^11.3.0",
+    "openai": "^4.103.0",
     "playwright": "^1.51.1",
     "playwright-extra": "^4.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2",

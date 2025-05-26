@@ -34,6 +34,8 @@ interface EnvConfig {
     TWITTER_ACCESS_SECRET: string;
     // Optional: Bearer token if needed for specific v2 endpoints
     TWITTER_BEARER_TOKEN?: string;
+    // OpenAI API key for summarization
+    OPENAI_API_KEY: string;
     // Browser configuration
     BROWSER_HEADLESS?: boolean;
     // Feature Flags
@@ -56,7 +58,9 @@ function validateConfig(env: NodeJS.ProcessEnv): EnvConfig {
         'TWITTER_API_KEY',
         'TWITTER_API_SECRET',
         'TWITTER_ACCESS_TOKEN',
-        'TWITTER_ACCESS_SECRET'
+        'TWITTER_ACCESS_SECRET',
+        // OpenAI API key
+        'OPENAI_API_KEY'
     ];
 
     for (const key of requiredKeys) {
@@ -111,6 +115,8 @@ function validateConfig(env: NodeJS.ProcessEnv): EnvConfig {
         // Add new flags
         POST_REPLY_WITH_VIDEO: postReplyWithVideo,
         USE_TWITTER_API_FOR_REPLY: useTwitterApiForReply,
+        // OpenAI API key for summarization
+        OPENAI_API_KEY: env.OPENAI_API_KEY!,
     };
 }
 
