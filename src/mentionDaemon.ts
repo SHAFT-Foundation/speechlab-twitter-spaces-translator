@@ -1140,13 +1140,25 @@ async function initiateTranscriptionProcessing(mentionInfo: MentionInfo, page: P
         logger.info(`[📝 Transcription Initiate] Audio uploaded for transcription: ${audioUploadResult}`);
 
         // Extract file info from the upload result
-        // The audioUploadResult should be in format: s3://bucket/path/filename
+        // The audioUploadResult can be either:
+        // - S3 URI format: s3://bucket/path/filename
+        // - HTTP URL format: https://bucket.s3.region.amazonaws.com/path/filename
+        let fileKey: string;
+        
+        // Try S3 URI format first
         const s3Match = audioUploadResult.match(/s3:\/\/[^\/]+\/(.+)/);
-        if (!s3Match) {
-            throw new Error('Could not parse S3 key from upload result');
+        if (s3Match) {
+            fileKey = s3Match[1];
+        } else {
+            // Try HTTP URL format
+            const httpMatch = audioUploadResult.match(/https?:\/\/[^\/]+\.s3\.[^\/]+\.amazonaws\.com\/(.+)/);
+            if (httpMatch) {
+                fileKey = httpMatch[1];
+            } else {
+                throw new Error(`Could not parse S3 key from upload result: ${audioUploadResult}`);
+            }
         }
         
-        const fileKey = s3Match[1];
         const fileUuid = uuidv4(); // Generate a UUID for the file
         const projectName = spaceTitle || `Twitter Space Transcription ${spaceId}`;
         
