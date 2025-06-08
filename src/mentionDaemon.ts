@@ -1140,13 +1140,37 @@ async function initiateTranscriptionProcessing(mentionInfo: MentionInfo, page: P
         logger.info(`[📝 Transcription Initiate] Audio uploaded for transcription: ${audioUploadResult}`);
 
         // Extract file info from the upload result
-        // The audioUploadResult should be in format: s3://bucket/path/filename
-        const s3Match = audioUploadResult.match(/s3:\/\/[^\/]+\/(.+)/);
-        if (!s3Match) {
-            throw new Error('Could not parse S3 key from upload result');
+        // The audioUploadResult can be an S3 URI, an HTTPS URL, or just the key.
+        let fileKey: string;
+        if (audioUploadResult.startsWith('https://')) {
+            try {
+                const url = new URL(audioUploadResult);
+                fileKey = url.pathname.substring(1); // Remove leading '/'
+                logger.info(`[📝 Transcription Initiate] Parsed S3 key "${fileKey}" from HTTPS URL.`);
+            } catch (e) {
+                const errorMsg = 'Could not parse S3 key from HTTPS URL';
+                logger.error(`[📝 Transcription Initiate] ${errorMsg}`, e);
+                throw new Error(errorMsg);
+            }
+        } else if (audioUploadResult.startsWith('s3://')) {
+            const s3Match = audioUploadResult.match(/s3:\/\/[^\\/]+\/(.+)/);
+            if (!s3Match) {
+                const errorMsg = 'Could not parse S3 key from S3 URI';
+                logger.error(`[📝 Transcription Initiate] ${errorMsg}: ${audioUploadResult}`);
+                throw new Error(errorMsg);
+            }
+            fileKey = s3Match[1];
+            logger.info(`[📝 Transcription Initiate] Parsed S3 key "${fileKey}" from S3 URI.`);
+        } else {
+            // Fallback for just a key, which might be a legacy or direct case.
+            fileKey = audioUploadResult;
+            logger.warn(`[📝 Transcription Initiate] Could not determine upload result format, assuming it is a raw S3 key: "${fileKey}"`);
         }
         
-        const fileKey = s3Match[1];
+        if (!fileKey) {
+            throw new Error('Could not parse a valid S3 key from the upload result');
+        }
+        
         const fileUuid = uuidv4(); // Generate a UUID for the file
         const projectName = spaceTitle || `Twitter Space Transcription ${spaceId}`;
         

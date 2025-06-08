@@ -7,9 +7,6 @@ import fsPromises from 'fs/promises';
 
 const API_BASE_URL = 'https://translate-api.speechlab.ai';
 
-// Note: For transcription, we need to use the dev API endpoint
-const API_DEV_BASE_URL = 'https://api-translate-dev.speechlab.ai';
-
 // Interfaces for API Payloads and Responses (based on user examples)
 interface LoginPayload {
     email: string;
@@ -67,7 +64,9 @@ interface CreateTranscribePayload {
 }
 
 interface CreateTranscribeResponse {
-    projectId: string;
+    project: {
+        id: string;
+    };
     // Add other potential fields
 }
 
@@ -136,15 +135,6 @@ const apiClient: AxiosInstance = axios.create({
     timeout: 30000, // 30 second timeout
 });
 
-// Create a separate Axios instance for dev API calls (transcription)
-const apiDevClient: AxiosInstance = axios.create({
-    baseURL: API_DEV_BASE_URL,
-    headers: {
-        'Content-Type': 'application/json',
-    },
-    timeout: 30000, // 30 second timeout
-});
-
 /**
  * Handles API errors, logging relevant details.
  * @param error The error object (likely AxiosError).
@@ -173,7 +163,7 @@ function handleApiError(error: unknown, context: string): void {
  * Invalidates the cached authentication token.
  */
 function invalidateAuthToken(): void {
-    logger.info('[🤖 SpeechLab] Invalidating cached authentication token.');
+    logger.info(`[🤖 SpeechLab] Invalidating cached authentication token.`);
     cachedToken = null;
     tokenExpiryTime = null;
 }
@@ -187,11 +177,11 @@ async function getAuthToken(): Promise<string | null> {
     // Basic check: If we have a token, return it (improve with expiry check later)
     if (cachedToken) {
         // TODO: Add check for tokenExpiryTime here if implementing JWT parsing
-        logger.debug('[🤖 SpeechLab] Using cached authentication token.');
+        logger.debug(`[🤖 SpeechLab] Using cached authentication token.`);
         return cachedToken;
     }
 
-    logger.info('[🤖 SpeechLab] No cached token. Authenticating with API...');
+    logger.info(`[🤖 SpeechLab] No cached token. Authenticating with API...`);
     const loginPayload: LoginPayload = {
         email: config.SPEECHLAB_EMAIL,
         password: config.SPEECHLAB_PASSWORD,
@@ -202,17 +192,17 @@ async function getAuthToken(): Promise<string | null> {
         const token = response.data?.tokens?.accessToken?.jwtToken;
 
         if (token) {
-            logger.info('[🤖 SpeechLab] ✅ Successfully authenticated and obtained token.');
+            logger.info(`[🤖 SpeechLab] ✅ Successfully authenticated and obtained token.`);
             cachedToken = token;
             // TODO: Decode JWT to get expiry time and set tokenExpiryTime
             return token;
         } else {
-            logger.error('[🤖 SpeechLab] ❌ Authentication successful but token not found in response.');
+            logger.error(`[🤖 SpeechLab] ❌ Authentication successful but token not found in response.`);
             logger.debug(`[🤖 SpeechLab] Full login response: ${JSON.stringify(response.data)}`);
             return null;
         }
     } catch (error) {
-        handleApiError(error, 'authentication');
+        handleApiError(error, `authentication`);
         return null;
     }
 }
@@ -563,11 +553,11 @@ export async function createTranscriptionProject(
 
         try {
             // Note: Using the dev API endpoint as shown in the curl example
-            const response = await apiDevClient.post<CreateTranscribeResponse>('/v1/projects/createProjectAndTranscribe', payload, {
+            const response = await apiClient.post<CreateTranscribeResponse>('/v1/projects/createProjectAndTranscribe', payload, {
                 headers: { 'Authorization': `Bearer ${token}` }
             });
 
-            const projectId = response.data?.projectId;
+            const projectId = response.data?.project?.id;
             if (projectId) {
                 logger.info(`[🤖 SpeechLab] ✅ Successfully created transcription project (Attempt ${attempt}). Project ID: ${projectId}`);
                 return projectId;
@@ -612,7 +602,7 @@ export async function getTranscriptionProjectById(projectId: string): Promise<Tr
 
     const url = `/v1/projects/${projectId}?expand=true`;
         
-    logger.debug(`[🤖 SpeechLab] 🔍 Fetching transcription project from API URL (Attempt ${attempt}): ${API_DEV_BASE_URL}${url}`);
+    logger.debug(`[🤖 SpeechLab] 🔍 Fetching transcription project from API URL (Attempt ${attempt}): ${API_BASE_URL}${url}`);
 
     while (attempt <= maxAttempts) {
         const token = await getAuthToken();
@@ -622,17 +612,17 @@ export async function getTranscriptionProjectById(projectId: string): Promise<Tr
         }
 
         try {
-            const response = await apiDevClient.get<TranscriptionProject>(url, {
+            const response = await apiClient.get<TranscriptionProject>(url, {
                 headers: { 'Authorization': `Bearer ${token}` }
             });
             
             if (response.data) {
                 const project = response.data;
-                const status = project.job?.status || "UNKNOWN";
+                const status = project.transcription?.status || project.job?.status || "UNKNOWN";
                 
                 logger.info(`[🤖 SpeechLab] ✅ (Attempt ${attempt}) Found transcription project with ID: ${project.id}`);
                 logger.info(`[🤖 SpeechLab] 📊 (Attempt ${attempt}) Project status: ${status}`);
-                logger.info(`[🤖 SpeechLab] 📋 (Attempt ${attempt}) Project details: Name: "${project.job?.name || 'Unknown'}", Language: ${project.job?.sourceLanguage || 'Unknown'}`);
+                logger.info(`[🤖 SpeechLab] 📋 (Attempt ${attempt}) Project details: Name: "${project.name || project.job?.name || 'Unknown'}", Language: ${project.content?.language || project.job?.sourceLanguage || 'Unknown'}`);
                 
                 if (project.transcription?.transcriptionText) {
                     logger.info(`[🤖 SpeechLab] 📝 (Attempt ${attempt}) Transcription text length: ${project.transcription.transcriptionText.length} characters`);
@@ -657,7 +647,7 @@ export async function getTranscriptionProjectById(projectId: string): Promise<Tr
                 logger.warn(`[🤖 SpeechLab] ⚠️ Received 401 Unauthorized on attempt ${attempt} for transcription project status check. Invalidating token and retrying...`);
                 invalidateAuthToken();
                 attempt++;
-                logger.debug(`[🤖 SpeechLab] 🔍 Fetching transcription project from API URL (Attempt ${attempt}): ${API_DEV_BASE_URL}${url}`); // Log URL for retry
+                logger.debug(`[🤖 SpeechLab] 🔍 Fetching transcription project from API URL (Attempt ${attempt}): ${API_BASE_URL}${url}`); // Log URL for retry
                 continue; 
             } else {
                 handleApiError(error, context);
@@ -701,7 +691,7 @@ export async function waitForTranscriptionCompletion(
         
         if (!project) {
             logger.warn(`[🤖 SpeechLab] ⚠️ Poll #${pollCount} - Could not retrieve transcription project details, will retry in ${checkIntervalMs/1000}s...`);
-        } else if (project.job?.status === "COMPLETE") {
+        } else if (project.transcription?.status === "COMPLETE" || project.job?.status === "COMPLETE") {
             const elapsedMinutes = ((Date.now() - startTime) / 1000 / 60).toFixed(1);
             logger.info(`[🤖 SpeechLab] ✅ Poll #${pollCount} - Transcription project completed successfully after ${elapsedMinutes} minutes!`);
             
@@ -712,12 +702,12 @@ export async function waitForTranscriptionCompletion(
             }
             
             return project; // Return the full project object on success
-        } else if (project.job?.status === "FAILED") {
+        } else if (project.transcription?.status === "FAILED" || project.job?.status === "FAILED") {
             logger.error(`[🤖 SpeechLab] ❌ Poll #${pollCount} - Transcription project failed to process!`);
             return null; // Return null on failure
         } else {
             // Calculate progress (simplified)
-            const status = project.job?.status || "UNKNOWN";
+            const status = project.transcription?.status || project.job?.status || "UNKNOWN";
             const progressPercent = status === "PROCESSING" ? 50 : 0; 
             let remainingTimeEstimate = "unknown";
             
@@ -745,13 +735,19 @@ export async function waitForTranscriptionCompletion(
 // Interface for transcription project details
 export interface TranscriptionProject {
     id: string;
-    job: {
+    name: string;
+    content: {
+        language: string;
+    };
+    job?: {
         name: string;
         sourceLanguage: string;
         status: string;
     };
     transcription?: {
         transcriptionText: string;
+        status: string;
+        language: string;
         // Add other transcription fields as needed
     };
     // Include other fields from the API response as needed
