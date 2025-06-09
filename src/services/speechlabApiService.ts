@@ -552,20 +552,37 @@ export async function getProjectTranscription(projectId: string): Promise<string
         // Use getProjectByThirdPartyID to fetch the project details
         const project = await getProjectByThirdPartyID(projectId);
         logger.debug(`[🤖 SpeechLab] FULL PROJECT OBJECT: ${JSON.stringify(project, null, 2)}`);
-        // TODO: Update extraction logic below once actual structure is confirmed in logs
+        if (project && (project as any).transcription) {
+            logger.info(`[🤖 SpeechLab] Project has a 'transcription' object: ${JSON.stringify((project as any).transcription, null, 2)}`);
+            const transcriptionId = (project as any).transcription.id;
+            logger.info(`[🤖 SpeechLab] transcription.id: ${transcriptionId}`);
+            // Try to fetch the full project by projectId to get the transcriptionText
+            const projectById = await getProjectById(project.id);
+            if (projectById && (projectById as any).transcription && (projectById as any).transcription.transcriptionText) {
+                logger.info(`[🤖 SpeechLab] ✅ Successfully retrieved transcriptionText from project by ID.`);
+                logger.debug(`[🤖 SpeechLab] Returning transcriptionText from projectById.transcription.`);
+                return (projectById as any).transcription.transcriptionText;
+            } else {
+                logger.warn(`[🤖 SpeechLab] ⚠️ transcriptionText not found in projectById.transcription for projectId: ${project.id}`);
+            }
+            // No transcript text found in this object
+            logger.warn(`[🤖 SpeechLab] ⚠️ No transcript text found in project object. You may need to fetch it from a different endpoint using transcription.id.`);
+        }
+        // Existing logic for translations/dub (kept for future-proofing, but not found in example)
         if (project && project.translations && project.translations.length > 0) {
             for (const translation of project.translations) {
                 if (translation.dub && translation.dub.length > 0) {
                     for (const dub of translation.dub) {
                         if ((dub as any).transcriptionText) {
                             logger.info(`[🤖 SpeechLab] ✅ Successfully retrieved transcription text for project ${projectId}.`);
+                            logger.debug(`[🤖 SpeechLab] Returning transcriptionText from dub object.`);
                             return (dub as any).transcriptionText;
                         }
                     }
                 }
             }
         }
-        logger.warn(`[🤖 SpeechLab] ⚠️ Could not find transcription text in project ${projectId}.`);
+        logger.warn(`[🤖 SpeechLab] ⚠️ Could not find transcription text in project ${projectId}. Returning null.`);
         return null;
     } catch (error) {
         logger.error(`[🤖 SpeechLab] ❌ Error fetching transcription for project ${projectId}:`, error);
@@ -592,4 +609,49 @@ export interface TranscriptionProject {
         // Add other transcription fields as needed
     };
     // Include other fields from the API response as needed
+}
+
+/**
+ * Gets project details by projectId (not thirdPartyID).
+ * Returns the *full* project object if found.
+ * @param projectId The projectId to fetch
+ * @returns {Promise<Project | null>} Full project object if found, otherwise null
+ */
+export async function getProjectById(projectId: string): Promise<Project | null> {
+    logger.info(`[🤖 SpeechLab] Getting project by projectId: ${projectId}`);
+    let attempt = 1;
+    const maxAttempts = 2;
+    const url = `/v1/projects/${projectId}?expand=true`;
+    logger.debug(`[🤖 SpeechLab] Fetching project by ID from API URL (Attempt ${attempt}): ${API_BASE_URL}${url}`);
+    while (attempt <= maxAttempts) {
+        const token = await getAuthToken();
+        if (!token) {
+            logger.error(`[🤖 SpeechLab] ❌ Cannot get project by ID (Attempt ${attempt}): Failed to get authentication token.`);
+            return null;
+        }
+        try {
+            const response = await apiClient.get<Project>(url, {
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+            logger.info(`[🤖 SpeechLab] ✅ (Attempt ${attempt}) Got project by ID: ${projectId}`);
+            logger.debug(`[🤖 SpeechLab] --- FULL PROJECT BY ID RESPONSE (Attempt ${attempt}) ---`);
+            logger.debug(JSON.stringify(response.data, null, 2));
+            logger.debug(`[🤖 SpeechLab] --- END FULL PROJECT BY ID RESPONSE (Attempt ${attempt}) ---`);
+            return response.data;
+        } catch (error) {
+            const context = `getting project by ID: ${projectId} (Attempt ${attempt})`;
+            if (axios.isAxiosError(error) && error.response?.status === 401 && attempt < maxAttempts) {
+                logger.warn(`[🤖 SpeechLab] ⚠️ Received 401 Unauthorized on attempt ${attempt} for getProjectById. Invalidating token and retrying...`);
+                invalidateAuthToken();
+                attempt++;
+                logger.debug(`[🤖 SpeechLab] Fetching project by ID from API URL (Attempt ${attempt}): ${API_BASE_URL}${url}`);
+                continue;
+            } else {
+                handleApiError(error, context);
+                return null;
+            }
+        }
+    }
+    logger.error(`[🤖 SpeechLab] ❌ Failed to get project by ID after ${maxAttempts} attempts.`);
+    return null;
 } 
