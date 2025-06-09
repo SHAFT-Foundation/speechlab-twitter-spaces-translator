@@ -15,7 +15,7 @@ import {
     extractSpaceTitleFromModal
 } from './services/twitterInteractionService';
 import { downloadAndUploadAudio } from './services/audioService';
-import { createDubbingProject, waitForProjectCompletion, generateSharingLink, getProjectByThirdPartyID } from './services/speechlabApiService';
+import { createDubbingProject, waitForProjectCompletion, generateSharingLink, getProjectByThirdPartyID, getProjectTranscription } from './services/speechlabApiService';
 import { detectLanguage, detectLanguages, getLanguageName } from './utils/languageUtils';
 import { v4 as uuidv4 } from 'uuid';
 import { downloadFile } from './utils/fileUtils';
@@ -24,8 +24,7 @@ import util from 'util';
 import { postTweetReplyWithMediaApi } from './services/twitterApiService';
 import { uploadLocalFileToS3 } from './services/audioService';
 import * as fsExtra from 'fs-extra';
-// Add transcription and summarization imports
-import { transcribeAndSummarize, TranscriptionRequest } from './services/transcriptionSummarizationService';
+import { summarizeTwitterSpace } from './services/openaiService';
 
 const execPromise = util.promisify(exec);
 
@@ -75,7 +74,8 @@ interface BackendResult {
     error?: string;
     // For transcription results
     transcriptionText?: string;
-    summary?: string;
+    summary?: string | null | undefined;
+    summaryS3Url?: string | null | undefined;
     // Path to the FINAL generated video file
     // generatedVideoPath?: string; 
 }
@@ -1219,6 +1219,7 @@ async function initiateTranscriptionProcessing(mentionInfo: MentionInfo, page: P
 async function performBackendProcessing(initData: InitiationResult): Promise<BackendResult> {
     const { m3u8Url, spaceId, spaceTitle, sourceLanguageCode, targetLanguageCode, mentionInfo } = initData;
     const TEMP_AUDIO_DIR = path.join(process.cwd(), 'temp_audio'); 
+    const isTranscriptionReq = isTranscriptionRequest(mentionInfo.text);
     // Remove video dir if not generating video
     // const TEMP_VIDEO_DIR = path.join(process.cwd(), 'temp_video'); 
     // const PLACEHOLDER_IMAGE_PATH = path.join(process.cwd(), 'placeholder.jpg');
@@ -1229,6 +1230,8 @@ async function performBackendProcessing(initData: InitiationResult): Promise<Bac
     // let generatedVideoPath: string | undefined = undefined;
     let publicMp3Url: string | undefined = undefined;
     let projectId: string | null = null; // Initialize projectId
+    let summary: string | null | undefined = undefined;
+    let summaryS3Url: string | null | undefined = undefined;
     
     // Initialize thirdPartyID at the top level
     const projectName = spaceTitle || `Twitter Space ${spaceId}`; 
@@ -1371,6 +1374,36 @@ async function performBackendProcessing(initData: InitiationResult): Promise<Bac
         await updateProjectStatus(thirdPartyID, 'complete', mentionInfo.tweetId, projectId);
         logger.info(`[⚙️ Backend] SpeechLab project ${thirdPartyID} completed successfully.`);
 
+        // --- NEW: Transcription & Summarization Step ---
+        if (isTranscriptionReq) {
+            logger.info(`[⚙️ Backend] Transcription request detected. Fetching transcription...`);
+            const transcriptionText = await getProjectTranscription(projectId);
+
+            if (transcriptionText) {
+                logger.info(`[⚙️ Backend] ✅ Successfully fetched transcription (${transcriptionText.length} chars). Now summarizing...`);
+                summary = await summarizeTwitterSpace(transcriptionText);
+                if (summary) {
+                    logger.info(`[⚙️ Backend] ✅ Successfully generated summary. Now uploading to S3...`);
+                    const summaryFilename = `${thirdPartyID}_summary.txt`;
+                    const tempSummaryPath = path.join(TEMP_AUDIO_DIR, summaryFilename);
+                    await fs.writeFile(tempSummaryPath, summary);
+                    const summaryS3Key = `space-summaries/${summaryFilename}`;
+                    summaryS3Url = await uploadLocalFileToS3(tempSummaryPath, summaryS3Key);
+                    if (summaryS3Url) {
+                        logger.info(`[⚙️ Backend] ✅ Summary uploaded to S3: ${summaryS3Url}`);
+                    } else {
+                        logger.warn(`[⚙️ Backend] ⚠️ Failed to upload summary to S3.`);
+                    }
+                    await fs.unlink(tempSummaryPath).catch(err => logger.warn(`[⚙️ Backend] Error cleaning up temp summary file: ${err.message}`));
+                } else {
+                    logger.warn(`[⚙️ Backend] ⚠️ Failed to generate summary for project ${projectId}.`);
+                }
+            } else {
+                logger.warn(`[⚙️ Backend] ⚠️ Could not fetch transcription for project ${projectId}.`);
+            }
+        }
+        // --- END: Transcription & Summarization Step ---
+        
         // 4. Find and Download DUBBED MP3 Audio
         const outputAudio = completedProject.translations?.[0]?.dub?.[0]?.medias?.find(d => 
             d.category === 'audio' && d.format === 'mp3' && d.operationType === 'OUTPUT'
@@ -1394,7 +1427,7 @@ async function performBackendProcessing(initData: InitiationResult): Promise<Bac
                 // 5. Upload the DUBBED MP3 to the PUBLIC S3 Bucket
                 const publicS3Key = `dubbed-spaces/${audioFilename}`; // Example S3 path
                 logger.info(`[⚙️ Backend] Uploading downloaded MP3 to public S3 bucket as ${publicS3Key}...`);
-                const uploadedUrl = await uploadLocalFileToS3(downloadedAudioPath, publicS3Key);
+                const uploadedUrl = await uploadLocalFileToS3(publicS3Key, downloadedAudioPath);
                 if (uploadedUrl) {
                     publicMp3Url = uploadedUrl;
                     logger.info(`[⚙️ Backend] ✅ Successfully uploaded dubbed MP3 to public S3: ${publicMp3Url}`);
@@ -1420,9 +1453,11 @@ async function performBackendProcessing(initData: InitiationResult): Promise<Bac
         return { 
             success: true, 
             sharingLink: sharingLink || undefined, 
-            publicMp3Url: publicMp3Url, // Will be undefined if download or S3 upload failed
+            publicMp3Url: publicMp3Url || undefined,
             projectId: projectId,
-            thirdPartyID: thirdPartyID
+            thirdPartyID: thirdPartyID,
+            summary: summary,
+            summaryS3Url: summaryS3Url || undefined
         };
 
     } catch (error: any) {
@@ -1436,59 +1471,6 @@ async function performBackendProcessing(initData: InitiationResult): Promise<Bac
             success: false, 
             error: error.message || 'Unknown backend error', 
             thirdPartyID: thirdPartyID 
-        };
-    }
-}
-
-/**
- * Handles backend transcription processing: transcribe and summarize the audio
- * @param initData The transcription initiation data
- * @returns {Promise<BackendResult>} Backend result with transcription and summary
- */
-async function performTranscriptionBackendProcessing(initData: TranscriptionInitiationResult): Promise<BackendResult> {
-    const { fileUuid, fileKey, spaceTitle, mentionInfo, contentDuration, thumbnail } = initData;
-    
-    logger.info(`[📝 Transcription Backend] Starting transcription backend processing for ${mentionInfo.tweetId}`);
-    
-    try {
-        // Create transcription request
-        const transcriptionRequest: TranscriptionRequest = {
-            fileUuid,
-            fileKey,
-            name: spaceTitle || `Twitter Space Transcription ${mentionInfo.tweetId}`,
-            filenameToReturn: `${spaceTitle || 'twitter-space'}.mov`,
-            language: 'en', // Default to English for now
-            contentDuration,
-            thumbnail
-        };
-        
-        logger.info(`[📝 Transcription Backend] Starting transcription and summarization workflow...`);
-        const result = await transcribeAndSummarize(transcriptionRequest);
-        
-        if (result.success) {
-            logger.info(`[📝 Transcription Backend] ✅ Transcription and summarization completed successfully for ${mentionInfo.tweetId}`);
-            return {
-                success: true,
-                transcriptionText: result.transcriptionText,
-                summary: result.summary,
-                projectId: result.projectId,
-                thirdPartyID: `transcription-${mentionInfo.tweetId}`
-            };
-        } else {
-            logger.error(`[📝 Transcription Backend] ❌ Transcription and summarization failed: ${result.errorMessage}`);
-            return {
-                success: false,
-                error: result.errorMessage || 'Transcription and summarization failed',
-                thirdPartyID: `transcription-${mentionInfo.tweetId}`
-            };
-        }
-        
-    } catch (error: any) {
-        logger.error(`[📝 Transcription Backend] Error during transcription backend processing for ${mentionInfo.tweetId}:`, error);
-        return {
-            success: false,
-            error: error.message || 'Unknown transcription backend error',
-            thirdPartyID: `transcription-${mentionInfo.tweetId}`
         };
     }
 }
@@ -1536,53 +1518,28 @@ async function runInitiationQueue(page: Page): Promise<void> {
     logger.info(`[🚀 Initiate Queue] Processing mention ${mentionToProcess.tweetId} (${mentionToProcess.username}). Remaining: ${mentionQueue.length}. This is mention #${processedCount} processed since startup.`);
     
     try {
-        // Check if this is a transcription request
+        // All requests will now go through the same initiation and backend pipeline
         const isTranscription = isTranscriptionRequest(mentionToProcess.text);
-        logger.info(`[🚀 Initiate Queue] Mention ${mentionToProcess.tweetId} detected as ${isTranscription ? 'TRANSCRIPTION' : 'DUBBING'} request`);
+        logger.info(`[🚀 Initiate Queue] Mention ${mentionToProcess.tweetId} detected as ${isTranscription ? 'TRANSCRIPTION' : 'DUBBING'} request. Both use the same pipeline.`);
+
+        const initData = await initiateProcessing(mentionToProcess, page);
         
-        if (isTranscription) {
-            // Handle transcription workflow
-            logger.info(`[📝 Transcription Initiate] Starting transcription workflow for ${mentionToProcess.tweetId}`);
-            const transcriptionInitData = await initiateTranscriptionProcessing(mentionToProcess, page);
-            
-            // If transcription initiation is successful, start transcription backend processing asynchronously
-            logger.info(`[📝 Transcription Initiate] Transcription initiation successful for ${mentionToProcess.tweetId}. Starting background transcription task.`);
-            
-            // No 'await' here - let it run in the background
-            performTranscriptionBackendProcessing(transcriptionInitData)
-                .then(backendResult => {
-                    addToFinalReplyQueue(mentionToProcess, backendResult);
-                })
-                .catch(backendError => {
-                    logger.error(`[💥 Transcription Backend ERROR] Uncaught error in background transcription processing for ${mentionToProcess.tweetId}:`, backendError);
-                    // Add a failure result to the reply queue so we can notify the user
-                    addToFinalReplyQueue(mentionToProcess, { success: false, error: 'Transcription processing failed unexpectedly' });
-                    
-                    // Also log error and mark as processed to prevent requeuing
-                    logMentionError(mentionToProcess.tweetId, backendError, 'backend');
-                });
-        } else {
-            // Handle dubbing workflow (original logic)
-            logger.info(`[🚀 Initiate] Starting dubbing workflow for ${mentionToProcess.tweetId}`);
-            const initData = await initiateProcessing(mentionToProcess, page);
-            
-            // If initiation is successful, start backend processing asynchronously
-            logger.info(`[🚀 Initiate Queue] Initiation successful for ${mentionToProcess.tweetId}. Starting background backend task.`);
-            
-            // No 'await' here - let it run in the background
-            performBackendProcessing(initData)
-                .then(backendResult => {
-                    addToFinalReplyQueue(mentionToProcess, backendResult);
-                })
-                .catch(backendError => {
-                    logger.error(`[💥 Backend ERROR] Uncaught error in background processing for ${mentionToProcess.tweetId}:`, backendError);
-                    // Add a failure result to the reply queue so we can notify the user
-                    addToFinalReplyQueue(mentionToProcess, { success: false, error: 'Backend processing failed unexpectedly' });
-                    
-                    // Also log error and mark as processed to prevent requeuing
-                    logMentionError(mentionToProcess.tweetId, backendError, 'backend');
-                });
-        }
+        // If initiation is successful, start backend processing asynchronously
+        logger.info(`[🚀 Initiate Queue] Initiation successful for ${mentionToProcess.tweetId}. Starting background backend task.`);
+        
+        // No 'await' here - let it run in the background
+        performBackendProcessing(initData)
+            .then(backendResult => {
+                addToFinalReplyQueue(mentionToProcess, backendResult);
+            })
+            .catch(backendError => {
+                logger.error(`[💥 Backend ERROR] Uncaught error in background processing for ${mentionToProcess.tweetId}:`, backendError);
+                // Add a failure result to the reply queue so we can notify the user
+                addToFinalReplyQueue(mentionToProcess, { success: false, error: 'Backend processing failed unexpectedly' });
+                
+                // Also log error and mark as processed to prevent requeuing
+                logMentionError(mentionToProcess.tweetId, backendError, 'backend');
+            });
             
     } catch (initError) {
         // Errors during initiateProcessing (including posting error replies) are logged within the function
@@ -1598,6 +1555,7 @@ async function runInitiationQueue(page: Page): Promise<void> {
 
 /**
  * Processes the final reply queue (runs one at a time).
+ * @param page The Playwright page object, required if not using API for replies.
  */
 async function runFinalReplyQueue(page: Page): Promise<void> { 
     if (isPostingFinalReply || finalReplyQueue.length === 0) {
@@ -1624,187 +1582,104 @@ async function runFinalReplyQueue(page: Page): Promise<void> {
     const { mentionInfo, backendResult } = replyData;
     logger.info(`[↩️ Reply Queue] Processing final reply for ${mentionInfo.tweetId}. Backend Success: ${backendResult.success}`);
 
-    let finalMessage = ''; // Keep for potential single message fallback
-    // Media attachment is currently disabled by default via config
-    let mediaPathToAttach: string | undefined = undefined;
-
-    // Construct the final message based on success and link availability
+    let replyText = '';
     if (backendResult.success) {
-        // Check if this is a transcription result or dubbing result
-        if (backendResult.transcriptionText && backendResult.summary) {
-            // This is a transcription result
-            logger.info(`[↩️ Reply Queue] Constructing transcription success reply for ${mentionInfo.tweetId}`);
-            
-            // Truncate summary if it's too long for Twitter
-            const maxSummaryLength = 200; // Leave room for username and other text
-            let summary = backendResult.summary;
-            if (summary.length > maxSummaryLength) {
-                summary = summary.substring(0, maxSummaryLength - 3) + '...';
-            }
-            
-            finalMessage = `${mentionInfo.username} Here's your Twitter Space summary! 📝\n\n${summary}`;
-            
-        } else {
-            // This is a dubbing result (original logic)
-            const { sourceLanguageName, targetLanguageName } = detectLanguages(mentionInfo.text);
-            const hasSharingLink = !!backendResult.sharingLink;
-            const hasMp3Link = !!backendResult.publicMp3Url;
-            
-            // --- MODIFIED: Check for MP3 Link presence FIRST for success message ---
-            if (hasMp3Link) {
-                // MP3 is available - construct the success message
-                let linkParts = [];
-                // MP3 Link comes first
-                linkParts.push(`CLICK HERE FOR MP3: ${backendResult.publicMp3Url}`);
-                if (hasSharingLink) {
-                     // Sharing Link comes second if available
-                    linkParts.push(`Link: ${backendResult.sharingLink}`);
-                }
-                // Construct success message with links in the desired order - ensure both usernames have @ symbols
-                finalMessage = `@RyanAtSpeechlab ${mentionInfo.username} Your ${sourceLanguageName} to ${targetLanguageName} dub is ready! $shaft 🎉 ${linkParts.join(' | ')}`;
-                
-            } else {
-                // MP3 is MISSING, even though backendResult.success is true. Treat as partial failure for reply.
-                logger.warn(`[↩️ Reply Queue] Backend succeeded for ${mentionInfo.tweetId} but MP3 link is missing. Posting alternative message.`);
-                let partialFailureMessage = `${mentionInfo.username} Processing finished for the ${sourceLanguageName} to ${targetLanguageName} dub, but I couldn't prepare the MP3 audio file. 😥`;
-                if (hasSharingLink) {
-                    partialFailureMessage += ` You might find project details here: ${backendResult.sharingLink}`;
-                }
-                if (backendResult.projectId) {
-                     partialFailureMessage += ` (Project ID: ${backendResult.projectId})`;
-                }
-                 finalMessage = partialFailureMessage;
-                 // Keep mediaPathToAttach as undefined in this case too
-                 mediaPathToAttach = undefined;
-            }
-            // --- END MODIFIED SECTION ---
-        }
-
-    } else {
-        // Construct error message for the single reply (original logic)
-        // Check if this was a transcription request to customize the error message
+        // --- NEW: Dynamic Reply Construction ---
         const isTranscription = isTranscriptionRequest(mentionInfo.text);
-        
-        if (isTranscription) {
-            const errorReason = backendResult.error || 'transcription failed';
-            finalMessage = `${mentionInfo.username} Oops! 😥 Couldn't complete the transcription and summary for this Space (${errorReason}). Maybe try again later?`;
+        let baseMessage = '';
+
+        if (isTranscription && backendResult.summaryS3Url) {
+            baseMessage = `${mentionInfo.username} Here's the summary of the Space you requested!`;
+            replyText = `${baseMessage}\n\nSummary: ${backendResult.summaryS3Url}`;
+        } else if (isTranscription) {
+            // Fallback if summary failed but project was otherwise successful
+            baseMessage = `${mentionInfo.username} I finished processing the Space, but couldn't generate a summary.`;
         } else {
-            const { sourceLanguageName, targetLanguageName } = detectLanguages(mentionInfo.text);
-            const errorReason = backendResult.error || 'processing failed';
-            finalMessage = `${mentionInfo.username} Oops! 😥 Couldn't complete the ${sourceLanguageName} to ${targetLanguageName} dub for this Space (${errorReason}). Maybe try again later?`;
+            baseMessage = `${mentionInfo.username} I've finished dubbing this Twitter Space!`;
         }
-        mediaPathToAttach = undefined; // Ensure no media attached on failure
+        
+        // Always include the project link if it exists
+        if (backendResult.sharingLink) {
+            replyText = `${replyText || baseMessage}\n\nYou can view the translated (or original) Space here: ${backendResult.sharingLink}`;
+        } else {
+            replyText = replyText || baseMessage; // Use base message if no links are available
+        }
+        // --- END: Dynamic Reply Construction ---
+    } else {
+        const errorDetails = backendResult.error ? `(${backendResult.error})` : '';
+        replyText = `${mentionInfo.username} Oops! 😥 Couldn't complete the transcription and summary for this Space ${errorDetails}. Maybe try again later?`;
+    }
+    
+    // Ensure reply text is not empty
+    if (!replyText.trim()) {
+        replyText = `${mentionInfo.username} Oops! 😥 Couldn't complete the transcription and summary for this Space. Please try again.`;
     }
     
     // --- ADDED: Log the final constructed message before sending ---
-    logger.info(`[↩️ Reply Queue] Final constructed reply text: ${finalMessage}`);
+    logger.info(`[↩️ Reply Queue] Final constructed reply text: ${replyText}`);
     // --- END ADDED SECTION ---
 
-    // --- Posting Logic (Single Reply) --- 
-    let postSuccess = false;
-
+    // Final reply posting logic
     try {
-        // --- Post Final Reply --- 
-        logger.info(`[↩️ Reply Queue] Posting final reply (${postMethod})...`);
+        let postSuccess = false;
         if (config.USE_TWITTER_API_FOR_REPLY) {
             postSuccess = await postTweetReplyWithMediaApi(
-                finalMessage, 
+                replyText, 
                 mentionInfo.tweetId, 
-                mediaPathToAttach // Media only attached if applicable
+                undefined // Media only attached if applicable
             );
         } else {
             postSuccess = await postReplyToTweet(
                 page, 
                 mentionInfo.tweetUrl, 
-                finalMessage, 
-                mediaPathToAttach // Media only attached if applicable
+                replyText, 
+                undefined // Media only attached if applicable
             );
         }
         
         if (postSuccess) {
             logger.info(`[↩️ Reply Queue] Successfully posted final reply via ${postMethod} for ${mentionInfo.tweetId}.`);
-            
-            // --- Mark Processed After Successful Reply --- 
-            if (backendResult.success) { // Only mark processed if the backend succeeded
-                logger.info(`[↩️ Reply Queue] Marking mention ${mentionInfo.tweetId} as processed now.`);
-                try {
-                    await markMentionAsProcessed(mentionInfo.tweetId, processedMentions); 
-                    
-                    // If we have a thirdPartyID, update the project status to 'complete'
-                    if (backendResult.thirdPartyID) {
-                        logger.info(`[↩️ Reply Queue] Updating project status for ${backendResult.thirdPartyID} to 'complete'.`);
-                        await updateProjectStatus(
-                            backendResult.thirdPartyID, 
-                            'complete', 
-                            mentionInfo.tweetId, 
-                            backendResult.projectId
-                        );
-                    }
-                } catch (markError) {
-                    // Log critical error but continue if possible
-                    logger.error(`[↩️ Reply Queue] CRITICAL: Failed to mark mention ${mentionInfo.tweetId} as processed after successful reply:`, markError);
-                }
-             } else {
-                 logger.info(`[↩️ Reply Queue] Backend failed, marking mention ${mentionInfo.tweetId} as processed to prevent requeuing.`);
-                 // Always mark as processed even if backend failed
-                 await markMentionAsProcessed(mentionInfo.tweetId, processedMentions);
-                 
-                 // If we have a thirdPartyID, update the project status to 'failed'
-                 if (backendResult.thirdPartyID) {
-                     logger.info(`[↩️ Reply Queue] Updating project status for ${backendResult.thirdPartyID} to 'failed'.`);
-                     await updateProjectStatus(
-                         backendResult.thirdPartyID, 
-                         'failed', 
-                         mentionInfo.tweetId, 
-                         backendResult.projectId
-                     );
-                 }
-                 
-                 // Log to error log file
-                 logMentionError(mentionInfo.tweetId, backendResult.error || 'Unknown backend error', 'backend');
-             }
-
-            // --- Clean up DOWNLOADED MP3 --- 
-            if (backendResult.success && backendResult.publicMp3Url) { // Only cleanup if backend succeeded AND MP3 link existed (meaning download likely happened)
-                // Extract language codes for potential audio file cleanup
-                const { sourceLanguageCode, targetLanguageCode } = detectLanguages(mentionInfo.text);
-                // !! This title reconstruction for cleanup is FRAGILE !!
-                // It assumes the title used during backend processing was 'temp' if original was missing.
-                // A better approach would be to pass the actual used thirdPartyID back in BackendResult.
-                const spaceTitle = 'temp'; 
-                const sanitizedProjectName = spaceTitle.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
-                const thirdPartyID = `${sanitizedProjectName}-${sourceLanguageCode}-to-${targetLanguageCode}`;
-                const TEMP_AUDIO_DIR = path.join(process.cwd(), 'temp_audio');
-                const assumedAudioFilename = `${thirdPartyID}_dubbed.mp3`;
-                const assumedDownloadedAudioPath = path.join(TEMP_AUDIO_DIR, assumedAudioFilename);
-
-                logger.info(`[↩️ Reply Queue] Attempting cleanup of temporary audio file: ${assumedDownloadedAudioPath}`);
-                try {
-                    await fs.access(assumedDownloadedAudioPath);
-                    await fs.unlink(assumedDownloadedAudioPath);
-                    logger.info(`[↩️ Reply Queue] Successfully deleted temporary audio file.`);
-                } catch (err) {
-                    logger.warn(`[↩️ Reply Queue] Failed to delete or access temp audio ${assumedDownloadedAudioPath} (may have already been deleted or reconstruction failed):`, err);
-                }
-            }
-            // -----------------------------
         } else {
-            logger.warn(`[↩️ Reply Queue] Failed to post final reply via ${postMethod} for ${mentionInfo.tweetId}. Marking as processed anyway to prevent requeuing.`);
-            // Mark as processed even if reply failed
-            await markMentionAsProcessed(mentionInfo.tweetId, processedMentions);
-            // Log to error log file
-            logMentionError(mentionInfo.tweetId, 'Failed to post reply', 'reply');
+            throw new Error(`Final reply posting failed via ${postMethod}`);
         }
     } catch (replyError) {
-        logger.error(`[↩️ Reply Queue] CRITICAL: Error posting final ${postMethod} reply for ${mentionInfo.tweetId}:`, replyError);
-        // Mark as processed even if reply throws error
-        await markMentionAsProcessed(mentionInfo.tweetId, processedMentions);
-        // Log to error log file
+        logger.error(`[↩️ Reply Queue] ❌ Final reply failed for ${mentionInfo.tweetId}:`, replyError);
         logMentionError(mentionInfo.tweetId, replyError, 'reply');
     } finally {
+        isPostingFinalReply = false;
+        
+        // Mark as processed regardless of whether the final reply succeeded, to avoid re-queueing endlessly
+        // Only mark as processed if the backend succeeded or if it failed in a way that should not be retried.
+        if (backendResult.success || !isRetriableError(backendResult.error)) {
+            logger.info(`[↩️ Reply Queue] Backend ${backendResult.success ? 'succeeded' : 'failed (non-retriable)'}, marking mention ${mentionInfo.tweetId} as processed to prevent requeuing.`);
+            await markMentionAsProcessed(mentionInfo.tweetId, processedMentions);
+            if (!backendResult.success) {
+                // Also update the project status file for failed, non-retriable jobs
+                const thirdPartyID = backendResult.thirdPartyID || `unknown-${mentionInfo.tweetId}`;
+                logger.info(`[↩️ Reply Queue] Updating project status for ${thirdPartyID} to 'failed'.`);
+                await updateProjectStatus(thirdPartyID, 'failed', mentionInfo.tweetId, backendResult.projectId);
+            }
+        } else {
+            logger.warn(`[↩️ Reply Queue] Backend failed with a retriable error for ${mentionInfo.tweetId}. It will not be marked as processed and may be picked up again.`);
+        }
+        
         logger.info(`[↩️ Reply Queue] Finished ${postMethod} reply work for ${mentionInfo.tweetId}.`);
-        isPostingFinalReply = false; 
     }
+}
+
+/**
+ * Determines if an error is something that should be retried (e.g., temporary network issue)
+ * vs. a permanent failure (e.g., invalid input).
+ * @param errorMessage The error message string.
+ * @returns {boolean} True if the error is considered retriable.
+ */
+function isRetriableError(errorMessage?: string): boolean {
+    if (!errorMessage) {
+        return false; // No error message, no retry.
+    }
+    // Add logic here to determine retriable errors.
+    // For now, we assume most backend processing errors are not retriable.
+    return false; 
 }
 
 /**
