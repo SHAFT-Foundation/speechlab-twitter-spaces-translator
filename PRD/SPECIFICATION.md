@@ -117,9 +117,9 @@ This document specifies the requirements for a Node.js TypeScript AI agent with 
 *   **Method:**
     *   Get authentication token via `getAuthToken()` using credentials from `.env`.
     *   Submit a POST request to create a transcription project:
-        *   Endpoint: `POST /v1/projects/createProjectAndTranscribe`
+        *   Endpoint: `POST /v1/projects/createProjectAndDub`
         *   Parameters: fileUuid, fileKey, name, filenameToReturn, language, contentDuration, thumbnail.
-*   **Key Function:** `createTranscriptionProject(transcriptionRequest)`
+*   **Key Function:** `createDubbingProject(request)`
 *   **Output:** SpeechLab transcription `projectId`
 *   **Logging:** `[🤖 SpeechLab]` prefixed logs for transcription API requests.
 
@@ -135,8 +135,7 @@ This document specifies the requirements for a Node.js TypeScript AI agent with 
     *   Continue polling until status is COMPLETE, FAILED, or maximum wait time is reached.
     *   For debugging, log project details and write detailed diagnostic files.
 *   **Key Functions:** 
-    *   `waitForProjectCompletion(thirdPartyID, maxWaitTimeMs, checkIntervalMs)` (dubbing)
-    *   `waitForTranscriptionCompletion(thirdPartyID, maxWaitTimeMs)` (transcription)
+    *   `waitForProjectCompletion(thirdPartyID, maxWaitTimeMs)` (dubbing and transcript summary)
     *   `getProjectByThirdPartyID(thirdPartyID)`
 *   **Output:** Boolean indicating whether project completed successfully.
 *   **Logging:** Detailed progress logs with current status, estimated time remaining, and poll count.
@@ -379,4 +378,6 @@ The system incorporates comprehensive error handling and diagnostic features for
 
 5. **Retries and Polling:** For time-sensitive operations, both workflows implement polling with configurable parameters.
 
-6. **Shared Infrastructure:** Both workflows leverage the same reliable audio processing, error handling, and queue management systems. 
+6. **Shared Infrastructure:** Both workflows leverage the same reliable audio processing, error handling, and queue management systems.
+
+**Note:** As of June 2025, all transcription and summarization requests use the SpeechLab `createProjectAndDub` API. The `createProjectAndTranscribe` API and all related functions are deprecated and must not be used. The dubbing API is used for both dubbing and transcript summary requests. 

@@ -7,9 +7,6 @@ import fsPromises from 'fs/promises';
 
 const API_BASE_URL = 'https://translate-api.speechlab.ai';
 
-// Note: For transcription, we need to use the dev API endpoint
-const API_DEV_BASE_URL = 'https://api-translate-dev.speechlab.ai';
-
 // Interfaces for API Payloads and Responses (based on user examples)
 interface LoginPayload {
     email: string;
@@ -67,7 +64,9 @@ interface CreateTranscribePayload {
 }
 
 interface CreateTranscribeResponse {
-    projectId: string;
+    project: {
+        id: string;
+    };
     // Add other potential fields
 }
 
@@ -136,15 +135,6 @@ const apiClient: AxiosInstance = axios.create({
     timeout: 30000, // 30 second timeout
 });
 
-// Create a separate Axios instance for dev API calls (transcription)
-const apiDevClient: AxiosInstance = axios.create({
-    baseURL: API_DEV_BASE_URL,
-    headers: {
-        'Content-Type': 'application/json',
-    },
-    timeout: 30000, // 30 second timeout
-});
-
 /**
  * Handles API errors, logging relevant details.
  * @param error The error object (likely AxiosError).
@@ -173,7 +163,7 @@ function handleApiError(error: unknown, context: string): void {
  * Invalidates the cached authentication token.
  */
 function invalidateAuthToken(): void {
-    logger.info('[🤖 SpeechLab] Invalidating cached authentication token.');
+    logger.info(`[🤖 SpeechLab] Invalidating cached authentication token.`);
     cachedToken = null;
     tokenExpiryTime = null;
 }
@@ -187,11 +177,11 @@ async function getAuthToken(): Promise<string | null> {
     // Basic check: If we have a token, return it (improve with expiry check later)
     if (cachedToken) {
         // TODO: Add check for tokenExpiryTime here if implementing JWT parsing
-        logger.debug('[🤖 SpeechLab] Using cached authentication token.');
+        logger.debug(`[🤖 SpeechLab] Using cached authentication token.`);
         return cachedToken;
     }
 
-    logger.info('[🤖 SpeechLab] No cached token. Authenticating with API...');
+    logger.info(`[🤖 SpeechLab] No cached token. Authenticating with API...`);
     const loginPayload: LoginPayload = {
         email: config.SPEECHLAB_EMAIL,
         password: config.SPEECHLAB_PASSWORD,
@@ -202,17 +192,17 @@ async function getAuthToken(): Promise<string | null> {
         const token = response.data?.tokens?.accessToken?.jwtToken;
 
         if (token) {
-            logger.info('[🤖 SpeechLab] ✅ Successfully authenticated and obtained token.');
+            logger.info(`[🤖 SpeechLab] ✅ Successfully authenticated and obtained token.`);
             cachedToken = token;
             // TODO: Decode JWT to get expiry time and set tokenExpiryTime
             return token;
         } else {
-            logger.error('[🤖 SpeechLab] ❌ Authentication successful but token not found in response.');
+            logger.error(`[🤖 SpeechLab] ❌ Authentication successful but token not found in response.`);
             logger.debug(`[🤖 SpeechLab] Full login response: ${JSON.stringify(response.data)}`);
             return null;
         }
     } catch (error) {
-        handleApiError(error, 'authentication');
+        handleApiError(error, `authentication`);
         return null;
     }
 }
@@ -515,244 +505,153 @@ export async function waitForProjectCompletion(
 }
 
 /**
- * Creates a transcription project in SpeechLab using the createProjectAndTranscribe endpoint.
- * @param fileUuid The UUID of the uploaded file
- * @param fileKey The S3 key of the uploaded file
- * @param projectName The desired name for the project
- * @param filenameToReturn The filename to return
- * @param language The language code for transcription (e.g., 'en')
- * @param contentDuration The duration of the content in seconds
- * @param thumbnail Optional base64 thumbnail image
- * @returns {Promise<string | null>} The projectId if successful, otherwise null
+ * [DEPRECATED] Transcription project creation is no longer supported.
+ * Always use createDubbingProject for both dubbing and transcript summary requests.
+ * This function will throw if called.
  */
 export async function createTranscriptionProject(
-    fileUuid: string,
-    fileKey: string,
-    projectName: string,
-    filenameToReturn: string,
-    language: string,
-    contentDuration: number,
-    thumbnail?: string
-): Promise<string | null> {
-    logger.info(`[🤖 SpeechLab] Attempting to create transcription project: Name="${projectName}", Language=${language}, Duration=${contentDuration}s`);
-    
-    let attempt = 1;
-    const maxAttempts = 2; // Initial attempt + 1 retry
-
-    // Ensure projectName is reasonably limited
-    const finalProjectName = projectName.substring(0, 100);
-
-    const payload: CreateTranscribePayload = {
-        fileUuid,
-        fileKey,
-        name: finalProjectName,
-        filenameToReturn,
-        language,
-        contentDuration,
-        thumbnail
-    };
-
-    logger.debug(`[🤖 SpeechLab] Create transcription project payload (Attempt ${attempt}): ${JSON.stringify(payload)}`);
-
-    while (attempt <= maxAttempts) {
-        const token = await getAuthToken();
-        if (!token) {
-            logger.error(`[🤖 SpeechLab] ❌ Cannot create transcription project (Attempt ${attempt}): Failed to get authentication token.`);
-            return null; // Can't proceed without a token
-        }
-
-        try {
-            // Note: Using the dev API endpoint as shown in the curl example
-            const response = await apiDevClient.post<CreateTranscribeResponse>('/v1/projects/createProjectAndTranscribe', payload, {
-                headers: { 'Authorization': `Bearer ${token}` }
-            });
-
-            const projectId = response.data?.projectId;
-            if (projectId) {
-                logger.info(`[🤖 SpeechLab] ✅ Successfully created transcription project (Attempt ${attempt}). Project ID: ${projectId}`);
-                return projectId;
-            } else {
-                logger.error(`[🤖 SpeechLab] ❌ Transcription project creation API call successful (Attempt ${attempt}) but projectId not found in response.`);
-                logger.debug(`[🤖 SpeechLab] Full create transcription project response (Attempt ${attempt}): ${JSON.stringify(response.data)}`);
-                return null; // API succeeded but didn't return expected data
-            }
-
-        } catch (error) {
-            const context = `transcription project creation for ${finalProjectName} (Attempt ${attempt})`;
-            
-            if (axios.isAxiosError(error) && error.response?.status === 401 && attempt < maxAttempts) {
-                logger.warn(`[🤖 SpeechLab] ⚠️ Received 401 Unauthorized on attempt ${attempt}. Invalidating token and retrying...`);
-                invalidateAuthToken(); // Invalidate the cached token
-                attempt++;
-                logger.debug(`[🤖 SpeechLab] Create transcription project payload (Attempt ${attempt}): ${JSON.stringify(payload)}`); // Log payload for retry
-                continue; // Go to the next iteration to retry
-            } else {
-                // Handle non-401 errors or failure on the final attempt
-                handleApiError(error, context);
-                return null;
-            }
-        }
-    }
-
-    // Should theoretically not be reached if logic is correct, but acts as a fallback
-    logger.error(`[🤖 SpeechLab] ❌ Failed to create transcription project after ${maxAttempts} attempts.`);
-    return null;
+    ...args: any[]
+): Promise<never> {
+    logger.error('[🤖 SpeechLab] ❌ [DEPRECATED] createTranscriptionProject is disabled. Use createDubbingProject for all requests.');
+    throw new Error('createTranscriptionProject is deprecated. Use createDubbingProject for all requests.');
 }
 
 /**
- * Gets transcription project details by projectId to check its status and retrieve transcription.
- * @param projectId The projectId of the transcription project
- * @returns {Promise<TranscriptionProject | null>} Full transcription project object if found, otherwise null
- */
-export async function getTranscriptionProjectById(projectId: string): Promise<TranscriptionProject | null> {
-    logger.info(`[🤖 SpeechLab] Getting transcription project details for projectId: ${projectId}`);
-    
-    let attempt = 1;
-    const maxAttempts = 2; // Initial attempt + 1 retry
-
-    const url = `/v1/projects/${projectId}?expand=true`;
-        
-    logger.debug(`[🤖 SpeechLab] 🔍 Fetching transcription project from API URL (Attempt ${attempt}): ${API_DEV_BASE_URL}${url}`);
-
-    while (attempt <= maxAttempts) {
-        const token = await getAuthToken();
-        if (!token) {
-            logger.error(`[🤖 SpeechLab] ❌ Cannot check transcription project status (Attempt ${attempt}): Failed to get authentication token.`);
-            return null;
-        }
-
-        try {
-            const response = await apiDevClient.get<TranscriptionProject>(url, {
-                headers: { 'Authorization': `Bearer ${token}` }
-            });
-            
-            if (response.data) {
-                const project = response.data;
-                const status = project.job?.status || "UNKNOWN";
-                
-                logger.info(`[🤖 SpeechLab] ✅ (Attempt ${attempt}) Found transcription project with ID: ${project.id}`);
-                logger.info(`[🤖 SpeechLab] 📊 (Attempt ${attempt}) Project status: ${status}`);
-                logger.info(`[🤖 SpeechLab] 📋 (Attempt ${attempt}) Project details: Name: "${project.job?.name || 'Unknown'}", Language: ${project.job?.sourceLanguage || 'Unknown'}`);
-                
-                if (project.transcription?.transcriptionText) {
-                    logger.info(`[🤖 SpeechLab] 📝 (Attempt ${attempt}) Transcription text length: ${project.transcription.transcriptionText.length} characters`);
-                } else {
-                    logger.debug(`[🤖 SpeechLab] 📝 (Attempt ${attempt}) No transcription text available yet`);
-                }
-                
-                logger.debug(`[🤖 SpeechLab] --- FULL TRANSCRIPTION PROJECT RESPONSE (Attempt ${attempt}) ---`);
-                logger.debug(JSON.stringify(response.data, null, 2));
-                logger.debug(`[🤖 SpeechLab] --- END FULL TRANSCRIPTION PROJECT RESPONSE (Attempt ${attempt}) ---`);
-
-                return project; // Success! Return the project details
-            } else {
-                logger.warn(`[🤖 SpeechLab] ⚠️ (Attempt ${attempt}) No project data found for projectId: ${projectId}`);
-                return null; // No project found, but API call succeeded
-            }
-
-        } catch (error) {
-            const context = `getting transcription project status for projectId: ${projectId} (Attempt ${attempt})`;
-
-            if (axios.isAxiosError(error) && error.response?.status === 401 && attempt < maxAttempts) {
-                logger.warn(`[🤖 SpeechLab] ⚠️ Received 401 Unauthorized on attempt ${attempt} for transcription project status check. Invalidating token and retrying...`);
-                invalidateAuthToken();
-                attempt++;
-                logger.debug(`[🤖 SpeechLab] 🔍 Fetching transcription project from API URL (Attempt ${attempt}): ${API_DEV_BASE_URL}${url}`); // Log URL for retry
-                continue; 
-            } else {
-                handleApiError(error, context);
-                return null;
-            }
-        }
-    }
-    
-    logger.error(`[🤖 SpeechLab] ❌ Failed to get transcription project status for ${projectId} after ${maxAttempts} attempts.`);
-    return null;
-}
-
-/**
- * Waits for a transcription project to reach COMPLETE status, checking at regular intervals.
- * @param projectId The projectId of the transcription project to monitor
- * @param maxWaitTimeMs Maximum time to wait in milliseconds (default: 30 minutes)
- * @param checkIntervalMs Interval between status checks in milliseconds (default: 30 seconds)
- * @returns {Promise<TranscriptionProject | null>} The full transcription project object if completed successfully, otherwise null
+ * [DEPRECATED] Transcription project polling is no longer supported.
+ * Always use waitForProjectCompletion for both dubbing and transcript summary requests.
+ * This function will throw if called.
  */
 export async function waitForTranscriptionCompletion(
-    projectId: string, 
-    maxWaitTimeMs = 30 * 60 * 1000, // 30 minutes default (transcription is usually faster than dubbing)
-    checkIntervalMs = 30000 // 30 seconds default
-): Promise<TranscriptionProject | null> {
-    logger.info(`[🤖 SpeechLab] Waiting for transcription completion: ${projectId}`);
-    logger.info(`[🤖 SpeechLab] Maximum wait time: ${maxWaitTimeMs/1000/60} minutes, Check interval: ${checkIntervalMs/1000} seconds`);
-    
-    const startTime = Date.now();
-    let pollCount = 0;
-    let lastProjectDetails: TranscriptionProject | null = null; // Store last retrieved details
-    
-    while (Date.now() - startTime < maxWaitTimeMs) {
-        pollCount++;
-        const elapsedSeconds = ((Date.now() - startTime) / 1000).toFixed(1);
-        
-        logger.info(`[🤖 SpeechLab] 🔄 Poll #${pollCount} - Checking transcription project status (${elapsedSeconds}s elapsed)...`);
-        
-        // Get the full project details
-        const project = await getTranscriptionProjectById(projectId); 
-        lastProjectDetails = project; // Store the latest result
-        
-        if (!project) {
-            logger.warn(`[🤖 SpeechLab] ⚠️ Poll #${pollCount} - Could not retrieve transcription project details, will retry in ${checkIntervalMs/1000}s...`);
-        } else if (project.job?.status === "COMPLETE") {
-            const elapsedMinutes = ((Date.now() - startTime) / 1000 / 60).toFixed(1);
-            logger.info(`[🤖 SpeechLab] ✅ Poll #${pollCount} - Transcription project completed successfully after ${elapsedMinutes} minutes!`);
-            
-            if (project.transcription?.transcriptionText) {
-                logger.info(`[🤖 SpeechLab] 📝 Transcription text available with ${project.transcription.transcriptionText.length} characters`);
+    ...args: any[]
+): Promise<never> {
+    logger.error('[🤖 SpeechLab] ❌ [DEPRECATED] waitForTranscriptionCompletion is disabled. Use waitForProjectCompletion for all requests.');
+    throw new Error('waitForTranscriptionCompletion is deprecated. Use waitForProjectCompletion for all requests.');
+}
+
+/**
+ * [DEPRECATED] Transcription project lookup is no longer supported.
+ * Always use getProjectByThirdPartyID for both dubbing and transcript summary requests.
+ * This function will throw if called.
+ */
+export async function getTranscriptionProjectById(
+    ...args: any[]
+): Promise<never> {
+    logger.error('[🤖 SpeechLab] ❌ [DEPRECATED] getTranscriptionProjectById is disabled. Use getProjectByThirdPartyID for all requests.');
+    throw new Error('getTranscriptionProjectById is deprecated. Use getProjectByThirdPartyID for all requests.');
+}
+
+/**
+ * Fetches the transcription text from a completed project.
+ * For all requests, this uses the dubbing project (not the deprecated transcription API).
+ * @param projectId The ID of the project.
+ * @returns {Promise<string | null>} The transcription text or null.
+ */
+export async function getProjectTranscription(projectId: string): Promise<string | null> {
+    logger.info(`[🤖 SpeechLab] Fetching transcription for project ID: ${projectId}`);
+    try {
+        // Use getProjectByThirdPartyID to fetch the project details
+        const project = await getProjectByThirdPartyID(projectId);
+        logger.debug(`[🤖 SpeechLab] FULL PROJECT OBJECT: ${JSON.stringify(project, null, 2)}`);
+        if (project && (project as any).transcription) {
+            logger.info(`[🤖 SpeechLab] Project has a 'transcription' object: ${JSON.stringify((project as any).transcription, null, 2)}`);
+            const transcriptionId = (project as any).transcription.id;
+            logger.info(`[🤖 SpeechLab] transcription.id: ${transcriptionId}`);
+            // Try to fetch the full project by projectId to get the transcriptionText
+            const projectById = await getProjectById(project.id);
+            if (projectById && (projectById as any).transcription && (projectById as any).transcription.transcriptionText) {
+                logger.info(`[🤖 SpeechLab] ✅ Successfully retrieved transcriptionText from project by ID.`);
+                logger.debug(`[🤖 SpeechLab] Returning transcriptionText from projectById.transcription.`);
+                return (projectById as any).transcription.transcriptionText;
             } else {
-                logger.warn(`[🤖 SpeechLab] ⚠️ Project marked as complete but no transcription text found`);
+                logger.warn(`[🤖 SpeechLab] ⚠️ transcriptionText not found in projectById.transcription for projectId: ${project.id}`);
             }
-            
-            return project; // Return the full project object on success
-        } else if (project.job?.status === "FAILED") {
-            logger.error(`[🤖 SpeechLab] ❌ Poll #${pollCount} - Transcription project failed to process!`);
-            return null; // Return null on failure
-        } else {
-            // Calculate progress (simplified)
-            const status = project.job?.status || "UNKNOWN";
-            const progressPercent = status === "PROCESSING" ? 50 : 0; 
-            let remainingTimeEstimate = "unknown";
-            
-            if (progressPercent > 0) {
-                const elapsedMs = Date.now() - startTime;
-                const estimatedTotalMs = (elapsedMs / progressPercent) * 100;
-                const estimatedRemainingMs = estimatedTotalMs - elapsedMs;
-                const estimatedRemainingMin = Math.ceil(estimatedRemainingMs / 1000 / 60);
-                remainingTimeEstimate = `~${estimatedRemainingMin} minutes`;
-            }
-            
-            logger.info(`[🤖 SpeechLab] 🕒 Poll #${pollCount} - Transcription project status: ${status}, Progress: ${progressPercent}%, Estimated time remaining: ${remainingTimeEstimate}`);
-            logger.info(`[🤖 SpeechLab] ⏳ Poll #${pollCount} - Will check again in ${checkIntervalMs/1000}s...`);
+            // No transcript text found in this object
+            logger.warn(`[🤖 SpeechLab] ⚠️ No transcript text found in project object. You may need to fetch it from a different endpoint using transcription.id.`);
         }
-        
-        logger.debug(`[🤖 SpeechLab] 💤 Poll #${pollCount} - Sleeping for ${checkIntervalMs/1000}s before next check...`);
-        await new Promise(resolve => setTimeout(resolve, checkIntervalMs));
+        // Existing logic for translations/dub (kept for future-proofing, but not found in example)
+        if (project && project.translations && project.translations.length > 0) {
+            for (const translation of project.translations) {
+                if (translation.dub && translation.dub.length > 0) {
+                    for (const dub of translation.dub) {
+                        if ((dub as any).transcriptionText) {
+                            logger.info(`[🤖 SpeechLab] ✅ Successfully retrieved transcription text for project ${projectId}.`);
+                            logger.debug(`[🤖 SpeechLab] Returning transcriptionText from dub object.`);
+                            return (dub as any).transcriptionText;
+                        }
+                    }
+                }
+            }
+        }
+        logger.warn(`[🤖 SpeechLab] ⚠️ Could not find transcription text in project ${projectId}. Returning null.`);
+        return null;
+    } catch (error) {
+        logger.error(`[🤖 SpeechLab] ❌ Error fetching transcription for project ${projectId}:`, error);
+        return null;
     }
-    
-    const maxWaitMinutes = (maxWaitTimeMs/1000/60).toFixed(1);
-    logger.warn(`[🤖 SpeechLab] ⏰ Poll #${pollCount} - Maximum wait time of ${maxWaitMinutes} minutes exceeded without transcription completion.`);
-    return lastProjectDetails?.job?.status === "COMPLETE" ? lastProjectDetails : null; // Return last details only if complete, else null
 }
 
 // Interface for transcription project details
 export interface TranscriptionProject {
     id: string;
-    job: {
+    name: string;
+    content: {
+        language: string;
+    };
+    job?: {
         name: string;
         sourceLanguage: string;
         status: string;
     };
     transcription?: {
         transcriptionText: string;
+        status: string;
+        language: string;
         // Add other transcription fields as needed
     };
     // Include other fields from the API response as needed
+}
+
+/**
+ * Gets project details by projectId (not thirdPartyID).
+ * Returns the *full* project object if found.
+ * @param projectId The projectId to fetch
+ * @returns {Promise<Project | null>} Full project object if found, otherwise null
+ */
+export async function getProjectById(projectId: string): Promise<Project | null> {
+    logger.info(`[🤖 SpeechLab] Getting project by projectId: ${projectId}`);
+    let attempt = 1;
+    const maxAttempts = 2;
+    const url = `/v1/projects/${projectId}?expand=true`;
+    logger.debug(`[🤖 SpeechLab] Fetching project by ID from API URL (Attempt ${attempt}): ${API_BASE_URL}${url}`);
+    while (attempt <= maxAttempts) {
+        const token = await getAuthToken();
+        if (!token) {
+            logger.error(`[🤖 SpeechLab] ❌ Cannot get project by ID (Attempt ${attempt}): Failed to get authentication token.`);
+            return null;
+        }
+        try {
+            const response = await apiClient.get<Project>(url, {
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+            logger.info(`[🤖 SpeechLab] ✅ (Attempt ${attempt}) Got project by ID: ${projectId}`);
+            logger.debug(`[🤖 SpeechLab] --- FULL PROJECT BY ID RESPONSE (Attempt ${attempt}) ---`);
+            logger.debug(JSON.stringify(response.data, null, 2));
+            logger.debug(`[🤖 SpeechLab] --- END FULL PROJECT BY ID RESPONSE (Attempt ${attempt}) ---`);
+            return response.data;
+        } catch (error) {
+            const context = `getting project by ID: ${projectId} (Attempt ${attempt})`;
+            if (axios.isAxiosError(error) && error.response?.status === 401 && attempt < maxAttempts) {
+                logger.warn(`[🤖 SpeechLab] ⚠️ Received 401 Unauthorized on attempt ${attempt} for getProjectById. Invalidating token and retrying...`);
+                invalidateAuthToken();
+                attempt++;
+                logger.debug(`[🤖 SpeechLab] Fetching project by ID from API URL (Attempt ${attempt}): ${API_BASE_URL}${url}`);
+                continue;
+            } else {
+                handleApiError(error, context);
+                return null;
+            }
+        }
+    }
+    logger.error(`[🤖 SpeechLab] ❌ Failed to get project by ID after ${maxAttempts} attempts.`);
+    return null;
 } 

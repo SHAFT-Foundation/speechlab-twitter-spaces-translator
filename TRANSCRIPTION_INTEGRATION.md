@@ -1,4 +1,19 @@
-# Transcription and Summarization Integration
+# Transcription Integration
+
+> **Note:** As of June 2025, all transcription and summarization requests use the SpeechLab `createProjectAndDub` API. The `createProjectAndTranscribe` API and all related functions are deprecated and must not be used. The dubbing API is used for both dubbing and transcript summary requests.
+
+## Workflow
+
+1. Create a project using SpeechLab's `createProjectAndDub` API
+2. Poll for completion using `waitForProjectCompletion()`
+3. Extract the transcription text from the completed dubbing project using `getProjectTranscription()`
+4. Summarize the transcription using OpenAI
+
+## Key Functions
+- `createDubbingProject()` - Creates dubbing projects (for both dubbing and transcript summary)
+- `getProjectByThirdPartyID()` - Retrieves project status
+- `waitForProjectCompletion()` - Polls for completion
+- `getProjectTranscription()` - Extracts transcription text from dubbing project
 
 ## Overview
 
@@ -33,9 +48,9 @@ For transcription requests, the system follows this workflow:
 5. Post acknowledgment reply: "Received! I've started transcribing and summarizing this Twitter Space..."
 
 #### Backend Phase (`performTranscriptionBackendProcessing`)
-1. Create transcription request using SpeechLab's `createProjectAndTranscribe` API
-2. Poll for completion using `waitForTranscriptionCompletion()`
-3. Extract transcription text from completed project
+1. Create transcription request using SpeechLab's `createProjectAndDub` API
+2. Poll for completion using `waitForProjectCompletion()`
+3. Extract transcription text from completed project using `getProjectTranscription()`
 4. Use OpenAI GPT to generate a detailed summary
 5. Return results for final reply
 
@@ -66,9 +81,10 @@ The integration touches several key files:
 
 #### `src/services/speechlabApiService.ts`
 - Added transcription-specific API functions
-- `createTranscriptionProject()` - Creates transcription projects
-- `getTranscriptionProjectById()` - Retrieves project status
-- `waitForTranscriptionCompletion()` - Polls for completion
+- `createDubbingProject()` - Creates dubbing projects
+- `getProjectByThirdPartyID()` - Retrieves project status
+- `waitForProjectCompletion()` - Polls for completion
+- `getProjectTranscription()` - Extracts transcription text from dubbing project
 
 ## Configuration
 

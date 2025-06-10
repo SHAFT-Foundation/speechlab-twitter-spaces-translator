@@ -1,22 +1,24 @@
 # Transcription and Summarization Feature
 
-This document describes the new transcription and summarization functionality that has been added to the SpeechLab Twitter Spaces Translator.
+> **Note:** As of June 2025, all transcription and summarization requests use the SpeechLab `createProjectAndDub` API. The `createProjectAndTranscribe` API and all related functions are deprecated and must not be used. The dubbing API is used for both dubbing and transcript summary requests.
+
+This document describes the transcription and summarization functionality for the SpeechLab Twitter Spaces Translator.
 
 ## Overview
 
-The new feature allows you to:
-1. Create transcription projects using SpeechLab's `createProjectAndTranscribe` API
-2. Poll the project status until transcription is complete
-3. Extract the transcription text from the completed project
+The feature allows you to:
+1. Create projects using SpeechLab's `createProjectAndDub` API (for both dubbing and transcript summary)
+2. Poll the project status until processing is complete
+3. Extract the transcription text from the completed dubbing project
 4. Use OpenAI GPT to generate a detailed summary of the Twitter Space content
 
 ## Architecture
 
-### Services Added
+### Services Used
 
 1. **`openaiService.ts`** - Handles OpenAI API integration for summarization
 2. **`transcriptionSummarizationService.ts`** - Orchestrates the complete workflow
-3. **Enhanced `speechlabApiService.ts`** - Added transcription-specific functions
+3. **`speechlabApiService.ts`** - Handles all SpeechLab API calls (dubbing and transcript summary)
 
 ### Configuration Changes
 
@@ -24,15 +26,15 @@ Added `OPENAI_API_KEY` to the required environment variables in `config.ts`.
 
 ## API Endpoints Used
 
-### SpeechLab Transcription API
-- **Endpoint**: `https://api-translate-dev.speechlab.ai/v1/projects/createProjectAndTranscribe`
+### SpeechLab Dubbing API
+- **Endpoint**: `https://translate-api.speechlab.ai/v1/projects/createProjectAndDub`
 - **Method**: POST
-- **Purpose**: Creates a transcription project
+- **Purpose**: Creates a dubbing project (used for both dubbing and transcript summary)
 
 ### SpeechLab Project Status API
-- **Endpoint**: `https://api-translate-dev.speechlab.ai/v1/projects/{projectId}?expand=true`
+- **Endpoint**: `https://translate-api.speechlab.ai/v1/projects/{projectId}?expand=true`
 - **Method**: GET
-- **Purpose**: Retrieves project details and transcription text
+- **Purpose**: Retrieves project details and transcription text (from the dubbing project)
 
 ### OpenAI Chat Completions API
 - **Model**: `gpt-4o-mini`
@@ -43,27 +45,11 @@ Added `OPENAI_API_KEY` to the required environment variables in `config.ts`.
 ### Basic Usage
 
 ```typescript
-import { transcribeAndSummarize, TranscriptionRequest } from './services/transcriptionSummarizationService';
+// Use the dubbing API for all requests
+import { createDubbingProject, getProjectByThirdPartyID, getProjectTranscription } from './services/speechlabApiService';
+import { summarizeTwitterSpace } from './openaiService';
 
-const request: TranscriptionRequest = {
-    fileUuid: "48f4d943-9928-47bf-8497-d92b3ef1c111",
-    fileKey: "original/48f4d943-9928-47bf-8497-d92b3ef1c111.mov",
-    name: "Twitter Space Transcription",
-    filenameToReturn: "transcription.mov",
-    language: "en",
-    contentDuration: 17.521938,
-    thumbnail: "base64_encoded_thumbnail" // optional
-};
-
-const result = await transcribeAndSummarize(request);
-
-if (result.success) {
-    console.log('Project ID:', result.projectId);
-    console.log('Transcription:', result.transcriptionText);
-    console.log('Summary:', result.summary);
-} else {
-    console.error('Error:', result.errorMessage);
-}
+// ...
 ```
 
 ### Running the Test
@@ -85,7 +71,7 @@ OPENAI_API_KEY=your_openai_api_key_here
 ## Workflow Steps
 
 1. **Create Transcription Project**
-   - Calls SpeechLab's `createProjectAndTranscribe` endpoint
+   - Calls SpeechLab's `createProjectAndDub` endpoint
    - Returns a project ID for tracking
 
 2. **Poll for Completion**

@@ -1,0 +1,26 @@
+{
+  "1931414236099641753": {
+    "phase": "initiation",
+    "error": "Error: Could not parse S3 key from upload result\nError: Could not parse S3 key from upload result\n    at /Users/ryanmedlin/shaft/speechlab-twitter-spaces-translator/src/mentionDaemon.ts:1146:19\n    at Generator.next (<anonymous>)\n    at fulfilled (/Users/ryanmedlin/shaft/speechlab-twitter-spaces-translator/src/mentionDaemon.ts:38:58)\n    at processTicksAndRejections (node:internal/process/task_queues:105:5)",
+    "timestamp": "2025-06-07T18:27:28.101Z",
+    "count": 1
+  },
+  "1931413443095273878": {
+    "phase": "initiation",
+    "error": "Error: Could not parse S3 key from upload result\nError: Could not parse S3 key from upload result\n    at /Users/ryanmedlin/shaft/speechlab-twitter-spaces-translator/src/mentionDaemon.ts:1146:19\n    at Generator.next (<anonymous>)\n    at fulfilled (/Users/ryanmedlin/shaft/speechlab-twitter-spaces-translator/src/mentionDaemon.ts:38:58)\n    at processTicksAndRejections (node:internal/process/task_queues:105:5)",
+    "timestamp": "2025-06-07T18:30:41.376Z",
+    "count": 1
+  },
+  "1931452643274289348": {
+    "phase": "backend",
+    "error": "Failed to create transcription project",
+    "timestamp": "2025-06-07T20:52:39.665Z",
+    "count": 1
+  },
+  "1931472389449089143": {
+    "phase": "backend",
+    "error": "Failed to create transcription project",
+    "timestamp": "2025-06-07T22:19:37.076Z",
+    "count": 1
+  }
+}

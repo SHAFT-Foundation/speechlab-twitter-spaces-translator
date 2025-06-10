@@ -2750,8 +2750,9 @@ Traditional dubbing requests continue to work as before:
    - Post acknowledgment reply: "Received! I've started transcribing and summarizing this Twitter Space..."
 
 2. **Backend Phase** (`performTranscriptionBackendProcessing`):
-   - Create transcription request using SpeechLab's `createProjectAndTranscribe` API
-   - Poll for completion using `waitForTranscriptionCompletion()`
+   - **Note:** As of June 2025, all transcription and summarization requests use the SpeechLab `createProjectAndDub` API. The `createProjectAndTranscribe` API and all related functions are deprecated and must not be used. The dubbing API is used for both dubbing and transcript summary requests.
+   - Create transcription request using SpeechLab's `createProjectAndDub` API
+   - Poll for completion using `waitForProjectCompletion()`
    - Extract transcription text from completed project
    - Use OpenAI GPT to generate a detailed summary with the prompt:
      ```

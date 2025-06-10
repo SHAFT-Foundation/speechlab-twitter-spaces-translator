@@ -62,8 +62,8 @@ async function testTranscriptionIntegration() {
             const { summarizeTwitterSpace } = await import('./services/openaiService');
             logger.info('[🧪 Integration Test] ✅ openaiService imported successfully');
             
-            const { createTranscriptionProject } = await import('./services/speechlabApiService');
-            logger.info('[🧪 Integration Test] ✅ speechlabApiService transcription functions imported successfully');
+            // [DEPRECATED] createTranscriptionProject is no longer supported. Use createDubbingProject for all tests and flows.
+            // const { createTranscriptionProject } = await import('./services/speechlabApiService');
             
         } catch (importError) {
             logger.error('[🧪 Integration Test] ❌ Service import failed:', importError);
