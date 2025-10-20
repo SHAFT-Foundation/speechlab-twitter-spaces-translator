@@ -1,0 +1,8 @@
+{
+  "1980416687838237080": {
+    "phase": "initiation",
+    "error": "Error: Could not find playable Space element (article or button) for tweet 1980416687838237080.\nError: Could not find playable Space element (article or button) for tweet 1980416687838237080.\n    at /Users/ryanmedlin/shaft/speechlab-twitter-spaces-translator/src/mentionDaemon.ts:837:19\n    at Generator.next (<anonymous>)\n    at fulfilled (/Users/ryanmedlin/shaft/speechlab-twitter-spaces-translator/src/mentionDaemon.ts:38:58)",
+    "timestamp": "2025-10-20T23:45:13.118Z",
+    "count": 1
+  }
+}

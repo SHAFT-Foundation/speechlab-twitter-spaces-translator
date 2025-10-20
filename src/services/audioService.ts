@@ -382,4 +382,221 @@ export async function uploadLocalFileToS3(localFilePath: string, s3Key: string):
     
     logger.error(`[☁️ S3] ❌ All ${MAX_RETRIES} S3 upload attempts failed for key: ${s3Key}`);
     return null; // Return null if all retries fail
-} 
+}
+
+/**
+ * Executes the ffmpeg command to download and convert the M3U8 video stream.
+ * @param m3u8Url URL of the M3U8 playlist for video.
+ * @param outputFilePath Path where the downloaded video file should be saved.
+ * @returns Promise that resolves on successful download, rejects on error.
+ */
+function runFfmpegVideoDownload(m3u8Url: string, outputFilePath: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+        const ffmpegArgs = [
+            '-protocol_whitelist', 'file,http,https,tcp,tls,crypto',
+            '-i', m3u8Url,
+            '-c:v', 'libx264',      // Video codec: H.264 for Twitter compatibility
+            '-c:a', 'aac',          // Audio codec: AAC
+            '-movflags', '+faststart', // Optimize for web streaming
+            '-preset', 'medium',    // Balance between speed and quality
+            '-crf', '23',           // Constant Rate Factor (quality: 18-28, lower is better)
+            '-y',                   // Overwrite output file
+            outputFilePath
+        ];
+
+        const ffmpegCommand = `ffmpeg ${ffmpegArgs.join(' ')}`;
+        logger.info('-------------------------------------------');
+        logger.info(`[🎬 Video] EXECUTING FFMPEG COMMAND:`);
+        logger.info(ffmpegCommand);
+        logger.info('-------------------------------------------');
+
+        const startTime = Date.now();
+        let lastProgressUpdate = startTime;
+        let lastProgressTimestamp = 0;
+        let progressLogCounter = 0;
+
+        logger.info(`[🎬 Video] 🕒 Video download started at ${new Date().toISOString()}`);
+
+        const ffmpegProcess = spawn('ffmpeg', ffmpegArgs);
+
+        let ffmpegOutput = '';
+        ffmpegProcess.stdout.on('data', (data) => {
+            const output = data.toString();
+            ffmpegOutput += output;
+
+            // Parse progress information from ffmpeg
+            const time = /time=(\d+:\d+:\d+\.\d+)/g.exec(output);
+            const size = /size=\s*(\d+)kB/g.exec(output);
+            const speed = /speed=\s*(\d+\.\d+)x/g.exec(output);
+
+            if (time) {
+                const timeStr = time[1];
+                const [hours, minutes, seconds] = timeStr.split(':').map(parseFloat);
+                const currentTimestamp = Math.floor(hours * 3600 + minutes * 60 + seconds);
+
+                const currentTime = Date.now();
+                const realTimeElapsed = currentTime - lastProgressUpdate;
+                const mediaTimeElapsed = currentTimestamp - lastProgressTimestamp;
+
+                if (mediaTimeElapsed >= 5 || realTimeElapsed >= 10000 || progressLogCounter % 10 === 0) {
+                    if (size) {
+                        const totalSize = parseInt(size[1], 10);
+                        const downloadedMB = (totalSize / 1024).toFixed(2);
+                        const elapsedSeconds = (currentTime - startTime) / 1000;
+                        const downloadRateMBps = (totalSize / 1024 / elapsedSeconds).toFixed(2);
+
+                        logger.info(`[🎬 Video] 📥 Progress - Time: ${timeStr}, Downloaded: ${downloadedMB} MB, Rate: ${downloadRateMBps} MB/s`);
+
+                        if (speed) {
+                            logger.debug(`[🎬 Video] Processing speed: ${speed[1]}x`);
+                        }
+                    } else {
+                        logger.info(`[🎬 Video] 📥 Progress - Time: ${timeStr}`);
+                    }
+
+                    lastProgressUpdate = currentTime;
+                    lastProgressTimestamp = currentTimestamp;
+                }
+
+                progressLogCounter++;
+            }
+        });
+
+        ffmpegProcess.stderr.on('data', (data) => {
+            const output = data.toString();
+            ffmpegOutput += output;
+
+            // FFmpeg writes progress to stderr, so parse it here too
+            const time = /time=(\d+:\d+:\d+\.\d+)/g.exec(output);
+            const size = /size=\s*(\d+)kB/g.exec(output);
+            const speed = /speed=\s*(\d+\.\d+)x/g.exec(output);
+
+            if (time) {
+                const timeStr = time[1];
+                const [hours, minutes, seconds] = timeStr.split(':').map(parseFloat);
+                const currentTimestamp = Math.floor(hours * 3600 + minutes * 60 + seconds);
+
+                const currentTime = Date.now();
+                const realTimeElapsed = currentTime - lastProgressUpdate;
+                const mediaTimeElapsed = currentTimestamp - lastProgressTimestamp;
+
+                if (mediaTimeElapsed >= 5 || realTimeElapsed >= 10000 || progressLogCounter % 10 === 0) {
+                    if (size) {
+                        const totalSize = parseInt(size[1], 10);
+                        const downloadedMB = (totalSize / 1024).toFixed(2);
+                        const elapsedSeconds = (currentTime - startTime) / 1000;
+                        const downloadRateMBps = (totalSize / 1024 / elapsedSeconds).toFixed(2);
+
+                        logger.info(`[🎬 Video] 📥 Progress - Time: ${timeStr}, Downloaded: ${downloadedMB} MB, Rate: ${downloadRateMBps} MB/s`);
+
+                        if (speed) {
+                            logger.debug(`[🎬 Video] Processing speed: ${speed[1]}x`);
+                        }
+                    } else {
+                        logger.info(`[🎬 Video] 📥 Progress - Time: ${timeStr}`);
+                    }
+
+                    lastProgressUpdate = currentTime;
+                    lastProgressTimestamp = currentTimestamp;
+                }
+
+                progressLogCounter++;
+            }
+        });
+
+        ffmpegProcess.on('close', (code) => {
+            const elapsedTime = ((Date.now() - startTime) / 1000).toFixed(1);
+            logger.info(`[🎬 Video] ⏱️ FFmpeg process finished in ${elapsedTime}s with code ${code}`);
+
+            if (code === 0) {
+                // Check if output file was created and has content
+                if (fs.existsSync(outputFilePath)) {
+                    const stats = fs.statSync(outputFilePath);
+                    const fileSizeMB = (stats.size / (1024 * 1024)).toFixed(2);
+                    logger.info(`[🎬 Video] ✅ Video downloaded successfully! Size: ${fileSizeMB} MB`);
+                    resolve();
+                } else {
+                    logger.error('[🎬 Video] ❌ FFmpeg exited with code 0 but output file does not exist.');
+                    reject(new Error('Video file not created despite successful FFmpeg exit'));
+                }
+            } else {
+                logger.error(`[🎬 Video] ❌ FFmpeg exited with non-zero code: ${code}`);
+                logger.error(`[🎬 Video] FFmpeg output (last 500 chars): ${ffmpegOutput.slice(-500)}`);
+                reject(new Error(`FFmpeg failed with exit code ${code}`));
+            }
+        });
+
+        ffmpegProcess.on('error', (err) => {
+            logger.error('[🎬 Video] ❌ FFmpeg process error:', err);
+            reject(err);
+        });
+    });
+}
+
+/**
+ * Downloads a video from M3U8 URL using FFmpeg and uploads to S3.
+ * Similar to downloadAndUploadAudio but handles video streams.
+ * @param m3u8Url The M3U8 video stream URL to download.
+ * @param fileName Descriptive name for the video (used for output filename).
+ * @returns Promise resolving with the public S3 URL of the uploaded video, or null on failure.
+ */
+export async function downloadAndUploadVideo(m3u8Url: string, fileName: string): Promise<string | null> {
+    ensureTempDirExists();
+
+    const sanitizedName = fileName.replace(/[^a-zA-Z0-9_-]/g, '_');
+    const timestamp = Date.now();
+    const outputFilename = `${sanitizedName}_${timestamp}.mp4`;
+    const localFilePath = path.join(TEMP_DIR, outputFilename);
+    const s3Key = `twitter-video/${outputFilename}`;
+
+    logger.info(`[🎬 Video] 🔄 Processing video "${fileName}"`);
+    logger.info(`[🎬 Video] Output filename: ${outputFilename}`);
+
+    try {
+        // Step 1: Download video using ffmpeg
+        logger.info(`[🎬 Video] 🔽 Step 1/3: Downloading video stream...`);
+        const downloadStartTime = Date.now();
+        await runFfmpegVideoDownload(m3u8Url, localFilePath);
+        const downloadEndTime = Date.now();
+        const downloadElapsedSec = ((downloadEndTime - downloadStartTime) / 1000).toFixed(1);
+        logger.info(`[🎬 Video] ✓ Download step completed in ${downloadElapsedSec}s`);
+
+        // Step 2: Upload the downloaded video to S3
+        logger.info(`[🎬 Video] 🔼 Step 2/3: Uploading to S3...`);
+        const uploadStartTime = Date.now();
+        const publicUrl = await uploadLocalFileToS3(localFilePath, s3Key);
+        const uploadEndTime = Date.now();
+        const uploadElapsedSec = ((uploadEndTime - uploadStartTime) / 1000).toFixed(1);
+        logger.info(`[🎬 Video] ✓ Upload step completed in ${uploadElapsedSec}s`);
+
+        if (!publicUrl) {
+            throw new Error('S3 upload returned null');
+        }
+
+        // Step 3: Clean up the local temporary file
+        logger.info(`[🎬 Video] 🗑️ Step 3/3: Cleaning up temporary file...`);
+        fs.unlink(localFilePath, (err) => {
+            if (err) {
+                logger.warn(`[🎬 Video] ⚠️ Failed to delete temporary file ${localFilePath}:`, err);
+            } else {
+                logger.info(`[🎬 Video] ✓ Successfully deleted temporary file`);
+            }
+        });
+
+        const totalElapsedSec = ((Date.now() - downloadStartTime) / 1000).toFixed(1);
+        logger.info(`[🎬 Video] ✅ Video processing completed in ${totalElapsedSec}s`);
+        return publicUrl;
+
+    } catch (error) {
+        logger.error(`[🎬 Video] ❌ Failed to process video for ${m3u8Url}:`, error);
+
+        // Attempt cleanup even on error
+        if (fs.existsSync(localFilePath)) {
+            logger.debug(`[🎬 Video] Cleaning up temporary file after error: ${localFilePath}`);
+            fs.unlink(localFilePath, (err) => {
+                if (err) logger.warn(`[🎬 Video] Failed to delete temporary file ${localFilePath} after error:`, err);
+            });
+        }
+        return null;
+    }
+}

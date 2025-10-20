@@ -107,10 +107,63 @@ The agent will start, log its initialization, and begin processing the profile s
     ```bash
     npm run start:daemon
     ```
+    Or with ts-node directly (skipping initial mentions):
+    ```bash
+    SKIP_INITIAL_MENTIONS=true npx ts-node src/mentionDaemon.ts
+    ```
 3.  The agent will log in and start polling for mentions.
 4.  To test, mention the agent account (`@<TWITTER_USERNAME>`) from another account in a tweet containing a link to a recorded Twitter Space.
 5.  The daemon will process the request and reply with the dubbed link.
 6.  To stop the daemon, press `Ctrl+C`.
+
+#### Video Processing for Mentions (NEW!)
+
+The mention daemon can now automatically detect and process videos from tweet mentions! When enabled:
+
+**Features:**
+- 🎬 Detects videos embedded in mention tweets
+- 📥 Downloads the video stream using FFmpeg
+- 🎙️ Extracts audio and sends to SpeechLab for dubbing
+- 🔧 Merges dubbed audio back with the original video
+- ☁️ Uploads dubbed video to S3
+- 💬 Replies with: *"Here is your video dubbed to [language]! 🎬 [video link]"*
+
+**Configuration:**
+
+Add to your `.env` file:
+```bash
+# Enable video processing in mentions
+PROCESS_VIDEO_IN_MENTIONS=true
+
+# Attach dubbed video inline in reply (optional, experimental)
+ATTACH_VIDEO_TO_REPLY=false
+```
+
+**Usage Example:**
+
+User mentions the bot with a tweet containing a video:
+```
+@YourBotUsername [tweet with embedded video]
+```
+
+Bot replies:
+```
+@RyanAtSpeechlab @user Here is your video dubbed to Chinese! 🎬
+https://s3.amazonaws.com/.../dubbed_video.mp4 | Project: https://translate.speechlab.ai/...
+```
+
+**Limitations:**
+- ⚠️ Videos must be publicly accessible (not DRM-protected)
+- 📏 Recommended max video size: 200MB for optimal performance
+- ⏱️ Processing time: 10-30 minutes depending on video length
+- 🔧 **Requires FFmpeg installed** on the system
+- 🎯 Video processing only works when no Twitter Space URL is found in the mention
+
+**Error Handling:**
+- If video detection fails → Bot replies with error message
+- If video download fails → Bot replies with error message
+- If audio merging fails → Bot replies with error message
+- **No fallback to audio-only** - videos fail explicitly with clear error messages
 
 ## 🧪 Testing Utilities
 
@@ -270,6 +323,44 @@ The data format for both files is:
 *   **Rate Limiting:** Running the agent too frequently or against many profiles might trigger rate limits or CAPTCHAs from Twitter. The `DELAY_BETWEEN_PROFILES_MS` config is intended for future multi-profile processing.
 *   **FFmpeg Path:** Ensure the `ffmpeg` command is globally accessible in your terminal's PATH.
 
+### Video Processing Troubleshooting
+
+**Issue: Video detection fails**
+- ✅ Verify `PROCESS_VIDEO_IN_MENTIONS=true` is set in `.env`
+- ✅ Check that the tweet actually contains an embedded video (not just a link to a video)
+- ✅ Ensure the video is not DRM-protected or geo-restricted
+- ✅ Check browser logs in `debug-screenshots/` for video player detection issues
+
+**Issue: FFmpeg video download fails**
+- ✅ Verify FFmpeg is installed: `ffmpeg -version`
+- ✅ Check M3U8 URL is accessible (not expired or rate-limited)
+- ✅ Ensure sufficient disk space in `temp_video/` directory
+- ✅ Check FFmpeg output in logs for specific error codes
+
+**Issue: Video merge fails**
+- ✅ Verify both original video and dubbed audio were downloaded successfully
+- ✅ Check audio and video codecs are compatible (should be AAC/H.264)
+- ✅ Ensure FFmpeg has permissions to write to `temp_video/` directory
+- ✅ Check FFmpeg merge command output in logs
+
+**Issue: S3 upload fails**
+- ✅ Verify AWS credentials are correctly configured
+- ✅ Check S3 bucket permissions allow PutObject
+- ✅ Ensure video file size is within S3 limits (5TB max, but network may limit)
+- ✅ Check `uploadLocalFileToS3` logs for retry attempts and specific errors
+
+**Issue: "Video processing failed" reply**
+- ✅ Check error logs in `error_log.json` for the specific mention ID
+- ✅ Review full backend processing logs for the mention
+- ✅ Verify SpeechLab API returned dubbed audio successfully
+- ✅ Check temp files weren't manually deleted during processing
+
+**Performance Tips:**
+- 💡 Keep videos under 200MB for faster processing
+- 💡 Use `BROWSER_HEADLESS=true` in production for better performance
+- 💡 Monitor `temp_video/` and `temp_audio/` directories - should auto-cleanup
+- 💡 Consider S3 lifecycle policies to automatically delete old dubbed videos
+
 ---
 
-Enjoy automating your Twitter Space translations! Feel free to contribute or report issues.
+Enjoy automating your Twitter Space and video translations! Feel free to contribute or report issues.

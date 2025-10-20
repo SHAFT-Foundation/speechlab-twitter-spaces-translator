@@ -39,6 +39,9 @@ interface EnvConfig {
     // Feature Flags
     POST_REPLY_WITH_VIDEO: boolean;
     USE_TWITTER_API_FOR_REPLY: boolean;
+    // Video Processing Flags
+    PROCESS_VIDEO_IN_MENTIONS: boolean;
+    ATTACH_VIDEO_TO_REPLY: boolean;
 }
 
 function validateConfig(env: NodeJS.ProcessEnv): EnvConfig {
@@ -82,6 +85,12 @@ function validateConfig(env: NodeJS.ProcessEnv): EnvConfig {
     // Default USE_TWITTER_API_FOR_REPLY to false if not set or invalid
     const useTwitterApiForReply = env.USE_TWITTER_API_FOR_REPLY ? env.USE_TWITTER_API_FOR_REPLY.toLowerCase() === 'true' : false;
 
+    // Default PROCESS_VIDEO_IN_MENTIONS to false if not set or invalid
+    const processVideoInMentions = env.PROCESS_VIDEO_IN_MENTIONS ? env.PROCESS_VIDEO_IN_MENTIONS.toLowerCase() === 'true' : false;
+
+    // Default ATTACH_VIDEO_TO_REPLY to false if not set or invalid
+    const attachVideoToReply = env.ATTACH_VIDEO_TO_REPLY ? env.ATTACH_VIDEO_TO_REPLY.toLowerCase() === 'true' : false;
+
     return {
         SPEECHLAB_EMAIL: env.SPEECHLAB_EMAIL!,
         SPEECHLAB_PASSWORD: env.SPEECHLAB_PASSWORD!,
@@ -111,6 +120,9 @@ function validateConfig(env: NodeJS.ProcessEnv): EnvConfig {
         // Add new flags
         POST_REPLY_WITH_VIDEO: postReplyWithVideo,
         USE_TWITTER_API_FOR_REPLY: useTwitterApiForReply,
+        // Video processing flags
+        PROCESS_VIDEO_IN_MENTIONS: processVideoInMentions,
+        ATTACH_VIDEO_TO_REPLY: attachVideoToReply,
     };
 }
 

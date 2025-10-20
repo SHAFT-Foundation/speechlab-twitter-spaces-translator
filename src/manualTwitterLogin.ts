@@ -29,23 +29,72 @@ async function manualTwitterLogin() {
         // Launch browser with slow motion for easier interaction
         console.log('\nLaunching browser for manual login...');
         browser = await chromium.launch({
-            headless: config.BROWSER_HEADLESS ?? false,
-            slowMo: 100 // Slight slow-down
+            headless: false, // Always non-headless for manual login
+            slowMo: 100,
+            args: [
+                '--disable-blink-features=AutomationControlled',
+                '--disable-dev-shm-usage',
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-web-security',
+                '--disable-features=IsolateOrigins,site-per-process'
+            ]
         });
-        
+
         // Create a persistent context to save cookies and storage
         context = await browser.newContext({
-            userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36',
+            userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             viewport: { width: 1280, height: 800 },
             locale: 'en-US',
+            timezoneId: 'America/New_York',
+            permissions: ['geolocation'],
+            extraHTTPHeaders: {
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Sec-Fetch-Dest': 'document',
+                'Sec-Fetch-Mode': 'navigate',
+                'Sec-Fetch-Site': 'none',
+                'Upgrade-Insecure-Requests': '1'
+            }
         });
         
         const page = await context.newPage();
-        
+
+        // Hide webdriver property to avoid detection
+        await page.addInitScript(() => {
+            Object.defineProperty(navigator, 'webdriver', {
+                get: () => undefined,
+            });
+
+            // Mock chrome object
+            (window as any).chrome = {
+                runtime: {},
+            };
+
+            // Mock plugins
+            Object.defineProperty(navigator, 'plugins', {
+                get: () => [1, 2, 3, 4, 5],
+            });
+
+            // Mock languages
+            Object.defineProperty(navigator, 'languages', {
+                get: () => ['en-US', 'en'],
+            });
+        });
+
         // Navigate to Twitter login page
-        console.log('Opening Twitter login page...');
-        await page.goto('https://twitter.com/i/flow/login', { waitUntil: 'networkidle', timeout: 60000 });
-        await page.screenshot({ path: path.join(screenDir, '01-login-page.png') });
+        console.log('Opening Twitter...');
+        try {
+            await page.goto('https://twitter.com', { waitUntil: 'domcontentloaded', timeout: 30000 });
+            await page.waitForTimeout(2000); // Wait for page to settle
+            await page.screenshot({ path: path.join(screenDir, '01-twitter-landing.png') });
+        } catch (err) {
+            console.log('Failed to load twitter.com, trying x.com...');
+            await page.goto('https://x.com', { waitUntil: 'domcontentloaded', timeout: 30000 });
+            await page.waitForTimeout(2000);
+            await page.screenshot({ path: path.join(screenDir, '01-x-landing.png') });
+        }
         
         console.log('\n===================================================');
         console.log('IMPORTANT INSTRUCTIONS:');
@@ -117,12 +166,21 @@ async function manualTwitterLogin() {
 
 // Helper function to wait for a key press
 function waitForKeyPress(): Promise<void> {
-    process.stdin.setRawMode(true);
     return new Promise(resolve => {
-        process.stdin.once('data', () => {
-            process.stdin.setRawMode(false);
-            resolve();
-        });
+        if (process.stdin.isTTY && process.stdin.setRawMode) {
+            process.stdin.setRawMode(true);
+            process.stdin.once('data', () => {
+                if (process.stdin.setRawMode) {
+                    process.stdin.setRawMode(false);
+                }
+                resolve();
+            });
+        } else {
+            // Fallback for non-TTY environments
+            process.stdin.once('data', () => {
+                resolve();
+            });
+        }
     });
 }
 

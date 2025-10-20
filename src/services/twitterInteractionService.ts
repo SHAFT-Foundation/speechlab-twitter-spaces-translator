@@ -21,6 +21,8 @@ export interface MentionInfo {
     tweetUrl: string;
     username: string;
     text: string;
+    hasVideo?: boolean;           // Flag indicating if mention contains a video
+    videoM3u8Url?: string;        // Captured M3U8 video stream URL
 }
 
 // --- Helper function to find Space URL on the current loaded page ---
@@ -2168,5 +2170,175 @@ export async function sendReceivedReply(page: Page, mentionInfo: MentionInfo): P
     return success;
 }
 
+/**
+ * Detects if a mention tweet contains a video, clicks play, and captures the M3U8/video stream URL.
+ * Mirrors the Twitter Spaces M3U8 extraction logic.
+ * @param page The Playwright page object (already logged in)
+ * @param tweetUrl URL of the mention tweet
+ * @returns Object with videoM3u8Url and hasVideo flag
+ */
+export async function getVideoM3u8FromMention(
+    page: Page,
+    tweetUrl: string
+): Promise<{ videoM3u8Url: string | null, hasVideo: boolean }> {
+    logger.info(`[🎬 Video] Checking mention tweet for video: ${tweetUrl}`);
+    const screenshotDir = path.join(process.cwd(), 'debug-screenshots');
+
+    let capturedM3u8Url: string | null = null;
+    let m3u8Promise: Promise<string>;
+    let resolveM3u8Promise: (url: string) => void;
+
+    try {
+        // Navigate to the tweet
+        logger.info(`[🎬 Video] Navigating to tweet: ${tweetUrl}`);
+        await page.goto(tweetUrl, { waitUntil: 'networkidle', timeout: 30000 });
+        await page.waitForTimeout(2000); // Stability wait
+
+        // Take screenshot of the tweet
+        await fsPromises.mkdir(screenshotDir, { recursive: true }).catch(() => {});
+        await page.screenshot({ path: path.join(screenshotDir, 'video-tweet-page.png') });
+
+        // FIRST: Try to find M3U8 URL directly in the page HTML/content
+        logger.info('[🎬 Video] Checking page content for M3U8 URLs...');
+        const pageContent = await page.content();
+        const m3u8Regex = /https?:\/\/[^\s"']+\.m3u8[^\s"']*/g;
+        const m3u8Matches = pageContent.match(m3u8Regex);
+
+        if (m3u8Matches && m3u8Matches.length > 0) {
+            // Found M3U8 URL directly in page content
+            const foundUrl = m3u8Matches[0];
+            logger.info(`[🎬 Video] ✅ Found M3U8 URL directly in page content: ${foundUrl}`);
+            return { videoM3u8Url: foundUrl, hasVideo: true };
+        }
+
+        // Set up M3U8 capture promise
+        m3u8Promise = new Promise<string>((resolve) => {
+            resolveM3u8Promise = resolve;
+        });
+
+        // Set up network interception to capture video stream URL
+        const requestListener = (request: any) => {
+            const url = request.url();
+            // Look for video stream URLs (M3U8, MP4, or video API endpoints)
+            if (url.includes('.m3u8') || url.includes('video') || url.includes('ext_tw_video') ||
+                url.includes('playlist') || url.includes('media') || url.includes('fastly') ||
+                url.includes('stream')) {
+                logger.debug(`[🎬 Video Req] 🔍 Network request: ${request.method()} ${url}`);
+            }
+        };
+
+        const responseListener = (response: any) => {
+            const url = response.url();
+            // Capture M3U8 playlist URL for video
+            if ((url.includes('.m3u8') || url.includes('playlist')) && response.status() === 200) {
+                if (!capturedM3u8Url) {
+                    capturedM3u8Url = url;
+                    logger.info(`[🎬 Video] 🎯 Captured video M3U8 URL: ${url}`);
+                    resolveM3u8Promise(url);
+                }
+            }
+        };
+
+        // Attach listeners
+        page.on('request', requestListener);
+        page.on('response', responseListener);
+
+        // Set up route handler to allow M3U8 requests through
+        const routeHandler = (route: any) => route.continue();
+        await page.route('**/*.m3u8*', routeHandler);
+        await page.route('**/ext_tw_video/**', routeHandler);
+
+        // Look for video player in the tweet
+        logger.info('[🎬 Video] Looking for video player in tweet...');
+        const videoSelectors = [
+            'div[data-testid="videoPlayer"]',
+            'video',
+            'div[data-testid="videoComponent"]',
+            'div[aria-label*="video"]'
+        ];
+
+        let videoPlayer = null;
+        for (const selector of videoSelectors) {
+            const player = page.locator(selector).first();
+            if (await player.isVisible({ timeout: 2000 }).catch(() => false)) {
+                videoPlayer = player;
+                logger.info(`[🎬 Video] Found video player with selector: ${selector}`);
+                break;
+            }
+        }
+
+        if (!videoPlayer) {
+            logger.info('[🎬 Video] No video player found in tweet.');
+            // Cleanup listeners
+            page.off('request', requestListener);
+            page.off('response', responseListener);
+            await page.unroute('**/*.m3u8*', routeHandler).catch(() => {});
+            await page.unroute('**/ext_tw_video/**', routeHandler).catch(() => {});
+            return { videoM3u8Url: null, hasVideo: false };
+        }
+
+        // Look for play button or trigger video load
+        logger.info('[🎬 Video] Looking for video play button...');
+        const playButtonSelectors = [
+            'button[aria-label*="play"]',
+            'button[aria-label*="Play"]',
+            'div[data-testid="videoPlayer"] button',
+            'div[role="button"][aria-label*="play"]'
+        ];
+
+        let playButton = null;
+        for (const selector of playButtonSelectors) {
+            const button = page.locator(selector).first();
+            if (await button.isVisible({ timeout: 2000 }).catch(() => false)) {
+                playButton = button;
+                logger.info(`[🎬 Video] Found play button with selector: ${selector}`);
+                break;
+            }
+        }
+
+        if (playButton) {
+            logger.info('[🎬 Video] Clicking play button to trigger video load...');
+            await playButton.click({ force: true, timeout: 10000 });
+            await page.waitForTimeout(1000);
+            await page.screenshot({ path: path.join(screenshotDir, 'video-after-play-click.png') });
+        } else {
+            // Try hovering over video player to trigger load
+            logger.info('[🎬 Video] No play button found, hovering over video player...');
+            await videoPlayer.hover();
+            await page.waitForTimeout(1000);
+        }
+
+        // Wait for M3U8 capture with timeout
+        logger.debug('[🎬 Video] Waiting for video M3U8 network request (up to 15s)...');
+        try {
+            await Promise.race([
+                m3u8Promise,
+                new Promise((_, reject) => setTimeout(() => reject(new Error('M3U8 capture timeout (15s)')), 15000))
+            ]);
+            logger.info(`[🎬 Video] ✅ Successfully captured video M3U8 URL: ${capturedM3u8Url}`);
+
+            // Cleanup listeners
+            page.off('request', requestListener);
+            page.off('response', responseListener);
+            await page.unroute('**/*.m3u8*', routeHandler).catch(() => {});
+            await page.unroute('**/ext_tw_video/**', routeHandler).catch(() => {});
+
+            return { videoM3u8Url: capturedM3u8Url, hasVideo: true };
+        } catch (timeoutError) {
+            logger.warn('[🎬 Video] Timeout waiting for M3U8 URL. Video may not have loaded properly.');
+            // Cleanup listeners
+            page.off('request', requestListener);
+            page.off('response', responseListener);
+            await page.unroute('**/*.m3u8*', routeHandler).catch(() => {});
+            await page.unroute('**/ext_tw_video/**', routeHandler).catch(() => {});
+            return { videoM3u8Url: null, hasVideo: true }; // Video exists but M3U8 not captured
+        }
+
+    } catch (error) {
+        logger.error(`[🎬 Video] ❌ Error detecting/extracting video from mention:`, error);
+        await page.screenshot({ path: path.join(screenshotDir, 'video-detection-error.png') }).catch(() => {});
+        return { videoM3u8Url: null, hasVideo: false };
+    }
+}
 
 

@@ -11,6 +11,7 @@
     "login:twitter": "tsx src/manualTwitterLogin.ts",
     "save:cookies": "tsx src/saveCookies.ts",
     "save:cookies:simple": "tsx src/saveToCookiesFile.ts",
+    "import:cookies": "tsx src/importChromeCookies.ts",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "repository": {

@@ -3,22 +3,24 @@ import logger from './utils/logger';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { chromium, Browser, Page, BrowserContext, Locator } from 'playwright';
-import { 
-    scrapeMentions, 
-    MentionInfo, 
+import {
+    scrapeMentions,
+    MentionInfo,
     postReplyToTweet,
     initializeDaemonBrowser,
-    extractSpaceUrl, 
+    extractSpaceUrl,
     extractSpaceId,
     findSpaceUrlOnPage,
     clickPlayButtonAndCaptureM3u8,
-    extractSpaceTitleFromModal
+    extractSpaceTitleFromModal,
+    getVideoM3u8FromMention
 } from './services/twitterInteractionService';
-import { downloadAndUploadAudio } from './services/audioService';
+import { downloadAndUploadAudio, downloadAndUploadVideo } from './services/audioService';
 import { createDubbingProject, waitForProjectCompletion, generateSharingLink, getProjectByThirdPartyID } from './services/speechlabApiService';
 import { detectLanguage, detectLanguages, getLanguageName } from './utils/languageUtils';
 import { v4 as uuidv4 } from 'uuid';
 import { downloadFile } from './utils/fileUtils';
+import { mergeVideoDubbedAudio, extractAudioFromVideo } from './utils/videoUtils';
 import { exec } from 'child_process';
 import util from 'util';
 import { postTweetReplyWithMediaApi } from './services/twitterApiService';
@@ -57,11 +59,10 @@ interface BackendResult {
     success: boolean;
     sharingLink?: string;   // Link to SpeechLab project page
     publicMp3Url?: string;  // Link to the uploaded dubbed MP3 on S3
+    publicVideoUrl?: string; // Link to the uploaded dubbed video on S3 (NEW)
     projectId?: string;
     thirdPartyID?: string;  // Added thirdPartyID to track in processed mentions
     error?: string;
-    // Path to the FINAL generated video file
-    // generatedVideoPath?: string; 
 }
 
 // New interfaces for processed mentions tracking
@@ -80,7 +81,7 @@ interface ProjectStatusInfo {
 }
 
 const PROCESSED_MENTIONS_PATH = path.join(process.cwd(), 'processed_mentions.json');
-const POLLING_INTERVAL_MS = 10 * 60 * 1000; // Check every 10 minutes (10 * 60 * 1000 ms)
+const POLLING_INTERVAL_MS = 60 * 1000; // Check every 60 seconds (1 minute) for testing
 const SCREENSHOT_DIR = path.join(process.cwd(), 'debug-screenshots');
 const MANUAL_LOGIN_WAIT_MS = 60 * 1000; // Wait 60 seconds for manual login if needed
 
@@ -747,7 +748,72 @@ async function initiateProcessing(mentionInfo: MentionInfo, page: Page): Promise
     const { sourceLanguageCode, sourceLanguageName, targetLanguageCode, targetLanguageName } = detectLanguages(mentionInfo.text);
     logger.info(`[🚀 Initiate] Detected languages: Source: ${sourceLanguageName} (${sourceLanguageCode}), Target: ${targetLanguageName} (${targetLanguageCode})`);
 
-    // 1. Navigate & Find Article
+    // Check if video processing is enabled and if mention contains a Space URL or video
+    const spaceUrl = extractSpaceUrl(mentionInfo.text);
+
+    // NEW: Check for video if no Space URL found and video processing is enabled
+    if (!spaceUrl && config.PROCESS_VIDEO_IN_MENTIONS) {
+        logger.info(`[🎬 Initiate] No Space URL found. Checking for video in mention...`);
+        try {
+            const { videoM3u8Url, hasVideo } = await getVideoM3u8FromMention(page, mentionInfo.tweetUrl);
+
+            if (hasVideo && videoM3u8Url) {
+                logger.info(`[🎬 Initiate] ✅ Found video in mention with M3U8 URL: ${videoM3u8Url}`);
+                // Store video info in mentionInfo for backend processing
+                mentionInfo.hasVideo = true;
+                mentionInfo.videoM3u8Url = videoM3u8Url;
+
+                // Extract pseudo space ID from video URL or use tweet ID
+                const spaceId = videoM3u8Url.match(/([a-zA-Z0-9_-]+)\/(?:chunk|playlist)/)?.[1] || `video_${mentionInfo.tweetId}`;
+                const spaceTitle = `Video from @${mentionInfo.username}`;
+
+                // Post acknowledgement reply
+                try {
+                    logger.info(`[🎬 Initiate] Posting preliminary acknowledgement reply for video...`);
+                    const ackMessage = `${mentionInfo.username} Received! I've started processing this video from ${sourceLanguageName} to ${targetLanguageName}. Please check back here in ~10-15 minutes for the dubbed video.`;
+                    logger.info(`[🎬 Initiate] Full Ack Reply Text: ${ackMessage}`);
+                    const ackSuccess = await postReplyToTweet(page, mentionInfo.tweetUrl, ackMessage);
+                    if (!ackSuccess) {
+                        logger.warn(`[🎬 Initiate] Failed to post acknowledgement reply (non-critical).`);
+                    }
+                } catch (ackError) {
+                    logger.warn(`[🎬 Initiate] Error posting acknowledgement reply (non-critical):`, ackError);
+                }
+
+                // Return initiation result for video processing
+                logger.info(`[🎬 Initiate] Video initiation complete for ${mentionInfo.tweetId}. Returning data.`);
+                return {
+                    m3u8Url: videoM3u8Url,
+                    spaceId,
+                    spaceTitle,
+                    mentionInfo,
+                    sourceLanguageCode,
+                    sourceLanguageName,
+                    targetLanguageCode,
+                    targetLanguageName,
+                };
+            } else if (hasVideo && !videoM3u8Url) {
+                logger.warn(`[🎬 Initiate] Video detected but M3U8 URL could not be captured.`);
+                const errorReplyText = `${mentionInfo.username} Sorry, I found a video but couldn't extract the stream URL. The video might be protected or not yet available.`;
+                logger.info(`[🎬 Initiate] Posting error reply: ${errorReplyText}`);
+                await postReplyToTweet(page, mentionInfo.tweetUrl, errorReplyText);
+                throw new Error('Video detected but M3U8 extraction failed');
+            } else {
+                logger.info(`[🎬 Initiate] No video found in mention. Will try Space detection next.`);
+                // Don't throw - let it fall through to Space detection
+            }
+        } catch (videoError) {
+            logger.error(`[🎬 Initiate] Error during video detection:`, videoError);
+            // If error was thrown with a message, it already posted a reply - don't continue to Space detection
+            if (videoError instanceof Error && videoError.message.includes('M3U8 extraction failed')) {
+                throw videoError; // Stop here, error reply already posted
+            }
+            // Otherwise, log and continue to Space detection as fallback
+            logger.info(`[🎬 Initiate] Continuing to Space detection after video error.`);
+        }
+    }
+
+    // 1. Navigate & Find Article (for Twitter Spaces)
     try {
         logger.info(`[🚀 Initiate] Navigating to mention tweet: ${mentionInfo.tweetUrl}`);
         await page.goto(mentionInfo.tweetUrl, { waitUntil: 'domcontentloaded', timeout: 90000 });
@@ -1138,6 +1204,91 @@ async function performBackendProcessing(initData: InitiationResult): Promise<Bac
             logger.warn(`[⚙️ Backend] Could not find DUBBED MP3 audio output URL in project details.`);
         }
 
+        // NEW: Handle video processing if source was a video
+        let publicVideoUrl: string | undefined = undefined;
+        if (mentionInfo.hasVideo && mentionInfo.videoM3u8Url) {
+            logger.info(`[⚙️ Backend] Source is video, processing dubbed video...`);
+            const TEMP_VIDEO_DIR = path.join(process.cwd(), 'temp_video');
+            await fs.mkdir(TEMP_VIDEO_DIR, { recursive: true });
+
+            let originalVideoPath: string | undefined = undefined;
+            let dubbedVideoPath: string | undefined = undefined;
+
+            try {
+                // Step 1: Download original video to local storage
+                logger.info(`[⚙️ Backend] Downloading original video from M3U8...`);
+                originalVideoPath = path.join(TEMP_VIDEO_DIR, `original_${thirdPartyID}.mp4`);
+
+                // Use FFmpeg to download video directly
+                const { spawn } = require('child_process');
+                await new Promise<void>((resolve, reject) => {
+                    const ffmpegArgs = [
+                        '-protocol_whitelist', 'file,http,https,tcp,tls,crypto',
+                        '-i', mentionInfo.videoM3u8Url!,
+                        '-c', 'copy',
+                        '-y',
+                        originalVideoPath!
+                    ];
+                    const ffmpeg = spawn('ffmpeg', ffmpegArgs);
+                    ffmpeg.on('close', (code: number) => {
+                        if (code === 0) resolve();
+                        else reject(new Error(`FFmpeg failed with code ${code}`));
+                    });
+                    ffmpeg.on('error', reject);
+                });
+
+                logger.info(`[⚙️ Backend] ✅ Original video downloaded: ${originalVideoPath}`);
+
+                // Step 2: Verify dubbed audio is available
+                if (!downloadedAudioPath || !await fsExtra.pathExists(downloadedAudioPath)) {
+                    throw new Error('Dubbed audio not available for video merging');
+                }
+
+                logger.info(`[⚙️ Backend] Dubbed audio available: ${downloadedAudioPath}`);
+
+                // Step 3: Merge video + dubbed audio
+                logger.info(`[⚙️ Backend] Merging video with dubbed audio...`);
+                dubbedVideoPath = path.join(TEMP_VIDEO_DIR, `dubbed_${thirdPartyID}.mp4`);
+                const mergeSuccess = await mergeVideoDubbedAudio(originalVideoPath, downloadedAudioPath, dubbedVideoPath);
+
+                if (!mergeSuccess) {
+                    throw new Error('Failed to merge video with dubbed audio');
+                }
+
+                logger.info(`[⚙️ Backend] ✅ Video merge successful: ${dubbedVideoPath}`);
+
+                // Step 4: Upload dubbed video to S3
+                logger.info(`[⚙️ Backend] Uploading dubbed video to S3...`);
+                const videoS3Key = `dubbed-videos/${thirdPartyID}_dubbed.mp4`;
+                const videoUploadResult = await uploadLocalFileToS3(dubbedVideoPath, videoS3Key);
+                publicVideoUrl = videoUploadResult || undefined;
+
+                if (publicVideoUrl) {
+                    logger.info(`[⚙️ Backend] ✅ Dubbed video uploaded to S3: ${publicVideoUrl}`);
+                } else {
+                    throw new Error('Failed to upload dubbed video to S3');
+                }
+
+                // Clean up local video files
+                if (originalVideoPath) await fsExtra.remove(originalVideoPath).catch(() => {});
+                if (dubbedVideoPath) await fsExtra.remove(dubbedVideoPath).catch(() => {});
+
+            } catch (videoError) {
+                logger.error(`[⚙️ Backend] ❌ Video processing failed:`, videoError);
+
+                // Clean up on error
+                if (originalVideoPath) await fsExtra.remove(originalVideoPath).catch(() => {});
+                if (dubbedVideoPath) await fsExtra.remove(dubbedVideoPath).catch(() => {});
+
+                // Return error - NO fallback to audio
+                return {
+                    success: false,
+                    error: `Video processing failed: ${videoError instanceof Error ? videoError.message : String(videoError)}`,
+                    thirdPartyID
+                };
+            }
+        }
+
         // 6. Generate sharing link 
         logger.info(`[⚙️ Backend] Generating sharing link for project ID: ${projectId}...`);
         const sharingLink = await generateSharingLink(projectId);
@@ -1147,10 +1298,11 @@ async function performBackendProcessing(initData: InitiationResult): Promise<Bac
         logger.info(`[⚙️ Backend] Sharing link generated: ${sharingLink || 'N/A'}`);
 
         // Return success with relevant URLs
-        return { 
-            success: true, 
-            sharingLink: sharingLink || undefined, 
+        return {
+            success: true,
+            sharingLink: sharingLink || undefined,
             publicMp3Url: publicMp3Url, // Will be undefined if download or S3 upload failed
+            publicVideoUrl: publicVideoUrl, // Will be undefined if not a video or video processing failed
             projectId: projectId,
             thirdPartyID: thirdPartyID
         };
@@ -1281,10 +1433,24 @@ async function runFinalReplyQueue(page: Page): Promise<void> {
     if (backendResult.success) {
         const { sourceLanguageName, targetLanguageName } = detectLanguages(mentionInfo.text);
         const hasSharingLink = !!backendResult.sharingLink;
+        const hasVideoLink = !!backendResult.publicVideoUrl;
         const hasMp3Link = !!backendResult.publicMp3Url;
-        
-        // --- MODIFIED: Check for MP3 Link presence FIRST for success message ---
-        if (hasMp3Link) {
+
+        // NEW: Check for video link FIRST (videos take priority over audio)
+        if (hasVideoLink) {
+            // Video dubbing success
+            finalMessage = `@RyanAtSpeechlab ${mentionInfo.username} Here is your video dubbed to ${targetLanguageName}! 🎬 ${backendResult.publicVideoUrl}`;
+
+            if (hasSharingLink) {
+                finalMessage += ` | Project: ${backendResult.sharingLink}`;
+            }
+
+            // Optional: Attach video inline if configured
+            if (config.ATTACH_VIDEO_TO_REPLY && backendResult.publicVideoUrl) {
+                // TODO: Download video for inline attachment if needed
+                logger.info(`[↩️ Reply Queue] Video inline attachment configured but not yet implemented`);
+            }
+        } else if (hasMp3Link) {
             // MP3 is available - construct the success message
             let linkParts = [];
             // MP3 Link comes first
