@@ -1514,7 +1514,7 @@ export async function postReplyToTweet(
  * @param page The logged-in Playwright page instance.
  * @returns {Promise<MentionInfo[]>} An array of found mentions.
  */
-export async function scrapeMentions(page: Page): Promise<MentionInfo[]> {
+export async function scrapeMentions(page: Page, processedMentions?: Set<string>): Promise<MentionInfo[]> {
     const mentionsUrl = 'https://twitter.com/notifications/mentions';
     const foundMentions: MentionInfo[] = [];
     const screenshotDir = path.join(process.cwd(), 'debug-screenshots');
@@ -1566,7 +1566,7 @@ export async function scrapeMentions(page: Page): Promise<MentionInfo[]> {
 
         logger.debug('[🔔 Mention] Locating mention tweets...');
         const tweetLocators = await page.locator(MENTION_TWEET_SELECTOR).all();
-        logger.info(`[🔔 Mention] Found ${tweetLocators.length} potential mention tweets on the page.`);
+        logger.debug(`[🔔 Mention] Found ${tweetLocators.length} potential mention tweets on the page.`);
 
 
         if (tweetLocators.length === 0) {
@@ -1585,18 +1585,36 @@ export async function scrapeMentions(page: Page): Promise<MentionInfo[]> {
 
 
             try {
-                // 1. Extract Tweet URL and ID
-                logger.debug(`[🔔 Mention] Processing tweet ${i+1}/${tweetLocators.length}: Extracting URL/ID...`);
+                // 1. Extract Tweet URL and ID (minimal extraction first for filtering)
                 const timeElement = tweetLocator.locator(MENTION_TIMESTAMP_LINK_SELECTOR).first();
                 if (await timeElement.isVisible({ timeout: 2000 })) {
                     const linkElement = timeElement.locator('xpath=./ancestor::a[@href]');
                     const href = await linkElement.getAttribute('href', { timeout: 2000 });
                     if (href) {
-                        tweetUrl = `https://x.com${href}`;
-                        // Extract ID from URL (e.g., /status/12345 -> 12345)
+                        // Extract ID from URL quickly
                         const match = href.match(/\/status\/(\d+)/);
                         if (match && match[1]) {
                             tweetId = match[1];
+
+                            // Early skip check - if already processed, skip silently
+                            if (processedMentions && processedMentions.has(tweetId)) {
+                                continue; // Skip to next tweet - no logging, no extraction
+                            }
+
+                            // Age check - skip tweets older than 24 hours
+                            // Twitter Snowflake IDs encode timestamp in first 41 bits
+                            const tweetTimestamp = (BigInt(tweetId) >> BigInt(22)) + BigInt(1288834974657); // Twitter epoch
+                            const tweetDate = new Date(Number(tweetTimestamp));
+                            const hoursSinceTweet = (Date.now() - tweetDate.getTime()) / (1000 * 60 * 60);
+
+                            if (hoursSinceTweet > 24) {
+                                logger.debug(`[🔔 Mention] Skipping old tweet ${tweetId} (${hoursSinceTweet.toFixed(1)} hours old)`);
+                                continue; // Skip tweets older than 24 hours
+                            }
+
+                            // Only log and extract full URL if this is a NEW tweet
+                            tweetUrl = `https://x.com${href}`;
+                            logger.debug(`[🔔 Mention] Processing NEW tweet ${i+1}/${tweetLocators.length}: ${tweetId} (${hoursSinceTweet.toFixed(1)}h old)`);
                             logger.debug(`[🔔 Mention]   Extracted Tweet URL: ${tweetUrl}`);
                             logger.debug(`[🔔 Mention]   Extracted Tweet ID: ${tweetId}`);
                         } else {
@@ -1672,7 +1690,11 @@ export async function scrapeMentions(page: Page): Promise<MentionInfo[]> {
     }
 
 
-    logger.info(`[🔔 Mention] Finished scraping. Found ${foundMentions.length} valid mentions.`);
+    if (foundMentions.length > 0) {
+        logger.info(`[🔔 Mention] Finished scraping. Found ${foundMentions.length} NEW valid mention(s).`);
+    } else {
+        logger.debug(`[🔔 Mention] Finished scraping. No new mentions found.`);
+    }
     return foundMentions;
 }
 // --- END NEW FUNCTION ---
@@ -2177,6 +2199,49 @@ export async function sendReceivedReply(page: Page, mentionInfo: MentionInfo): P
  * @param tweetUrl URL of the mention tweet
  * @returns Object with videoM3u8Url and hasVideo flag
  */
+/**
+ * Finds video player in parent tweet on the page (mirrors findSpaceUrlOnPage logic)
+ * Iterates through tweet articles and finds the one with a video player
+ */
+async function findVideoPlayerOnPage(page: Page): Promise<any | null> {
+    try {
+        logger.debug('[🎬 Helper] Iterating through visible tweet articles to find video player...');
+        const tweetArticles = await page.locator('article[data-testid="tweet"]').all();
+        logger.debug(`[🎬 Helper] Found ${tweetArticles.length} article elements.`);
+
+        for (let i = 0; i < tweetArticles.length; i++) {
+            const article = tweetArticles[i];
+            logger.debug(`[🎬 Helper] Checking article ${i+1} for video...`);
+
+            if (!await article.isVisible().catch(() => false)) {
+                logger.debug(`[🎬 Helper] Article ${i+1} is not visible, skipping.`);
+                continue;
+            }
+
+            // Check if this article contains a video player
+            const videoSelectors = [
+                'div[data-testid="videoPlayer"]',
+                'video',
+                'div[data-testid="videoComponent"]'
+            ];
+
+            for (const selector of videoSelectors) {
+                const videoPlayer = article.locator(selector).first();
+                if (await videoPlayer.isVisible({ timeout: 500 }).catch(() => false)) {
+                    logger.info(`[🎬 Helper] ✅ Article ${i+1} contains a video player (selector: ${selector}).`);
+                    return videoPlayer;
+                }
+            }
+        }
+
+        logger.info('[🎬 Helper] No video player found in any article on the page.');
+        return null;
+    } catch (error) {
+        logger.error('[🎬 Helper] Error finding video player on page:', error);
+        return null;
+    }
+}
+
 export async function getVideoM3u8FromMention(
     page: Page,
     tweetUrl: string
@@ -2189,14 +2254,25 @@ export async function getVideoM3u8FromMention(
     let resolveM3u8Promise: (url: string) => void;
 
     try {
-        // Navigate to the tweet
-        logger.info(`[🎬 Video] Navigating to tweet: ${tweetUrl}`);
-        await page.goto(tweetUrl, { waitUntil: 'networkidle', timeout: 30000 });
-        await page.waitForTimeout(2000); // Stability wait
+        // Navigate to the mention tweet (which is a reply to a tweet with video)
+        logger.info(`[🎬 Video] Navigating to mention tweet: ${tweetUrl}`);
+        await page.goto(tweetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await page.waitForTimeout(3000); // Wait for thread to load
 
-        // Take screenshot of the tweet
+        // Take screenshot of the tweet thread
         await fsPromises.mkdir(screenshotDir, { recursive: true }).catch(() => {});
-        await page.screenshot({ path: path.join(screenshotDir, 'video-tweet-page.png') });
+        await page.screenshot({ path: path.join(screenshotDir, 'video-mention-page.png') });
+
+        // Find video player in parent tweet (mirrors Space detection logic)
+        logger.info('[🎬 Video] Looking for video player in parent tweet...');
+        const videoPlayer = await findVideoPlayerOnPage(page);
+
+        if (!videoPlayer) {
+            logger.info('[🎬 Video] No video player found in thread (no video to dub).');
+            return { videoM3u8Url: null, hasVideo: false };
+        }
+
+        logger.info('[🎬 Video] Found video player in parent tweet. Extracting M3U8 URL...');
 
         // FIRST: Try to find M3U8 URL directly in the page HTML/content
         logger.info('[🎬 Video] Checking page content for M3U8 URLs...');
@@ -2248,64 +2324,35 @@ export async function getVideoM3u8FromMention(
         await page.route('**/*.m3u8*', routeHandler);
         await page.route('**/ext_tw_video/**', routeHandler);
 
-        // Look for video player in the tweet
-        logger.info('[🎬 Video] Looking for video player in tweet...');
-        const videoSelectors = [
-            'div[data-testid="videoPlayer"]',
-            'video',
-            'div[data-testid="videoComponent"]',
-            'div[aria-label*="video"]'
-        ];
-
-        let videoPlayer = null;
-        for (const selector of videoSelectors) {
-            const player = page.locator(selector).first();
-            if (await player.isVisible({ timeout: 2000 }).catch(() => false)) {
-                videoPlayer = player;
-                logger.info(`[🎬 Video] Found video player with selector: ${selector}`);
-                break;
-            }
-        }
-
-        if (!videoPlayer) {
-            logger.info('[🎬 Video] No video player found in tweet.');
-            // Cleanup listeners
-            page.off('request', requestListener);
-            page.off('response', responseListener);
-            await page.unroute('**/*.m3u8*', routeHandler).catch(() => {});
-            await page.unroute('**/ext_tw_video/**', routeHandler).catch(() => {});
-            return { videoM3u8Url: null, hasVideo: false };
-        }
-
-        // Look for play button or trigger video load
-        logger.info('[🎬 Video] Looking for video play button...');
+        // Look for play button within the found video player or trigger video load
+        logger.info('[🎬 Video] Looking for video play button in parent tweet video player...');
         const playButtonSelectors = [
             'button[aria-label*="play"]',
             'button[aria-label*="Play"]',
-            'div[data-testid="videoPlayer"] button',
+            'button',
             'div[role="button"][aria-label*="play"]'
         ];
 
         let playButton = null;
         for (const selector of playButtonSelectors) {
-            const button = page.locator(selector).first();
+            const button = videoPlayer.locator(selector).first();
             if (await button.isVisible({ timeout: 2000 }).catch(() => false)) {
                 playButton = button;
-                logger.info(`[🎬 Video] Found play button with selector: ${selector}`);
+                logger.info(`[🎬 Video] Found play button within video player using selector: ${selector}`);
                 break;
             }
         }
 
         if (playButton) {
-            logger.info('[🎬 Video] Clicking play button to trigger video load...');
+            logger.info('[🎬 Video] Clicking play button on parent tweet video to trigger M3U8 load...');
             await playButton.click({ force: true, timeout: 10000 });
-            await page.waitForTimeout(1000);
+            await page.waitForTimeout(2000);
             await page.screenshot({ path: path.join(screenshotDir, 'video-after-play-click.png') });
         } else {
             // Try hovering over video player to trigger load
-            logger.info('[🎬 Video] No play button found, hovering over video player...');
+            logger.info('[🎬 Video] No play button found, hovering over parent tweet video player...');
             await videoPlayer.hover();
-            await page.waitForTimeout(1000);
+            await page.waitForTimeout(2000);
         }
 
         // Wait for M3U8 capture with timeout

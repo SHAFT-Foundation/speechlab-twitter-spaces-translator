@@ -26,6 +26,7 @@ import util from 'util';
 import { postTweetReplyWithMediaApi } from './services/twitterApiService';
 import { uploadLocalFileToS3 } from './services/audioService';
 import * as fsExtra from 'fs-extra';
+import { initSupabase, upsertMention, updateMentionStatus, getAllProcessedMentions } from './services/supabaseService';
 
 const execPromise = util.promisify(exec);
 
@@ -835,11 +836,19 @@ async function initiateProcessing(mentionInfo: MentionInfo, page: Page): Promise
         if (!playElementLocator) {
             const errMsg = `Could not find playable Space element (article or button) for tweet ${mentionInfo.tweetId}.`; // Updated error message
             logger.warn(`[🚀 Initiate] ${errMsg}`);
-            // --- ADDED: Log error reply before sending ---
-            const errorReplyText = `${mentionInfo.username} Sorry, I couldn't find a playable Twitter Space associated with this tweet.`;
-            logger.info(`[🚀 Initiate] Posting error reply: ${errorReplyText}`);
-            // --- END ADDED SECTION ---
-            await postReplyToTweet(page, mentionInfo.tweetUrl, errorReplyText);
+
+            // Check if this was a text-only mention (no video, no Space)
+            if (!spaceUrl && config.PROCESS_VIDEO_IN_MENTIONS) {
+                // This was a text-only mention with no content to process
+                const errorReplyText = `${mentionInfo.username} To dub content, please:\n1. Attach a video to your mention, OR\n2. Include a Twitter Space URL in your tweet\n\nExample: "@DubbingAgent [video attached] dub to German"`;
+                logger.info(`[🚀 Initiate] Posting helpful error reply for text-only mention: ${errorReplyText}`);
+                await postReplyToTweet(page, mentionInfo.tweetUrl, errorReplyText);
+            } else {
+                // Normal Space not found error
+                const errorReplyText = `${mentionInfo.username} Sorry, I couldn't find a playable Twitter Space associated with this tweet.`;
+                logger.info(`[🚀 Initiate] Posting error reply: ${errorReplyText}`);
+                await postReplyToTweet(page, mentionInfo.tweetUrl, errorReplyText);
+            }
             throw new Error(errMsg); // Throw to signal failure
         }
         logger.info(`[🚀 Initiate] Found potential Space element (article or button).`);
@@ -1363,13 +1372,24 @@ async function runInitiationQueue(page: Page): Promise<void> {
 
     processedCount++; // Increment processed count for stats
     logger.info(`[🚀 Initiate Queue] Processing mention ${mentionToProcess.tweetId} (${mentionToProcess.username}). Remaining: ${mentionQueue.length}. This is mention #${processedCount} processed since startup.`);
-    
+
+    // Update status to 'initiating'
+    await updateMentionStatus(mentionToProcess.tweetId, 'initiating');
+
     try {
         // Perform browser initiation steps
         const initData = await initiateProcessing(mentionToProcess, page);
-        
+
         // If initiation is successful, start backend processing asynchronously
         logger.info(`[🚀 Initiate Queue] Initiation successful for ${mentionToProcess.tweetId}. Starting background backend task.`);
+
+        // Update status to 'processing' and store init data
+        await updateMentionStatus(mentionToProcess.tweetId, 'processing', {
+            third_party_id: initData.mentionInfo.hasVideo ? `video_${mentionToProcess.tweetId}` : undefined,
+            m3u8_url: initData.m3u8Url || undefined,
+            source_language: initData.sourceLanguageName,
+            target_language: initData.targetLanguageName
+        });
         
         // No 'await' here - let it run in the background
         performBackendProcessing(initData)
@@ -1513,8 +1533,17 @@ async function runFinalReplyQueue(page: Page): Promise<void> {
         
         if (postSuccess) {
             logger.info(`[↩️ Reply Queue] Successfully posted final reply via ${postMethod} for ${mentionInfo.tweetId}.`);
-            
-            // --- Mark Processed After Successful Reply --- 
+
+            // Update Supabase with completion status
+            await updateMentionStatus(mentionInfo.tweetId, 'complete', {
+                third_party_id: backendResult.thirdPartyID,
+                project_id: backendResult.projectId,
+                sharing_link: backendResult.sharingLink,
+                public_video_url: backendResult.publicVideoUrl,
+                public_mp3_url: backendResult.publicMp3Url
+            });
+
+            // --- Mark Processed After Successful Reply ---
             if (backendResult.success) { // Only mark processed if the backend succeeded
                 logger.info(`[↩️ Reply Queue] Marking mention ${mentionInfo.tweetId} as processed now.`);
                 try {
@@ -1539,17 +1568,22 @@ async function runFinalReplyQueue(page: Page): Promise<void> {
                  // Always mark as processed even if backend failed
                  await markMentionAsProcessed(mentionInfo.tweetId, processedMentions);
                  
+                 // Update Supabase with failed status
+                 await updateMentionStatus(mentionInfo.tweetId, 'failed', {
+                     error_message: backendResult.error || 'Unknown backend error'
+                 });
+
                  // If we have a thirdPartyID, update the project status to 'failed'
                  if (backendResult.thirdPartyID) {
                      logger.info(`[↩️ Reply Queue] Updating project status for ${backendResult.thirdPartyID} to 'failed'.`);
                      await updateProjectStatus(
-                         backendResult.thirdPartyID, 
-                         'failed', 
-                         mentionInfo.tweetId, 
+                         backendResult.thirdPartyID,
+                         'failed',
+                         mentionInfo.tweetId,
                          backendResult.projectId
                      );
                  }
-                 
+
                  // Log to error log file
                  logMentionError(mentionInfo.tweetId, backendResult.error || 'Unknown backend error', 'backend');
              }
@@ -1657,7 +1691,19 @@ function triggerFinalReplyWorker(page: Page | null) {
 async function main() {
     logger.info('[😈 Daemon] Starting Mention Monitoring Daemon...');
     logger.info('[😈 Daemon] LOG_LEVEL set to: ' + config.LOG_LEVEL);
-    
+
+    // Initialize Supabase
+    logger.info('[😈 Daemon] Initializing Supabase connection...');
+    initSupabase();
+
+    // Load processed mentions from Supabase
+    logger.info('[😈 Daemon] Loading processed mentions from Supabase...');
+    const supabaseProcessedMentions = await getAllProcessedMentions();
+    for (const tweetId of supabaseProcessedMentions) {
+        processedMentions.add(tweetId);
+    }
+    logger.info(`[😈 Daemon] Loaded ${supabaseProcessedMentions.size} processed mentions from Supabase`);
+
     // Set up more verbose logging if needed
     if (config.LOG_LEVEL === 'debug') {
         logger.info('[😈 Daemon] Debug logging enabled - will show detailed execution flow');
@@ -1806,15 +1852,8 @@ async function main() {
             }
             logger.info('[😈 Daemon Polling] Polling for new mentions...');
             try {
-                const mentions = await scrapeMentions(page);
-                logger.info(`[😈 Daemon Polling] Scraped ${mentions.length} mentions.`);
+                const mentions = await scrapeMentions(page, processedMentions);
                 let newMentionsFound = 0;
-                
-                // Log count of already processed mentions for visibility
-                const alreadyProcessedCount = mentions.filter(m => processedMentions.has(m.tweetId)).length;
-                if (alreadyProcessedCount > 0) {
-                    logger.info(`[😈 Daemon Polling] Found ${alreadyProcessedCount} already processed mentions (skipping).`);
-                }
                 
                 // Create a preview of new mentions being added
                 const newMentions: MentionInfo[] = [];
@@ -1852,6 +1891,16 @@ async function main() {
                         // No associated project found, process as new mention
                         newMentionsFound++;
                         logger.info(`[🔔 Mention] Found new unprocessed mention: ID=${mention.tweetId}, User=${mention.username}, Text="${mention.text?.substring(0, 50)}${mention.text?.length > 50 ? '...' : ''}"`);
+
+                        // Add to Supabase with 'pending' status
+                        await upsertMention({
+                            tweet_id: mention.tweetId,
+                            username: mention.username,
+                            tweet_url: mention.tweetUrl,
+                            tweet_text: mention.text || '',
+                            status: 'pending'
+                        });
+
                         mentionQueue.push(mention);
                         newMentions.push(mention);
                         logger.info(`[⚙️ Queue] Mention ${mention.tweetId} added to initiation queue. Queue size: ${mentionQueue.length}`);
@@ -1869,7 +1918,7 @@ async function main() {
                     // Log comprehensive queue status after adding new mentions
                     logQueueStatus();
                 } else {
-                    logger.info('[😈 Daemon Polling] No new mentions found.');
+                    logger.debug('[😈 Daemon Polling] No new mentions found.');
                 }
                 
             } catch (error) {
@@ -1896,8 +1945,8 @@ async function main() {
                     throw new Error("Page closed before initial skip scrape could run.");
                 }
                 // Scrape mentions once
-                const initialMentions = await scrapeMentions(page);
-                logger.info(`[😈 Daemon] Initial scrape found ${initialMentions.length} mentions.`);
+                const initialMentions = await scrapeMentions(page, processedMentions);
+                logger.info(`[😈 Daemon] Initial scrape found ${initialMentions.length} mentions (already-processed filtered).`);
                 let skippedCount = 0;
                 for (const mention of initialMentions) {
                     // Check if it's *not* already processed, just in case

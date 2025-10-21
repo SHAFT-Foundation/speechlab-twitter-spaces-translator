@@ -4,5 +4,29 @@
     "error": "Error: Could not find playable Space element (article or button) for tweet 1980416687838237080.\nError: Could not find playable Space element (article or button) for tweet 1980416687838237080.\n    at /Users/ryanmedlin/shaft/speechlab-twitter-spaces-translator/src/mentionDaemon.ts:837:19\n    at Generator.next (<anonymous>)\n    at fulfilled (/Users/ryanmedlin/shaft/speechlab-twitter-spaces-translator/src/mentionDaemon.ts:38:58)",
     "timestamp": "2025-10-20T23:45:13.118Z",
     "count": 1
+  },
+  "1980428287538340116": {
+    "phase": "initiation",
+    "error": "Error: Could not find playable Space element (article or button) for tweet 1980428287538340116.\nError: Could not find playable Space element (article or button) for tweet 1980428287538340116.\n    at /Users/ryanmedlin/shaft/speechlab-twitter-spaces-translator/src/mentionDaemon.ts:843:19\n    at Generator.next (<anonymous>)\n    at fulfilled (/Users/ryanmedlin/shaft/speechlab-twitter-spaces-translator/src/mentionDaemon.ts:38:58)",
+    "timestamp": "2025-10-21T00:28:15.978Z",
+    "count": 1
+  },
+  "1980444576218530194": {
+    "phase": "initiation",
+    "error": "Error: Could not find playable Space element (article or button) for tweet 1980444576218530194.\nError: Could not find playable Space element (article or button) for tweet 1980444576218530194.\n    at /Users/ryanmedlin/shaft/speechlab-twitter-spaces-translator/src/mentionDaemon.ts:844:19\n    at Generator.next (<anonymous>)\n    at fulfilled (/Users/ryanmedlin/shaft/speechlab-twitter-spaces-translator/src/mentionDaemon.ts:38:58)",
+    "timestamp": "2025-10-21T01:48:12.539Z",
+    "count": 2
+  },
+  "1980431570038321310": {
+    "phase": "initiation",
+    "error": "Error: locator.all: Execution context was destroyed, most likely because of a navigation\nlocator.all: Execution context was destroyed, most likely because of a navigation\n    at /Users/ryanmedlin/shaft/speechlab-twitter-spaces-translator/src/mentionDaemon.ts:693:58\n    at /Users/ryanmedlin/shaft/speechlab-twitter-spaces-translator/src/mentionDaemon.ts:41:71\n    at __awaiter (/Users/ryanmedlin/shaft/speechlab-twitter-spaces-translator/src/mentionDaemon.ts:37:12)\n    at findArticleWithPlayButton (/Users/ryanmedlin/shaft/speechlab-twitter-spaces-translator/src/mentionDaemon.ts:641:12)\n    at /Users/ryanmedlin/shaft/speechlab-twitter-spaces-translator/src/mentionDaemon.ts:832:44\n    at fulfilled (/Users/ryanmedlin/shaft/speechlab-twitter-spaces-translator/src/mentionDaemon.ts:38:58)",
+    "timestamp": "2025-10-21T02:30:31.599Z",
+    "count": 2
+  },
+  "1980416578572464258": {
+    "phase": "initiation",
+    "error": "Error: Could not find playable Space element (article or button) for tweet 1980416578572464258.\nError: Could not find playable Space element (article or button) for tweet 1980416578572464258.\n    at /Users/ryanmedlin/shaft/speechlab-twitter-spaces-translator/src/mentionDaemon.ts:844:19\n    at Generator.next (<anonymous>)\n    at fulfilled (/Users/ryanmedlin/shaft/speechlab-twitter-spaces-translator/src/mentionDaemon.ts:38:58)",
+    "timestamp": "2025-10-21T01:55:18.035Z",
+    "count": 1
   }
 }
