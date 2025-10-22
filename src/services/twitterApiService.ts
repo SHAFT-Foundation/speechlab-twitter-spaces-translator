@@ -18,6 +18,7 @@ const rwClient = twitterClient.readWrite;
 // Rate limiting state
 let lastTweetTime = 0;
 const MIN_TWEET_INTERVAL_MS = 300000; // 5 minutes (300 seconds) between tweets to avoid rate limits
+let rateLimitResetTime: number | null = null; // Track Twitter's rate limit reset time globally
 
 // Exponential backoff configuration
 const MAX_RETRIES = 3;
@@ -129,6 +130,15 @@ export async function postTweetReplyWithMediaApi(
     // Step 3: Post with exponential backoff retry logic
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
         try {
+            // Check if we're still in a known rate limit window
+            if (rateLimitResetTime && Date.now() < rateLimitResetTime) {
+                const waitUntilReset = rateLimitResetTime - Date.now();
+                const waitMinutes = Math.ceil(waitUntilReset / 60000);
+                logger.warn(`[🐦 API Post] ⚠️ Known rate limit active. Waiting ${waitMinutes}m until reset...`);
+                await sleep(waitUntilReset + 5000); // Add 5s buffer after reset
+                rateLimitResetTime = null; // Clear after waiting
+            }
+
             // Rate limit protection - wait if needed
             const now = Date.now();
             const timeSinceLastTweet = now - lastTweetTime;
@@ -136,7 +146,7 @@ export async function postTweetReplyWithMediaApi(
                 const waitTime = MIN_TWEET_INTERVAL_MS - timeSinceLastTweet;
                 const waitMinutes = Math.ceil(waitTime / 60000);
                 const waitSeconds = Math.ceil(waitTime / 1000);
-                logger.info(`[🐦 API Post] ⏱️ Rate limit protection: waiting ${waitMinutes}m ${waitSeconds % 60}s (${waitTime}ms) before posting...`);
+                logger.info(`[🐦 API Post] ⏱️ Rate limit protection: waiting ${waitMinutes}m ${waitSeconds % 60}s before posting...`);
                 await sleep(waitTime);
             }
 
@@ -164,27 +174,54 @@ export async function postTweetReplyWithMediaApi(
 
                 // Try to extract rate limit reset time from headers
                 let resetWaitTime: number | null = null;
+                let useResetTime = false;
+
                 if (error.rateLimit && error.rateLimit.reset) {
                     const resetTime = new Date(error.rateLimit.reset * 1000);
                     resetWaitTime = resetTime.getTime() - Date.now();
                     const waitMinutes = Math.ceil(resetWaitTime / 60000);
-                    logger.error(`[🐦 API Post] Rate limit resets at: ${resetTime.toISOString()} (in ~${waitMinutes} minutes)`);
+                    logger.error(`[🐦 API Post] 📅 Rate limit resets at: ${resetTime.toISOString()} (in ~${waitMinutes} minutes)`);
+
+                    // Save globally so other requests can avoid hitting the same limit
+                    rateLimitResetTime = resetTime.getTime();
+                    logger.info(`[🐦 API Post] 💾 Saved rate limit reset time globally for all future requests`);
+
+                    // Use reset time if it's reasonable (positive and less than max delay)
+                    if (resetWaitTime > 0 && resetWaitTime <= MAX_DELAY_MS) {
+                        useResetTime = true;
+                        logger.info(`[🐦 API Post] ✅ Will use Twitter's reset time for retry scheduling`);
+                    } else if (resetWaitTime > MAX_DELAY_MS) {
+                        logger.warn(`[🐦 API Post] ⚠️ Reset time too far in future (${Math.ceil(resetWaitTime / 60000)}min), using exponential backoff instead`);
+                    }
                 }
 
                 if (isLastAttempt) {
                     logger.error(`[🐦 API Post] ❌ Max retries reached. Giving up.`);
                     logger.error(`[🐦 API Post] Failed Reply Text: ${tweetText}`);
+                    if (resetWaitTime && resetWaitTime > 0) {
+                        const resetMinutes = Math.ceil(resetWaitTime / 60000);
+                        logger.error(`[🐦 API Post] 💡 Suggestion: Wait ${resetMinutes} minutes for rate limit to reset, then retry manually`);
+                    }
                     return false;
                 }
 
-                // Use reset time if available, otherwise use exponential backoff
-                const backoffDelay = resetWaitTime && resetWaitTime > 0 && resetWaitTime < MAX_DELAY_MS
-                    ? resetWaitTime
-                    : getExponentialBackoffDelay(attempt);
+                // Choose delay strategy
+                let backoffDelay: number;
+                let delaySource: string;
+
+                if (useResetTime && resetWaitTime) {
+                    // Use Twitter's exact reset time
+                    backoffDelay = resetWaitTime;
+                    delaySource = "Twitter reset time";
+                } else {
+                    // Fall back to exponential backoff
+                    backoffDelay = getExponentialBackoffDelay(attempt);
+                    delaySource = "exponential backoff";
+                }
 
                 const backoffMinutes = Math.floor(backoffDelay / 60000);
                 const backoffSeconds = Math.round((backoffDelay % 60000) / 1000);
-                logger.info(`[🐦 API Post] ⏳ Retrying in ${backoffMinutes}m ${backoffSeconds}s with exponential backoff...`);
+                logger.info(`[🐦 API Post] ⏳ Retrying in ${backoffMinutes}m ${backoffSeconds}s using ${delaySource}...`);
                 await sleep(backoffDelay);
                 continue; // Retry
 
