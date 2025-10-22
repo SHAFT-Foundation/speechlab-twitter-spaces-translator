@@ -36,6 +36,9 @@ const finalReplyQueue: { mentionInfo: MentionInfo, backendResult: BackendResult 
 let isInitiatingProcessing = false; // Flag for browser task (initiation)
 let isPostingFinalReply = false;   // Flag for browser task (final reply)
 
+// Track mentions currently being processed (not yet replied to)
+const inProgressMentions: Set<string> = new Set();
+
 // --- Added for better queue logging ---
 let processedCount = 0; // Track how many mentions processed since startup
 // --- End added section ---
@@ -1358,7 +1361,7 @@ async function performBackendProcessing(initData: InitiationResult): Promise<Bac
 function addToFinalReplyQueue(mentionInfo: MentionInfo, backendResult: BackendResult) {
     // Check if this mention has already been fully processed (reply posted)
     if (processedMentions.has(mentionInfo.tweetId)) {
-        logger.warn(`[↩️ Reply Queue] Mention ${mentionInfo.tweetId} already processed. Skipping duplicate add.`);
+        logger.warn(`[↩️ Reply Queue] Mention ${mentionInfo.tweetId} already fully processed (reply posted). Skipping duplicate add.`);
         return;
     }
 
@@ -1371,6 +1374,10 @@ function addToFinalReplyQueue(mentionInfo: MentionInfo, backendResult: BackendRe
 
     logger.info(`[↩️ Reply Queue] Adding result for ${mentionInfo.tweetId} to reply queue. Success: ${backendResult.success}`);
     finalReplyQueue.push({ mentionInfo, backendResult });
+
+    // Remove from in-progress set since it's now in reply queue
+    inProgressMentions.delete(mentionInfo.tweetId);
+
     // Triggering is handled by the main browser task loop
 }
 
@@ -1406,9 +1413,9 @@ async function runInitiationQueue(page: Page): Promise<void> {
     processedCount++; // Increment processed count for stats
     logger.info(`[🚀 Initiate Queue] Processing mention ${mentionToProcess.tweetId} (${mentionToProcess.username}). Remaining: ${mentionQueue.length}. This is mention #${processedCount} processed since startup.`);
 
-    // CRITICAL: Mark as processed IMMEDIATELY to prevent re-queuing while backend runs
-    logger.info(`[🚀 Initiate Queue] Marking ${mentionToProcess.tweetId} as processed to prevent duplicates.`);
-    processedMentions.add(mentionToProcess.tweetId);
+    // CRITICAL: Mark as in-progress IMMEDIATELY to prevent re-queuing while backend runs
+    logger.info(`[🚀 Initiate Queue] Marking ${mentionToProcess.tweetId} as in-progress to prevent duplicates.`);
+    inProgressMentions.add(mentionToProcess.tweetId);
 
     // Update status to 'initiating'
     await updateMentionStatus(mentionToProcess.tweetId, 'initiating');
@@ -1948,8 +1955,9 @@ async function main() {
                 const replyQueueIds = new Set(finalReplyQueue.map(r => r.mentionInfo.tweetId));
 
                 for (const mention of mentions) {
-                    // Skip if already in processed set, in any queue, or already seen in this batch
+                    // Skip if already fully processed, currently in-progress, in any queue, or already seen in this batch
                     if (processedMentions.has(mention.tweetId) ||
+                        inProgressMentions.has(mention.tweetId) ||
                         currentQueueIds.has(mention.tweetId) ||
                         replyQueueIds.has(mention.tweetId) ||
                         seenInThisBatch.has(mention.tweetId)) {
