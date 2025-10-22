@@ -1044,13 +1044,25 @@ async function performBackendProcessing(initData: InitiationResult): Promise<Bac
         await fs.mkdir(TEMP_AUDIO_DIR, { recursive: true });
         // await fs.mkdir(TEMP_VIDEO_DIR, { recursive: true }); // No video dir needed now
         
-        // 1. Download original Space audio and upload to S3 (for project creation)
-        logger.info(`[⚙️ Backend] Downloading/uploading original Space audio for ${spaceId}...`);
-        const audioUploadResult = await downloadAndUploadAudio(m3u8Url, spaceId);
-        if (!audioUploadResult) {
-            throw new Error('Failed to download/upload original Space audio');
+        // 1. Download original media and upload to S3 (video or audio depending on hasVideo flag)
+        let audioUploadResult: string;
+        if (mentionInfo.hasVideo) {
+            logger.info(`[⚙️ Backend] Downloading/uploading original VIDEO for ${spaceId}...`);
+            const videoUploadResult = await downloadAndUploadVideo(m3u8Url, spaceId);
+            if (!videoUploadResult) {
+                throw new Error('Failed to download/upload original video');
+            }
+            logger.info(`[⚙️ Backend] Original video uploaded to S3: ${videoUploadResult}`);
+            audioUploadResult = videoUploadResult;
+        } else {
+            logger.info(`[⚙️ Backend] Downloading/uploading original Space AUDIO for ${spaceId}...`);
+            const result = await downloadAndUploadAudio(m3u8Url, spaceId);
+            if (!result) {
+                throw new Error('Failed to download/upload original Space audio');
+            }
+            logger.info(`[⚙️ Backend] Original audio uploaded to S3: ${result}`);
+            audioUploadResult = result;
         }
-        logger.info(`[⚙️ Backend] Original audio uploaded to S3: ${audioUploadResult}`);
         
         // First check our local status tracking
         logger.info(`[⚙️ Backend] Checking local project status for thirdPartyID: ${thirdPartyID}...`);
@@ -1176,125 +1188,90 @@ async function performBackendProcessing(initData: InitiationResult): Promise<Bac
         await updateProjectStatus(thirdPartyID, 'complete', mentionInfo.tweetId, projectId);
         logger.info(`[⚙️ Backend] SpeechLab project ${thirdPartyID} completed successfully.`);
 
-        // 4. Find and Download DUBBED MP3 Audio
-        const outputAudio = completedProject.translations?.[0]?.dub?.[0]?.medias?.find(d => 
-            d.category === 'audio' && d.format === 'mp3' && d.operationType === 'OUTPUT'
-        );
+        // 4. Check if source was VIDEO - if so, look for dubbed VIDEO (not audio)
+        let publicVideoUrl: string | undefined = undefined;
+        if (mentionInfo.hasVideo) {
+            logger.info(`[⚙️ Backend] Source is video, looking for DUBBED VIDEO from SpeechLab...`);
 
-        if (outputAudio?.presignedURL) {
-            logger.info(`[⚙️ Backend] Found DUBBED MP3 URL: ${outputAudio.presignedURL}`);
-            const audioFilename = `${thirdPartyID}_dubbed.mp3`; 
-            const destinationAudioPath = path.join(TEMP_AUDIO_DIR, audioFilename);
-            downloadedAudioPath = destinationAudioPath; // Store path for cleanup
-            
-            logger.info(`[⚙️ Backend] Attempting to download dubbed audio to ${destinationAudioPath}...`);
-            const downloadSuccess = await downloadFile(outputAudio.presignedURL, destinationAudioPath);
-            
-            if (!downloadSuccess) {
-                 logger.warn(`[⚙️ Backend] Failed to download DUBBED audio file.`);
-                 downloadedAudioPath = undefined; 
-            } else {
-                logger.info(`[⚙️ Backend] Successfully downloaded DUBBED audio: ${downloadedAudioPath}`);
-                
-                // 5. Upload the DUBBED MP3 to the PUBLIC S3 Bucket
-                const publicS3Key = `dubbed-spaces/${audioFilename}`; // Example S3 path
-                logger.info(`[⚙️ Backend] Uploading downloaded MP3 to public S3 bucket as ${publicS3Key}...`);
-                const uploadedUrl = await uploadLocalFileToS3(downloadedAudioPath, publicS3Key);
-                if (uploadedUrl) {
-                    publicMp3Url = uploadedUrl;
-                    logger.info(`[⚙️ Backend] ✅ Successfully uploaded dubbed MP3 to public S3: ${publicMp3Url}`);
+            // Look for dubbed VIDEO file (SpeechLab returns MP4 for video dubbing)
+            const outputVideo = completedProject.translations?.[0]?.dub?.[0]?.medias?.find(d =>
+                d.category === 'video' && d.format === 'mp4' && d.operationType === 'OUTPUT'
+            );
+
+            if (outputVideo?.presignedURL) {
+                logger.info(`[⚙️ Backend] ✅ Found DUBBED VIDEO URL: ${outputVideo.presignedURL}`);
+                const TEMP_VIDEO_DIR = path.join(process.cwd(), 'temp_video');
+                await fs.mkdir(TEMP_VIDEO_DIR, { recursive: true });
+
+                const videoFilename = `${thirdPartyID}_dubbed.mp4`;
+                const destinationVideoPath = path.join(TEMP_VIDEO_DIR, videoFilename);
+
+                logger.info(`[⚙️ Backend] Downloading dubbed video to ${destinationVideoPath}...`);
+                const downloadSuccess = await downloadFile(outputVideo.presignedURL, destinationVideoPath);
+
+                if (downloadSuccess) {
+                    logger.info(`[⚙️ Backend] ✅ Successfully downloaded dubbed video`);
+
+                    // Upload to public S3
+                    const publicS3Key = `dubbed-videos/${videoFilename}`;
+                    logger.info(`[⚙️ Backend] Uploading dubbed video to public S3 as ${publicS3Key}...`);
+                    const uploadedUrl = await uploadLocalFileToS3(destinationVideoPath, publicS3Key);
+
+                    if (uploadedUrl) {
+                        publicVideoUrl = uploadedUrl;
+                        logger.info(`[⚙️ Backend] ✅ Dubbed video uploaded to S3: ${publicVideoUrl}`);
+                    } else {
+                        logger.error(`[⚙️ Backend] ❌ Failed to upload dubbed video to public S3`);
+                    }
+
+                    // Cleanup local file
+                    try {
+                        await fs.unlink(destinationVideoPath);
+                        logger.debug(`[⚙️ Backend] Cleaned up local dubbed video file`);
+                    } catch (cleanupErr) {
+                        logger.warn(`[⚙️ Backend] Failed to cleanup local video:`, cleanupErr);
+                    }
                 } else {
-                    logger.error(`[⚙️ Backend] ❌ Failed to upload dubbed MP3 to public S3.`);
-                    // Continue without the public URL, but keep downloaded file for cleanup
+                    logger.error(`[⚙️ Backend] ❌ Failed to download dubbed video from SpeechLab`);
                 }
-                // Skip video conversion logic
+            } else {
+                logger.warn(`[⚙️ Backend] Could not find DUBBED VIDEO output in project details`);
             }
         } else {
-            logger.warn(`[⚙️ Backend] Could not find DUBBED MP3 audio output URL in project details.`);
-        }
+            // Source was audio (Twitter Space) - look for MP3
+            logger.info(`[⚙️ Backend] Source is audio, looking for DUBBED MP3...`);
+            const outputAudio = completedProject.translations?.[0]?.dub?.[0]?.medias?.find(d =>
+                d.category === 'audio' && d.format === 'mp3' && d.operationType === 'OUTPUT'
+            );
 
-        // NEW: Handle video processing if source was a video
-        let publicVideoUrl: string | undefined = undefined;
-        if (mentionInfo.hasVideo && mentionInfo.videoM3u8Url) {
-            logger.info(`[⚙️ Backend] Source is video, processing dubbed video...`);
-            const TEMP_VIDEO_DIR = path.join(process.cwd(), 'temp_video');
-            await fs.mkdir(TEMP_VIDEO_DIR, { recursive: true });
+            if (outputAudio?.presignedURL) {
+                logger.info(`[⚙️ Backend] Found DUBBED MP3 URL: ${outputAudio.presignedURL}`);
+                const audioFilename = `${thirdPartyID}_dubbed.mp3`;
+                const destinationAudioPath = path.join(TEMP_AUDIO_DIR, audioFilename);
+                downloadedAudioPath = destinationAudioPath;
 
-            let originalVideoPath: string | undefined = undefined;
-            let dubbedVideoPath: string | undefined = undefined;
+                logger.info(`[⚙️ Backend] Attempting to download dubbed audio to ${destinationAudioPath}...`);
+                const downloadSuccess = await downloadFile(outputAudio.presignedURL, destinationAudioPath);
 
-            try {
-                // Step 1: Download original video to local storage
-                logger.info(`[⚙️ Backend] Downloading original video from M3U8...`);
-                originalVideoPath = path.join(TEMP_VIDEO_DIR, `original_${thirdPartyID}.mp4`);
-
-                // Use FFmpeg to download video directly
-                const { spawn } = require('child_process');
-                await new Promise<void>((resolve, reject) => {
-                    const ffmpegArgs = [
-                        '-protocol_whitelist', 'file,http,https,tcp,tls,crypto',
-                        '-i', mentionInfo.videoM3u8Url!,
-                        '-c', 'copy',
-                        '-y',
-                        originalVideoPath!
-                    ];
-                    const ffmpeg = spawn('ffmpeg', ffmpegArgs);
-                    ffmpeg.on('close', (code: number) => {
-                        if (code === 0) resolve();
-                        else reject(new Error(`FFmpeg failed with code ${code}`));
-                    });
-                    ffmpeg.on('error', reject);
-                });
-
-                logger.info(`[⚙️ Backend] ✅ Original video downloaded: ${originalVideoPath}`);
-
-                // Step 2: Verify dubbed audio is available
-                if (!downloadedAudioPath || !await fsExtra.pathExists(downloadedAudioPath)) {
-                    throw new Error('Dubbed audio not available for video merging');
-                }
-
-                logger.info(`[⚙️ Backend] Dubbed audio available: ${downloadedAudioPath}`);
-
-                // Step 3: Merge video + dubbed audio
-                logger.info(`[⚙️ Backend] Merging video with dubbed audio...`);
-                dubbedVideoPath = path.join(TEMP_VIDEO_DIR, `dubbed_${thirdPartyID}.mp4`);
-                const mergeSuccess = await mergeVideoDubbedAudio(originalVideoPath, downloadedAudioPath, dubbedVideoPath);
-
-                if (!mergeSuccess) {
-                    throw new Error('Failed to merge video with dubbed audio');
-                }
-
-                logger.info(`[⚙️ Backend] ✅ Video merge successful: ${dubbedVideoPath}`);
-
-                // Step 4: Upload dubbed video to S3
-                logger.info(`[⚙️ Backend] Uploading dubbed video to S3...`);
-                const videoS3Key = `dubbed-videos/${thirdPartyID}_dubbed.mp4`;
-                const videoUploadResult = await uploadLocalFileToS3(dubbedVideoPath, videoS3Key);
-                publicVideoUrl = videoUploadResult || undefined;
-
-                if (publicVideoUrl) {
-                    logger.info(`[⚙️ Backend] ✅ Dubbed video uploaded to S3: ${publicVideoUrl}`);
+                if (!downloadSuccess) {
+                     logger.warn(`[⚙️ Backend] Failed to download DUBBED audio file.`);
+                     downloadedAudioPath = undefined;
                 } else {
-                    throw new Error('Failed to upload dubbed video to S3');
+                    logger.info(`[⚙️ Backend] Successfully downloaded DUBBED audio: ${downloadedAudioPath}`);
+
+                    // Upload the DUBBED MP3 to the PUBLIC S3 Bucket
+                    const publicS3Key = `dubbed-spaces/${audioFilename}`;
+                    logger.info(`[⚙️ Backend] Uploading downloaded MP3 to public S3 bucket as ${publicS3Key}...`);
+                    const uploadedUrl = await uploadLocalFileToS3(downloadedAudioPath, publicS3Key);
+                    if (uploadedUrl) {
+                        publicMp3Url = uploadedUrl;
+                        logger.info(`[⚙️ Backend] ✅ Successfully uploaded dubbed MP3 to public S3: ${publicMp3Url}`);
+                    } else {
+                        logger.error(`[⚙️ Backend] ❌ Failed to upload dubbed MP3 to public S3.`);
+                    }
                 }
-
-                // Clean up local video files
-                if (originalVideoPath) await fsExtra.remove(originalVideoPath).catch(() => {});
-                if (dubbedVideoPath) await fsExtra.remove(dubbedVideoPath).catch(() => {});
-
-            } catch (videoError) {
-                logger.error(`[⚙️ Backend] ❌ Video processing failed:`, videoError);
-
-                // Clean up on error
-                if (originalVideoPath) await fsExtra.remove(originalVideoPath).catch(() => {});
-                if (dubbedVideoPath) await fsExtra.remove(dubbedVideoPath).catch(() => {});
-
-                // Return error - NO fallback to audio
-                return {
-                    success: false,
-                    error: `Video processing failed: ${videoError instanceof Error ? videoError.message : String(videoError)}`,
-                    thirdPartyID
-                };
+            } else {
+                logger.warn(`[⚙️ Backend] Could not find DUBBED MP3 audio output URL in project details.`);
             }
         }
 
@@ -1457,18 +1434,31 @@ async function runFinalReplyQueue(page: Page): Promise<void> {
         const hasMp3Link = !!backendResult.publicMp3Url;
 
         // NEW: Check for video link FIRST (videos take priority over audio)
-        if (hasVideoLink) {
-            // Video dubbing success
-            finalMessage = `@RyanAtSpeechlab ${mentionInfo.username} Here is your video dubbed to ${targetLanguageName}! 🎬 ${backendResult.publicVideoUrl}`;
+        if (hasVideoLink && backendResult.publicVideoUrl) {
+            // Video dubbing success - include SHAFT branding
+            finalMessage = `${mentionInfo.username} Your video dubbed to ${targetLanguageName}! Provided by @shaftfinance $shaft`;
 
-            if (hasSharingLink) {
-                finalMessage += ` | Project: ${backendResult.sharingLink}`;
-            }
+            // Download video for inline attachment to tweet
+            logger.info(`[↩️ Reply Queue] Downloading dubbed video for inline attachment...`);
+            try {
+                const TEMP_VIDEO_DIR = path.join(process.cwd(), 'temp_video');
+                await fs.mkdir(TEMP_VIDEO_DIR, { recursive: true });
 
-            // Optional: Attach video inline if configured
-            if (config.ATTACH_VIDEO_TO_REPLY && backendResult.publicVideoUrl) {
-                // TODO: Download video for inline attachment if needed
-                logger.info(`[↩️ Reply Queue] Video inline attachment configured but not yet implemented`);
+                const videoFilename = `reply_video_${mentionInfo.tweetId}.mp4`;
+                const localVideoPath = path.join(TEMP_VIDEO_DIR, videoFilename);
+
+                const downloadSuccess = await downloadFile(backendResult.publicVideoUrl, localVideoPath);
+
+                if (downloadSuccess) {
+                    logger.info(`[↩️ Reply Queue] ✅ Video downloaded for attachment: ${localVideoPath}`);
+                    mediaPathToAttach = localVideoPath;
+                } else {
+                    logger.warn(`[↩️ Reply Queue] Failed to download video for attachment. Will include URL in text.`);
+                    finalMessage += `\n\n${backendResult.publicVideoUrl}`;
+                }
+            } catch (videoDownloadError) {
+                logger.error(`[↩️ Reply Queue] Error downloading video for attachment:`, videoDownloadError);
+                finalMessage += `\n\n${backendResult.publicVideoUrl}`;
             }
         } else if (hasMp3Link) {
             // MP3 is available - construct the success message
@@ -1533,6 +1523,16 @@ async function runFinalReplyQueue(page: Page): Promise<void> {
         
         if (postSuccess) {
             logger.info(`[↩️ Reply Queue] Successfully posted final reply via ${postMethod} for ${mentionInfo.tweetId}.`);
+
+            // Clean up local video file if it was attached
+            if (mediaPathToAttach && mediaPathToAttach.endsWith('.mp4')) {
+                try {
+                    await fs.unlink(mediaPathToAttach);
+                    logger.debug(`[↩️ Reply Queue] Cleaned up local video file: ${mediaPathToAttach}`);
+                } catch (cleanupErr) {
+                    logger.warn(`[↩️ Reply Queue] Failed to cleanup video file:`, cleanupErr);
+                }
+            }
 
             // Update Supabase with completion status
             await updateMentionStatus(mentionInfo.tweetId, 'complete', {

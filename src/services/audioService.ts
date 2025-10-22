@@ -12,6 +12,7 @@ import { v4 as uuidv4 } from 'uuid'; // Using uuid for unique filenames
 const s3Client = new S3Client({ region: config.AWS_REGION }); // Use region from config if available
 
 const TEMP_DIR = path.join(process.cwd(), 'temp_audio'); // Define a directory for temporary downloads
+const TEMP_VIDEO_DIR = path.join(process.cwd(), 'temp_video'); // Define a directory for temporary video downloads
 
 /**
  * Ensures the temporary directory for audio downloads exists.
@@ -20,6 +21,16 @@ function ensureTempDirExists(): void {
     if (!fs.existsSync(TEMP_DIR)) {
         logger.debug(`[🎧 Audio] Creating temporary directory: ${TEMP_DIR}`);
         fs.mkdirSync(TEMP_DIR, { recursive: true });
+    }
+}
+
+/**
+ * Ensures the temporary directory for video downloads exists.
+ */
+function ensureTempVideoDirExists(): void {
+    if (!fs.existsSync(TEMP_VIDEO_DIR)) {
+        logger.debug(`[🎬 Video] Creating temporary directory: ${TEMP_VIDEO_DIR}`);
+        fs.mkdirSync(TEMP_VIDEO_DIR, { recursive: true });
     }
 }
 

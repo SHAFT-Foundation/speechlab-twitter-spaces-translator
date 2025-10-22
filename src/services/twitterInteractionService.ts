@@ -1350,27 +1350,49 @@ export async function postReplyToTweet(
                     throw new Error('Media file not found');
                 }
 
-                // --- Step 1: Start waiting for the file chooser *BEFORE* clicking --- 
-                logger.debug('[🐦 Twitter] Setting up listener for file chooser...');
-                const fileChooserPromise = page.waitForEvent('filechooser', {timeout: 10000}); 
+                // --- Use file chooser dialog (more authentic than direct input) ---
+                logger.info('[🐦 Twitter] Setting up file chooser to upload media...');
+                await page.screenshot({ path: path.join(screenshotsDir, 'before-file-chooser.png') });
 
-                // --- Step 2: Click the Media Button --- 
+                // Wait for composer to fully render
+                await page.waitForTimeout(1000);
+
+                // Set up file chooser listener BEFORE clicking media button
+                logger.info('[🐦 Twitter] Creating file chooser promise...');
+                const fileChooserPromise = page.waitForEvent('filechooser', { timeout: 15000 });
+
+                // Find and click the media button to trigger file chooser
                 const mediaButtonSelector = 'button[aria-label="Add photos or video"]';
-                logger.debug(`[🐦 Twitter] Locating and clicking media button: ${mediaButtonSelector}`);
+                logger.info(`[🐦 Twitter] Looking for media button: ${mediaButtonSelector}`);
                 const mediaButton = page.locator(mediaButtonSelector).first();
-                if (!await mediaButton.isVisible({timeout: 5000})) {
-                    logger.error('[🐦 Twitter] Media button not visible in composer.');
-                    await page.screenshot({ path: path.join(screenshotsDir, 'reply-no-media-button.png') });
-                    throw new Error ('Media button not found');
+
+                const isMediaButtonVisible = await mediaButton.isVisible({ timeout: 5000 }).catch(() => false);
+                if (!isMediaButtonVisible) {
+                    logger.error('[🐦 Twitter] ❌ Media button not visible');
+                    await page.screenshot({ path: path.join(screenshotsDir, 'no-media-button.png') });
+                    throw new Error('Media button not found');
                 }
+
+                // Click the media button to open file chooser
+                logger.info('[🐦 Twitter] Clicking media button to open file chooser...');
                 await mediaButton.click();
-                
-                // --- Step 3: Handle the File Chooser --- 
-                logger.debug('[🐦 Twitter] Waiting for file chooser to appear...');
-                const fileChooser = await fileChooserPromise;
-                logger.info(`[🐦 Twitter] File chooser opened. Setting files: ${mediaPath}`);
-                await fileChooser.setFiles(mediaPath);
-                logger.info(`[🐦 Twitter] File input set via file chooser. Waiting for media upload/processing...`);
+
+                // Wait for file chooser and set the file
+                logger.info('[🐦 Twitter] Waiting for file chooser dialog...');
+                try {
+                    const fileChooser = await fileChooserPromise;
+                    logger.info(`[🐦 Twitter] ✅ File chooser appeared, setting file: ${path.basename(mediaPath)}`);
+                    await fileChooser.setFiles(mediaPath);
+                    logger.info(`[🐦 Twitter] ✅ File set via chooser dialog successfully`);
+                } catch (chooserError) {
+                    logger.error(`[🐦 Twitter] ❌ File chooser error:`, chooserError);
+                    await page.screenshot({ path: path.join(screenshotsDir, 'file-chooser-error.png') });
+                    throw chooserError;
+                }
+
+                await page.waitForTimeout(1000);
+                await page.screenshot({ path: path.join(screenshotsDir, 'after-file-set.png') });
+                logger.info(`[🐦 Twitter] Waiting for upload/processing...`);
 
                 // --- Step 4: Wait for Upload Completion (using polling for enabled button) --- 
                 // Reverted to this strategy as progress bar was unreliable & waitForFunction blocked by CSP
@@ -1390,16 +1412,59 @@ export async function postReplyToTweet(
                      logger.info('[🐦 Twitter] Progress bar appeared shortly after file selection.');
                  } catch { logger.debug('[🐦 Twitter] Progress bar did not appear immediately.'); }
 
-                // Main wait loop: Check if button is enabled
+                // Main wait loop: Check if button is enabled by checking 'disabled' attribute
                 logger.info(`[🐦 Twitter] Now polling for reply button to be enabled (Max wait: ${maxWaitMs / 1000}s)...`);
                 while (Date.now() - startTime < maxWaitMs) {
-                    isEnabled = await submitButton.isEnabled({ timeout: checkIntervalMs / 2 });
-                    if (isEnabled) {
-                        logger.info(`[🐦 Twitter] Reply button is enabled after ${(Date.now() - startTime)/1000}s. Assuming media processed.`);
-                        uploadSeemsComplete = true;
+                    try {
+                        // Check if page is still valid before continuing
+                        if (page.isClosed()) {
+                            logger.error(`[🐦 Twitter] Page was closed during upload polling!`);
+                            throw new Error('Page closed during upload');
+                        }
+
+                        // Check for error messages from Twitter
+                        const errorMessageSelectors = [
+                            'text="The media could not be played"',
+                            'text="Some of your media failed to load"',
+                            '[role="alert"]'
+                        ];
+
+                        for (const errorSelector of errorMessageSelectors) {
+                            const errorElement = page.locator(errorSelector).first();
+                            if (await errorElement.isVisible().catch(() => false)) {
+                                logger.warn(`[🐦 Twitter] ⚠️ Detected error message: ${errorSelector}`);
+                                logger.info(`[🐦 Twitter] Twitter may be processing the video, continuing to wait...`);
+                                // Don't throw error yet, Twitter might still be processing
+                            }
+                        }
+
+                        // Check 'disabled' attribute instead of isEnabled() to avoid Playwright timeout
+                        const disabledAttr = await submitButton.getAttribute('disabled').catch(() => 'unknown');
+                        isEnabled = disabledAttr === null; // Button is enabled if 'disabled' attribute is absent
+
+                        if (isEnabled) {
+                            logger.info(`[🐦 Twitter] ✅ Reply button is enabled after ${(Date.now() - startTime)/1000}s. Media processed successfully!`);
+                            uploadSeemsComplete = true;
+                            break;
+                        } else {
+                            logger.debug(`[🐦 Twitter] Button still disabled after ${(Date.now() - startTime)/1000}s (disabled="${disabledAttr}")`);
+                        }
+                    } catch (checkError: any) {
+                        logger.debug(`[🐦 Twitter] Error checking button state (will retry): ${checkError}`);
+                        // If error is page closed, break out
+                        if (checkError && checkError.toString && checkError.toString().includes('closed')) {
+                            logger.error(`[🐦 Twitter] Page/browser closed unexpectedly during polling`);
+                            break;
+                        }
+                    }
+
+                    // Use a try-catch for waitForTimeout in case page closes
+                    try {
+                        await page.waitForTimeout(checkIntervalMs);
+                    } catch (timeoutError) {
+                        logger.error(`[🐦 Twitter] Error during waitForTimeout: ${timeoutError}`);
                         break;
                     }
-                    await page.waitForTimeout(checkIntervalMs);
                 }
 
                 if (!uploadSeemsComplete) {
@@ -2218,11 +2283,26 @@ async function findVideoPlayerOnPage(page: Page): Promise<any | null> {
                 continue;
             }
 
+            // DEBUG: Get tweet ID from this article to understand which tweet we're looking at
+            try {
+                const timeElement = await article.locator('time').first();
+                const timeParent = await timeElement.locator('xpath=..').first();
+                const hrefAttr = await timeParent.getAttribute('href');
+                const tweetIdMatch = hrefAttr?.match(/\/status\/(\d+)/);
+                if (tweetIdMatch) {
+                    logger.debug(`[🎬 Helper] Article ${i+1} is tweet ID: ${tweetIdMatch[1]}`);
+                }
+            } catch (e) {
+                logger.debug(`[🎬 Helper] Could not extract tweet ID from article ${i+1}`);
+            }
+
             // Check if this article contains a video player
             const videoSelectors = [
                 'div[data-testid="videoPlayer"]',
                 'video',
-                'div[data-testid="videoComponent"]'
+                'div[data-testid="videoComponent"]',
+                'div[data-testid="card.layoutLarge.media"]',
+                'div[aria-label*="video"]'
             ];
 
             for (const selector of videoSelectors) {
@@ -2250,52 +2330,99 @@ export async function getVideoM3u8FromMention(
     const screenshotDir = path.join(process.cwd(), 'debug-screenshots');
 
     let capturedM3u8Url: string | null = null;
-    let m3u8Promise: Promise<string>;
-    let resolveM3u8Promise: (url: string) => void;
+    let resolveM3u8Promise!: (url: string) => void;
+    const m3u8Promise = new Promise<string>((resolve) => {
+        resolveM3u8Promise = resolve;
+    });
 
     try {
         // Navigate to the mention tweet (which is a reply to a tweet with video)
         logger.info(`[🎬 Video] Navigating to mention tweet: ${tweetUrl}`);
         await page.goto(tweetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-        await page.waitForTimeout(3000); // Wait for thread to load
+        logger.info('[🎬 Video] Waiting 5 seconds for thread to fully load...');
+        await page.waitForTimeout(5000); // Increased wait time for parent tweets to load
 
         // Take screenshot of the tweet thread
         await fsPromises.mkdir(screenshotDir, { recursive: true }).catch(() => {});
         await page.screenshot({ path: path.join(screenshotDir, 'video-mention-page.png') });
+        logger.info('[🎬 Video] Screenshot saved to debug-screenshots/video-mention-page.png');
 
-        // Find video player in parent tweet (mirrors Space detection logic)
-        logger.info('[🎬 Video] Looking for video player in parent tweet...');
-        const videoPlayer = await findVideoPlayerOnPage(page);
+        // First, try to find video player anywhere on the page
+        logger.info('[🎬 Video] Searching entire page for any video player...');
+        const allVideoPlayers = await page.locator('div[data-testid="videoPlayer"], video, div[data-testid="videoComponent"]').all();
+        logger.info(`[🎬 Video] Found ${allVideoPlayers.length} video players on entire page`);
 
-        if (!videoPlayer) {
-            logger.info('[🎬 Video] No video player found in thread (no video to dub).');
-            return { videoM3u8Url: null, hasVideo: false };
+        let videoPlayer: any = null;
+
+        if (allVideoPlayers.length > 0) {
+            // Use the first visible video player (likely the parent tweet)
+            for (const player of allVideoPlayers) {
+                if (await player.isVisible({ timeout: 500 }).catch(() => false)) {
+                    videoPlayer = player;
+                    logger.info('[🎬 Video] ✅ Found visible video player on page');
+                    break;
+                }
+            }
         }
 
-        logger.info('[🎬 Video] Found video player in parent tweet. Extracting M3U8 URL...');
+        // If no video player found on entire page, try article-by-article approach
+        if (!videoPlayer) {
+            logger.info('[🎬 Video] No video player found on entire page. Trying article-by-article search...');
+            videoPlayer = await findVideoPlayerOnPage(page);
+        }
 
-        // FIRST: Try to find M3U8 URL directly in the page HTML/content
-        logger.info('[🎬 Video] Checking page content for M3U8 URLs...');
+        // Even if no video player UI found, check page HTML for video URLs
+        logger.info('[🎬 Video] Checking page content for video URLs (M3U8 or MP4)...');
         const pageContent = await page.content();
+
+        // Check for M3U8 URLs first
         const m3u8Regex = /https?:\/\/[^\s"']+\.m3u8[^\s"']*/g;
         const m3u8Matches = pageContent.match(m3u8Regex);
-
         if (m3u8Matches && m3u8Matches.length > 0) {
-            // Found M3U8 URL directly in page content
             const foundUrl = m3u8Matches[0];
-            logger.info(`[🎬 Video] ✅ Found M3U8 URL directly in page content: ${foundUrl}`);
+            logger.info(`[🎬 Video] ✅ Found M3U8 URL directly in page HTML: ${foundUrl}`);
             return { videoM3u8Url: foundUrl, hasVideo: true };
         }
 
-        // Set up M3U8 capture promise
-        m3u8Promise = new Promise<string>((resolve) => {
-            resolveM3u8Promise = resolve;
-        });
+        // Check for Twitter MP4 URLs as fallback (these can be converted/processed)
+        const mp4Regex = /https?:\/\/video\.twimg\.com\/[^\s"']+\.mp4[^\s"']*/g;
+        const mp4Matches = pageContent.match(mp4Regex);
+        if (mp4Matches && mp4Matches.length > 0) {
+            const foundUrl = mp4Matches[0];
+            logger.info(`[🎬 Video] ✅ Found MP4 URL in page HTML: ${foundUrl}`);
+            logger.info(`[🎬 Video] Using MP4 URL as M3U8 fallback (backend can handle MP4)`);
+            return { videoM3u8Url: foundUrl, hasVideo: true };
+        }
 
-        // Set up network interception to capture video stream URL
+        if (!videoPlayer) {
+            logger.info('[🎬 Video] No video player found and no video URLs in HTML.');
+            return { videoM3u8Url: null, hasVideo: false };
+        }
+
+        logger.info('[🎬 Video] Found video player. Attempting interactive M3U8 extraction...');
+
+        // Set up network interception to capture video stream URL (promise already initialized at top)
         const requestListener = (request: any) => {
             const url = request.url();
-            // Look for video stream URLs (M3U8, MP4, or video API endpoints)
+
+            // Capture M3U8 URLs directly from requests
+            if (url.includes('.m3u8')) {
+                if (!capturedM3u8Url) {
+                    capturedM3u8Url = url;
+                    logger.info(`[🎬 Video Req] ✅ Captured M3U8 URL from request: ${url}`);
+                    resolveM3u8Promise(url);
+                }
+            }
+            // Capture MP4 URLs as fallback
+            else if (url.includes('video.twimg.com') && url.includes('.mp4')) {
+                if (!capturedM3u8Url) {
+                    capturedM3u8Url = url;
+                    logger.info(`[🎬 Video Req] ✅ Captured MP4 URL from request: ${url}`);
+                    resolveM3u8Promise(url);
+                }
+            }
+
+            // Log all video-related requests for debugging
             if (url.includes('.m3u8') || url.includes('video') || url.includes('ext_tw_video') ||
                 url.includes('playlist') || url.includes('media') || url.includes('fastly') ||
                 url.includes('stream')) {
@@ -2305,12 +2432,23 @@ export async function getVideoM3u8FromMention(
 
         const responseListener = (response: any) => {
             const url = response.url();
-            // Capture M3U8 playlist URL for video
-            if ((url.includes('.m3u8') || url.includes('playlist')) && response.status() === 200) {
-                if (!capturedM3u8Url) {
-                    capturedM3u8Url = url;
-                    logger.info(`[🎬 Video] 🎯 Captured video M3U8 URL: ${url}`);
-                    resolveM3u8Promise(url);
+            // Capture M3U8 playlist URL for video OR high-quality MP4
+            if (response.status() === 200) {
+                // Priority 1: M3U8 URLs
+                if (url.includes('.m3u8') || url.includes('playlist')) {
+                    if (!capturedM3u8Url) {
+                        capturedM3u8Url = url;
+                        logger.info(`[🎬 Video] 🎯 Captured video M3U8 URL: ${url}`);
+                        resolveM3u8Promise(url);
+                    }
+                }
+                // Priority 2: Twitter MP4 URLs (fallback - backend can handle these)
+                else if (url.includes('video.twimg.com') && url.includes('.mp4')) {
+                    if (!capturedM3u8Url) {
+                        capturedM3u8Url = url;
+                        logger.info(`[🎬 Video] 🎯 Captured video MP4 URL (will use as fallback): ${url}`);
+                        resolveM3u8Promise(url);
+                    }
                 }
             }
         };

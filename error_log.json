@@ -28,5 +28,47 @@
     "error": "Error: Could not find playable Space element (article or button) for tweet 1980416578572464258.\nError: Could not find playable Space element (article or button) for tweet 1980416578572464258.\n    at /Users/ryanmedlin/shaft/speechlab-twitter-spaces-translator/src/mentionDaemon.ts:844:19\n    at Generator.next (<anonymous>)\n    at fulfilled (/Users/ryanmedlin/shaft/speechlab-twitter-spaces-translator/src/mentionDaemon.ts:38:58)",
     "timestamp": "2025-10-21T01:55:18.035Z",
     "count": 1
+  },
+  "1980728383970402722": {
+    "phase": "initiation",
+    "error": "Error: Video detected but M3U8 extraction failed\nError: Video detected but M3U8 extraction failed\n    at /Users/ryanmedlin/shaft/speechlab-twitter-spaces-translator/src/mentionDaemon.ts:801:23\n    at Generator.next (<anonymous>)\n    at fulfilled (/Users/ryanmedlin/shaft/speechlab-twitter-spaces-translator/src/mentionDaemon.ts:38:58)",
+    "timestamp": "2025-10-21T20:11:26.998Z",
+    "count": 1
+  },
+  "1980726418171392320": {
+    "phase": "initiation",
+    "error": "Error: Video detected but M3U8 extraction failed\nError: Video detected but M3U8 extraction failed\n    at /Users/ryanmedlin/shaft/speechlab-twitter-spaces-translator/src/mentionDaemon.ts:801:23\n    at Generator.next (<anonymous>)\n    at fulfilled (/Users/ryanmedlin/shaft/speechlab-twitter-spaces-translator/src/mentionDaemon.ts:38:58)",
+    "timestamp": "2025-10-21T20:20:01.619Z",
+    "count": 2
+  },
+  "1980692845108375886": {
+    "phase": "initiation",
+    "error": "Error: Video detected but M3U8 extraction failed\nError: Video detected but M3U8 extraction failed\n    at /Users/ryanmedlin/shaft/speechlab-twitter-spaces-translator/src/mentionDaemon.ts:801:23\n    at Generator.next (<anonymous>)\n    at fulfilled (/Users/ryanmedlin/shaft/speechlab-twitter-spaces-translator/src/mentionDaemon.ts:38:58)",
+    "timestamp": "2025-10-21T20:20:52.265Z",
+    "count": 2
+  },
+  "1980738337834168497": {
+    "phase": "initiation",
+    "error": "Error: Video detected but M3U8 extraction failed\nError: Video detected but M3U8 extraction failed\n    at /Users/ryanmedlin/shaft/speechlab-twitter-spaces-translator/src/mentionDaemon.ts:801:23\n    at Generator.next (<anonymous>)\n    at fulfilled (/Users/ryanmedlin/shaft/speechlab-twitter-spaces-translator/src/mentionDaemon.ts:38:58)",
+    "timestamp": "2025-10-21T20:52:27.094Z",
+    "count": 1
+  },
+  "1980754697494356096": {
+    "phase": "reply",
+    "error": "Failed to post reply",
+    "timestamp": "2025-10-21T22:02:47.185Z",
+    "count": 1
+  },
+  "1980766404560450010": {
+    "phase": "reply",
+    "error": "Failed to post reply",
+    "timestamp": "2025-10-21T22:50:10.878Z",
+    "count": 1
+  },
+  "1980769537818505602": {
+    "phase": "reply",
+    "error": "Failed to post reply",
+    "timestamp": "2025-10-21T22:57:09.630Z",
+    "count": 1
   }
 }
