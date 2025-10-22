@@ -1723,8 +1723,16 @@ export async function scrapeMentions(page: Page, processedMentions?: Set<string>
                  }
 
 
-                // 4. Add to results if valid
+                // 4. Add to results if valid AND it actually mentions @DubbingAgent
                 if (tweetId && tweetUrl && username && text) {
+                    // CRITICAL: Verify the tweet actually mentions @DubbingAgent
+                    const mentionsBotUsername = text.toLowerCase().includes('@dubbingagent');
+
+                    if (!mentionsBotUsername) {
+                        logger.info(`[🔔 Mention] ⚠️ Skipping tweet ${tweetId} - does not mention @DubbingAgent. Text: ${text}`);
+                        continue; // Skip tweets that don't actually mention the bot
+                    }
+
                     logger.info(`[🔔 Mention] ✅ Successfully extracted mention: ID=${tweetId}, User=${username}`);
                     foundMentions.push({ tweetId, tweetUrl, username, text });
                 } else {

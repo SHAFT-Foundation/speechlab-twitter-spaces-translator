@@ -1035,10 +1035,10 @@ async function performBackendProcessing(initData: InitiationResult): Promise<Bac
     let publicMp3Url: string | undefined = undefined;
     let projectId: string | null = null; // Initialize projectId
     
-    // Initialize thirdPartyID at the top level
-    const projectName = spaceTitle || `Twitter Space ${spaceId}`; 
+    // Initialize thirdPartyID at the top level - include tweet ID to make it unique per mention
+    const projectName = spaceTitle || `Twitter Space ${spaceId}`;
     const sanitizedProjectName = projectName.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
-    const thirdPartyID = `${sanitizedProjectName}-${sourceLanguageCode}-to-${targetLanguageCode}`;
+    const thirdPartyID = `${sanitizedProjectName}-${sourceLanguageCode}-to-${targetLanguageCode}-${mentionInfo.tweetId}`;
 
     try {
         await fs.mkdir(TEMP_AUDIO_DIR, { recursive: true });
@@ -1190,15 +1190,57 @@ async function performBackendProcessing(initData: InitiationResult): Promise<Bac
 
         // 4. Check if source was VIDEO - if so, look for dubbed VIDEO (not audio)
         let publicVideoUrl: string | undefined = undefined;
+        let videoProcessingError: string | undefined = undefined; // Track specific error
+
         if (mentionInfo.hasVideo) {
             logger.info(`[⚙️ Backend] Source is video, looking for DUBBED VIDEO from SpeechLab...`);
 
+            // Log the full project structure for debugging
+            logger.debug(`[⚙️ Backend] Full completed project structure:`);
+            logger.debug(JSON.stringify(completedProject, null, 2));
+
             // Look for dubbed VIDEO file (SpeechLab returns MP4 for video dubbing)
-            const outputVideo = completedProject.translations?.[0]?.dub?.[0]?.medias?.find(d =>
+            let outputVideo = completedProject.translations?.[0]?.dub?.[0]?.medias?.find(d =>
                 d.category === 'video' && d.format === 'mp4' && d.operationType === 'OUTPUT'
             );
 
-            if (outputVideo?.presignedURL) {
+            // If video not found immediately, retry up to 3 times with 10s delay (race condition fix)
+            if (!outputVideo?.presignedURL) {
+                logger.warn(`[⚙️ Backend] Video output not found in initial response. Retrying up to 3 times...`);
+                for (let retryAttempt = 1; retryAttempt <= 3; retryAttempt++) {
+                    logger.info(`[⚙️ Backend] Retry ${retryAttempt}/3: Waiting 10 seconds then re-fetching project...`);
+                    await new Promise(resolve => setTimeout(resolve, 10000)); // Wait 10 seconds
+
+                    // Re-fetch the project
+                    const refetchedProject = await getProjectByThirdPartyID(thirdPartyID);
+                    if (refetchedProject) {
+                        logger.info(`[⚙️ Backend] Re-fetched project. Checking for video output...`);
+                        outputVideo = refetchedProject.translations?.[0]?.dub?.[0]?.medias?.find(d =>
+                            d.category === 'video' && d.format === 'mp4' && d.operationType === 'OUTPUT'
+                        );
+
+                        if (outputVideo?.presignedURL) {
+                            logger.info(`[⚙️ Backend] ✅ Found video output on retry ${retryAttempt}!`);
+                            break; // Found it!
+                        } else {
+                            logger.warn(`[⚙️ Backend] Retry ${retryAttempt}/3: Video still not found.`);
+                        }
+                    } else {
+                        logger.error(`[⚙️ Backend] Failed to re-fetch project on retry ${retryAttempt}.`);
+                    }
+                }
+            }
+
+            if (!outputVideo?.presignedURL) {
+                // Log all available media to understand what we got
+                const allMedias = completedProject.translations?.[0]?.dub?.[0]?.medias || [];
+                logger.error(`[⚙️ Backend] ❌ DUBBED VIDEO output not found after retries!`);
+                logger.error(`[⚙️ Backend] Available medias count: ${allMedias.length}`);
+                allMedias.forEach((media, idx) => {
+                    logger.error(`[⚙️ Backend]   Media ${idx}: category=${media.category}, format=${media.format}, operationType=${media.operationType}, hasURL=${!!media.presignedURL}`);
+                });
+                videoProcessingError = 'SpeechLab did not return dubbed video output after 3 retries';
+            } else {
                 logger.info(`[⚙️ Backend] ✅ Found DUBBED VIDEO URL: ${outputVideo.presignedURL}`);
                 const TEMP_VIDEO_DIR = path.join(process.cwd(), 'temp_video');
                 await fs.mkdir(TEMP_VIDEO_DIR, { recursive: true });
@@ -1209,7 +1251,10 @@ async function performBackendProcessing(initData: InitiationResult): Promise<Bac
                 logger.info(`[⚙️ Backend] Downloading dubbed video to ${destinationVideoPath}...`);
                 const downloadSuccess = await downloadFile(outputVideo.presignedURL, destinationVideoPath);
 
-                if (downloadSuccess) {
+                if (!downloadSuccess) {
+                    logger.error(`[⚙️ Backend] ❌ Failed to download dubbed video from SpeechLab presigned URL`);
+                    videoProcessingError = 'Failed to download dubbed video from SpeechLab';
+                } else {
                     logger.info(`[⚙️ Backend] ✅ Successfully downloaded dubbed video`);
 
                     // Upload to public S3
@@ -1217,11 +1262,12 @@ async function performBackendProcessing(initData: InitiationResult): Promise<Bac
                     logger.info(`[⚙️ Backend] Uploading dubbed video to public S3 as ${publicS3Key}...`);
                     const uploadedUrl = await uploadLocalFileToS3(destinationVideoPath, publicS3Key);
 
-                    if (uploadedUrl) {
+                    if (!uploadedUrl) {
+                        logger.error(`[⚙️ Backend] ❌ Failed to upload dubbed video to public S3`);
+                        videoProcessingError = 'Failed to upload dubbed video to S3';
+                    } else {
                         publicVideoUrl = uploadedUrl;
                         logger.info(`[⚙️ Backend] ✅ Dubbed video uploaded to S3: ${publicVideoUrl}`);
-                    } else {
-                        logger.error(`[⚙️ Backend] ❌ Failed to upload dubbed video to public S3`);
                     }
 
                     // Cleanup local file
@@ -1231,11 +1277,7 @@ async function performBackendProcessing(initData: InitiationResult): Promise<Bac
                     } catch (cleanupErr) {
                         logger.warn(`[⚙️ Backend] Failed to cleanup local video:`, cleanupErr);
                     }
-                } else {
-                    logger.error(`[⚙️ Backend] ❌ Failed to download dubbed video from SpeechLab`);
                 }
-            } else {
-                logger.warn(`[⚙️ Backend] Could not find DUBBED VIDEO output in project details`);
             }
         } else {
             // Source was audio (Twitter Space) - look for MP3
@@ -1283,14 +1325,15 @@ async function performBackendProcessing(initData: InitiationResult): Promise<Bac
         }
         logger.info(`[⚙️ Backend] Sharing link generated: ${sharingLink || 'N/A'}`);
 
-        // Return success with relevant URLs
+        // Return success with relevant URLs and error details if video processing failed
         return {
             success: true,
             sharingLink: sharingLink || undefined,
             publicMp3Url: publicMp3Url, // Will be undefined if download or S3 upload failed
             publicVideoUrl: publicVideoUrl, // Will be undefined if not a video or video processing failed
             projectId: projectId,
-            thirdPartyID: thirdPartyID
+            thirdPartyID: thirdPartyID,
+            error: videoProcessingError // Include specific error if video processing failed
         };
 
     } catch (error: any) {
@@ -1313,6 +1356,19 @@ async function performBackendProcessing(initData: InitiationResult): Promise<Bac
  * Adds a completed backend job to the final reply queue and triggers the worker.
  */
 function addToFinalReplyQueue(mentionInfo: MentionInfo, backendResult: BackendResult) {
+    // Check if this mention has already been fully processed (reply posted)
+    if (processedMentions.has(mentionInfo.tweetId)) {
+        logger.warn(`[↩️ Reply Queue] Mention ${mentionInfo.tweetId} already processed. Skipping duplicate add.`);
+        return;
+    }
+
+    // Check if this mention is already in the reply queue to prevent duplicates
+    const alreadyInQueue = finalReplyQueue.some(item => item.mentionInfo.tweetId === mentionInfo.tweetId);
+    if (alreadyInQueue) {
+        logger.warn(`[↩️ Reply Queue] Mention ${mentionInfo.tweetId} is already in reply queue. Skipping duplicate add.`);
+        return;
+    }
+
     logger.info(`[↩️ Reply Queue] Adding result for ${mentionInfo.tweetId} to reply queue. Success: ${backendResult.success}`);
     finalReplyQueue.push({ mentionInfo, backendResult });
     // Triggering is handled by the main browser task loop
@@ -1349,6 +1405,10 @@ async function runInitiationQueue(page: Page): Promise<void> {
 
     processedCount++; // Increment processed count for stats
     logger.info(`[🚀 Initiate Queue] Processing mention ${mentionToProcess.tweetId} (${mentionToProcess.username}). Remaining: ${mentionQueue.length}. This is mention #${processedCount} processed since startup.`);
+
+    // CRITICAL: Mark as processed IMMEDIATELY to prevent re-queuing while backend runs
+    logger.info(`[🚀 Initiate Queue] Marking ${mentionToProcess.tweetId} as processed to prevent duplicates.`);
+    processedMentions.add(mentionToProcess.tweetId);
 
     // Update status to 'initiating'
     await updateMentionStatus(mentionToProcess.tweetId, 'initiating');
@@ -1478,7 +1538,15 @@ async function runFinalReplyQueue(page: Page): Promise<void> {
             if (mentionInfo.hasVideo) {
                 // Video source but video URL is missing - don't mention MP3
                 logger.warn(`[↩️ Reply Queue] Backend succeeded for video tweet ${mentionInfo.tweetId} but video link is missing.`);
+                logger.error(`[↩️ Reply Queue] Video processing error details: ${backendResult.error || 'Unknown error'}`);
+
                 let partialFailureMessage = `${mentionInfo.username} Processing finished for the ${sourceLanguageName} to ${targetLanguageName} dub, but I couldn't prepare the dubbed video file. 😥`;
+
+                // Include specific error reason if available
+                if (backendResult.error) {
+                    partialFailureMessage += ` Reason: ${backendResult.error}.`;
+                }
+
                 if (hasSharingLink) {
                     partialFailureMessage += ` You might find project details here: ${backendResult.sharingLink}`;
                 }
@@ -1876,66 +1944,68 @@ async function main() {
                 const seenInThisBatch = new Set<string>();
                 // Check current queue IDs to avoid adding duplicates
                 const currentQueueIds = new Set(mentionQueue.map(m => m.tweetId));
-                
+                // Also check reply queue to avoid re-queuing mentions that are waiting for final reply
+                const replyQueueIds = new Set(finalReplyQueue.map(r => r.mentionInfo.tweetId));
+
                 for (const mention of mentions) {
-                    // Skip if already in processed set, already in the current queue, or already seen in this batch
+                    // Skip if already in processed set, in any queue, or already seen in this batch
                     if (processedMentions.has(mention.tweetId) ||
                         currentQueueIds.has(mention.tweetId) ||
+                        replyQueueIds.has(mention.tweetId) ||
                         seenInThisBatch.has(mention.tweetId)) {
                         continue;
+                    }
+
+                    // Skip tweets from the bot itself (avoid processing own replies as mentions)
+                    if (config.TWITTER_USERNAME) {
+                        const botUsername = config.TWITTER_USERNAME.toLowerCase();
+                        const mentionUsername = mention.username.toLowerCase().replace('@', '');
+                        if (mentionUsername === botUsername) {
+                            logger.debug(`[🔔 Mention] Skipping bot's own tweet: ${mention.tweetId}`);
+                            continue;
+                        }
                     }
 
                     // Mark as seen in this batch
                     seenInThisBatch.add(mention.tweetId);
 
-                    // Check Supabase for existing mention status (this is the primary check)
+                    // Check Supabase for existing mention status - simple logic:
+                    // If NOT in DB → add and process
+                    // If status is 'complete' → skip (already done)
+                    // Otherwise (pending, initiating, processing, failed) → retry
                     const existingMention = await getMention(mention.tweetId);
 
                     if (existingMention) {
                         logger.info(`[🔔 Mention] Found mention ${mention.tweetId} in Supabase with status: ${existingMention.status}`);
 
-                        // If status is complete or failed, mark as processed and skip
-                        if (existingMention.status === 'complete' || existingMention.status === 'failed') {
-                            logger.info(`[🔔 Mention] Mention ${mention.tweetId} is already ${existingMention.status}. Marking as processed.`);
+                        // Only skip if status is 'complete' (final tweet was posted successfully)
+                        if (existingMention.status === 'complete') {
+                            logger.info(`[🔔 Mention] Mention ${mention.tweetId} is complete. Skipping.`);
                             await markMentionAsProcessed(mention.tweetId, processedMentions);
                             continue;
                         }
 
-                        // If status is initiating or processing, skip (don't re-queue)
-                        if (existingMention.status === 'initiating' || existingMention.status === 'processing') {
-                            logger.info(`[🔔 Mention] Mention ${mention.tweetId} is already ${existingMention.status}. Skipping duplicate.`);
-                            continue;
-                        }
-
-                        // If status is pending, it's already in the queue somewhere, skip
-                        if (existingMention.status === 'pending') {
-                            logger.info(`[🔔 Mention] Mention ${mention.tweetId} is pending. Skipping duplicate.`);
-                            continue;
-                        }
-                    }
-
-                    // Also check if it's associated with a project (secondary check for legacy data)
-                    const associatedProject = await getProjectForMention(mention.tweetId);
-
-                    if (associatedProject) {
-                        logger.info(`[🔔 Mention] Found mention ID=${mention.tweetId} already associated with project ${associatedProject.thirdPartyID} (status: ${associatedProject.status})`);
-
-                        // If project is already completed or failed, mark the mention as processed
-                        if (associatedProject.status === 'complete' || associatedProject.status === 'failed') {
-                            logger.info(`[🔔 Mention] Project ${associatedProject.thirdPartyID} is already ${associatedProject.status}. Marking mention as processed.`);
+                        // If status is 'processing' and it has all the completion data (video URLs, sharing link),
+                        // it means it was successfully processed but just never marked complete. Mark it complete now.
+                        if (existingMention.status === 'processing' &&
+                            existingMention.public_video_url &&
+                            existingMention.sharing_link) {
+                            logger.info(`[🔔 Mention] Mention ${mention.tweetId} has status 'processing' but has all completion data. Marking as complete.`);
+                            await updateMentionStatus(mention.tweetId, 'complete');
                             await markMentionAsProcessed(mention.tweetId, processedMentions);
-                        } else {
-                            // Project is still in progress, don't add to queue but log the state
-                            logger.info(`[🔔 Mention] Project ${associatedProject.thirdPartyID} is still ${associatedProject.status}. Not queuing duplicate mention.`);
+                            continue;
                         }
-                        continue;
+
+                        // For any other status (pending, initiating, failed) or processing without completion data, retry
+                        logger.info(`[🔔 Mention] Mention ${mention.tweetId} has status '${existingMention.status}'. Will retry processing.`);
                     }
 
-                    // No existing mention or project found, process as new mention
+                    // Process the mention (new or retry)
                     newMentionsFound++;
-                    logger.info(`[🔔 Mention] Found new unprocessed mention: ID=${mention.tweetId}, User=${mention.username}, Text="${mention.text?.substring(0, 50)}${mention.text?.length > 50 ? '...' : ''}"`);
+                    const actionType = existingMention ? 'Retrying' : 'Found new';
+                    logger.info(`[🔔 Mention] ${actionType} mention: ID=${mention.tweetId}, User=${mention.username}, Text="${mention.text?.substring(0, 50)}${mention.text?.length > 50 ? '...' : ''}"`);
 
-                    // Add to Supabase with 'pending' status
+                    // Add/update in Supabase with 'pending' status
                     await upsertMention({
                         tweet_id: mention.tweetId,
                         username: mention.username,
@@ -1981,42 +2051,52 @@ async function main() {
         };
 
         if (skipInitialMentions) {
-            logger.warn(`[😈 Daemon] SKIP_INITIAL_MENTIONS flag is set. Performing initial scrape to mark mentions as processed WITHOUT queueing...`);
+            logger.warn(`[😈 Daemon] SKIP_INITIAL_MENTIONS flag is set. Marking mentions older than 30 minutes as complete...`);
             try {
                 if (!page || page.isClosed()) {
                     throw new Error("Page closed before initial skip scrape could run.");
                 }
-                // Scrape mentions once
+                // Scrape mentions once to find what's currently on the page
                 const initialMentions = await scrapeMentions(page, processedMentions);
                 logger.info(`[😈 Daemon] Initial scrape found ${initialMentions.length} mentions (already-processed filtered).`);
+
+                const now = Date.now();
+                const THIRTY_MINUTES_MS = 30 * 60 * 1000;
                 let skippedCount = 0;
+                let keptCount = 0;
+
                 for (const mention of initialMentions) {
                     // Check if it's *not* already processed, just in case
                     if (!processedMentions.has(mention.tweetId)) {
-                        // For initial skipping, we'll mark as processed but also create a placeholder project entry
-                        // to indicate that this mention was intentionally skipped
-                        logger.info(`[😈 Daemon] Marking initially found mention ${mention.tweetId} as processed (skipping queue).`);
-                        
-                        // Create a placeholder thirdPartyID for the skipped mention
-                        const placeholderThirdPartyID = `skipped-${mention.tweetId}`;
-                        
-                        // Mark the mention as processed
-                        await markMentionAsProcessed(mention.tweetId, processedMentions);
-                        
-                        // Create a placeholder project entry with 'complete' status to prevent future processing
-                        await updateProjectStatus(
-                            placeholderThirdPartyID,
-                            'complete',  // Mark as complete to avoid reprocessing
-                            mention.tweetId,
-                            undefined    // No actual project ID since this was skipped
-                        );
-                        
-                        skippedCount++;
+                        // Calculate mention age from Twitter Snowflake ID
+                        // Twitter Snowflake IDs encode timestamp in first 41 bits
+                        const tweetTimestamp = (BigInt(mention.tweetId) >> BigInt(22)) + BigInt(1288834974657); // Twitter epoch
+                        const tweetDate = new Date(Number(tweetTimestamp));
+                        const mentionAge = now - tweetDate.getTime();
+                        const ageMinutes = Math.round(mentionAge / 60000);
+
+                        // Only skip mentions older than 30 minutes
+                        if (mentionAge > THIRTY_MINUTES_MS) {
+                            logger.info(`[😈 Daemon] Marking old mention ${mention.tweetId} (${ageMinutes} min old) as complete (skipping queue).`);
+
+                            // Mark the mention as processed in local cache
+                            await markMentionAsProcessed(mention.tweetId, processedMentions);
+
+                            // Update Supabase to status 'complete' so it won't be retried
+                            await updateMentionStatus(mention.tweetId, 'complete', {
+                                error_message: `Skipped - ${ageMinutes} minutes old at daemon startup with SKIP_INITIAL_MENTIONS=true`
+                            });
+
+                            skippedCount++;
+                        } else {
+                            logger.info(`[😈 Daemon] Keeping recent mention ${mention.tweetId} (${ageMinutes} min old) - will process normally.`);
+                            keptCount++;
+                        }
                     } else {
                          logger.debug(`[😈 Daemon] Initially found mention ${mention.tweetId} was already marked as processed.`);
                     }
                 }
-                logger.info(`[😈 Daemon] Finished marking ${skippedCount} initial mentions as processed.`);
+                logger.info(`[😈 Daemon] Finished: ${skippedCount} old mentions marked complete, ${keptCount} recent mentions kept for processing.`);
 
                 // Now, just start the interval WITHOUT the initial poll call
                 logger.info(`[😈 Daemon] Starting regular mention polling loop (Interval: ${POLLING_INTERVAL_MS / 1000}s) after initial skip.`);
@@ -2061,19 +2141,23 @@ async function main() {
                 return;
             }
             
-            // Check flags: Prioritize initiating if possible, then replying
-            if (!isInitiatingProcessing && !isPostingFinalReply) { // Only trigger if browser is idle
-                if (mentionQueue.length > 0) {
-                    logger.debug('[😈 Daemon Task Loop] Triggering Initiation Queue check...');
-                    triggerInitiationWorker(page);
-                } else if (finalReplyQueue.length > 0) {
-                    logger.debug('[😈 Daemon Task Loop] Triggering Final Reply Queue check...');
-                    triggerFinalReplyWorker(page);
-                } else {
-                   // logger.debug('[😈 Daemon Task Loop] Browser idle, queues empty.');
-                }
+            // Check flags: Process both queues independently
+            // Trigger initiation worker if not already running and queue has items
+            if (!isInitiatingProcessing && mentionQueue.length > 0) {
+                logger.debug('[😈 Daemon Task Loop] Triggering Initiation Queue check...');
+                triggerInitiationWorker(page);
+            }
+
+            // Trigger reply worker if not already running and queue has items
+            if (!isPostingFinalReply && finalReplyQueue.length > 0) {
+                logger.debug('[😈 Daemon Task Loop] Triggering Final Reply Queue check...');
+                triggerFinalReplyWorker(page);
+            }
+
+            if (isInitiatingProcessing || isPostingFinalReply || mentionQueue.length > 0 || finalReplyQueue.length > 0) {
+                // At least one queue is active or has items
             } else {
-                 // logger.debug(`[😈 Daemon Task Loop] Browser busy (Initiating: ${isInitiatingProcessing}, Replying: ${isPostingFinalReply}). Skipping triggers.`);
+                // logger.debug('[😈 Daemon Task Loop] Browser idle, all queues empty.');
             }
         }, BROWSER_TASK_INTERVAL_MS);
 

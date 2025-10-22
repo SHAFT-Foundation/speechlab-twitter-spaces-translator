@@ -1,5 +1,6 @@
 import { spawn } from 'child_process';
 import * as fs from 'fs';
+import { promises as fsPromises } from 'fs';
 import * as path from 'path';
 import { S3Client, PutObjectCommand, PutObjectCommandInput } from "@aws-sdk/client-s3";
 import { config } from '../utils/config';
@@ -344,29 +345,30 @@ export async function uploadLocalFileToS3(localFilePath: string, s3Key: string):
         return null;
     }
 
+    // Read file into buffer once to avoid stream consumption issues
+    const fileBuffer = await fsPromises.readFile(localFilePath);
+
+    // Dynamically determine content type based on extension
+    let contentType = 'application/octet-stream';
+    const ext = path.extname(localFilePath).toLowerCase();
+    if (ext === '.mp3') contentType = 'audio/mpeg';
+    else if (ext === '.aac') contentType = 'audio/aac';
+    else if (ext === '.mp4') contentType = 'video/mp4';
+    logger.debug(`[☁️ S3] Determined Content-Type: ${contentType}`);
+
     while (attempt < MAX_RETRIES) {
         attempt++;
         try {
             logger.info(`[☁️ S3] Starting upload attempt ${attempt}/${MAX_RETRIES}...`);
             const startTime = Date.now();
-            const fileStream = fs.createReadStream(localFilePath);
-
-            // Dynamically determine content type based on extension (basic implementation)
-            let contentType = 'application/octet-stream'; // Default
-            const ext = path.extname(localFilePath).toLowerCase();
-            if (ext === '.mp3') contentType = 'audio/mpeg';
-            else if (ext === '.aac') contentType = 'audio/aac';
-            else if (ext === '.mp4') contentType = 'video/mp4';
-            // Add other types as needed
-            logger.debug(`[☁️ S3] Determined Content-Type: ${contentType}`);
 
             const uploadParams: PutObjectCommandInput = {
                 Bucket: config.AWS_S3_BUCKET,
                 Key: s3Key,
-                Body: fileStream,
+                Body: fileBuffer, // Use buffer instead of stream
                 ContentType: contentType,
                 // Consider adding ACL: 'public-read' if bucket policy doesn't automatically make it public
-                // ACL: 'public-read' 
+                // ACL: 'public-read'
             };
 
             const command = new PutObjectCommand(uploadParams);

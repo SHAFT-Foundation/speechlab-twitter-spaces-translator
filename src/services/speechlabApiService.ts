@@ -213,9 +213,19 @@ export async function createDubbingProject(
     // Ensure projectName is reasonably limited
     const finalProjectName = projectName.substring(0, 100);
 
-    // Map 'es' to 'es_la' for API compatibility
-    const apiTargetLanguage = targetLanguageCode === 'es' ? 'es_la' : targetLanguageCode;
-    const apiDubAccent = targetLanguageCode === 'es' ? 'es_la' : targetLanguageCode;
+    // Map language codes to API-compatible format
+    let apiTargetLanguage = targetLanguageCode;
+    let apiDubAccent = targetLanguageCode;
+
+    if (targetLanguageCode === 'es') {
+        apiTargetLanguage = 'es_la';
+        apiDubAccent = 'es_la';
+    } else if (targetLanguageCode === 'pt') {
+        // Default to Brazilian Portuguese for 'pt'
+        apiTargetLanguage = 'pt_br';
+        apiDubAccent = 'pt_br';
+    }
+
     logger.debug(`[🤖 SpeechLab] Mapped target language code ${targetLanguageCode} to API targetLanguage: ${apiTargetLanguage}, dubAccent: ${apiDubAccent}`);
 
     const payload: CreateDubPayload = {
