@@ -178,10 +178,15 @@ export function detectLanguage(text: string): string {
 
 /**
  * Gets the display name (label) for a given language code.
- * @param code The language code (e.g., 'es').
+ * @param code The language code (e.g., 'es', 'es_la').
  * @returns The display name (e.g., 'Spanish') or the code itself if not found.
  */
 export function getLanguageName(code: string): string {
+    // Handle special case for es_la - map it to Spanish
+    if (code === 'es_la') {
+        return 'Spanish';
+    }
+
     const lang = SUPPORTED_LANGUAGES.find(l => l.code === code);
     return lang ? lang.label : code; // Return label or code if label not found
 } 

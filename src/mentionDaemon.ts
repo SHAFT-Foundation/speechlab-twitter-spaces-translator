@@ -26,7 +26,7 @@ import util from 'util';
 import { postTweetReplyWithMediaApi } from './services/twitterApiService';
 import { uploadLocalFileToS3 } from './services/audioService';
 import * as fsExtra from 'fs-extra';
-import { initSupabase, upsertMention, updateMentionStatus, getAllProcessedMentions } from './services/supabaseService';
+import { initSupabase, upsertMention, updateMentionStatus, getAllProcessedMentions, getMention } from './services/supabaseService';
 
 const execPromise = util.promisify(exec);
 
@@ -1473,18 +1473,33 @@ async function runFinalReplyQueue(page: Page): Promise<void> {
             finalMessage = `@RyanAtSpeechlab ${mentionInfo.username} Your ${sourceLanguageName} to ${targetLanguageName} dub is ready! $shaft 🎉 ${linkParts.join(' | ')}`;
             
         } else {
-            // MP3 is MISSING, even though backendResult.success is true. Treat as partial failure for reply.
-            logger.warn(`[↩️ Reply Queue] Backend succeeded for ${mentionInfo.tweetId} but MP3 link is missing. Posting alternative message.`);
-            let partialFailureMessage = `${mentionInfo.username} Processing finished for the ${sourceLanguageName} to ${targetLanguageName} dub, but I couldn't prepare the MP3 audio file. 😥`;
-            if (hasSharingLink) {
-                partialFailureMessage += ` You might find project details here: ${backendResult.sharingLink}`;
+            // Neither video nor MP3 is available, even though backendResult.success is true
+            // Check if this was supposed to be a VIDEO or AUDIO source
+            if (mentionInfo.hasVideo) {
+                // Video source but video URL is missing - don't mention MP3
+                logger.warn(`[↩️ Reply Queue] Backend succeeded for video tweet ${mentionInfo.tweetId} but video link is missing.`);
+                let partialFailureMessage = `${mentionInfo.username} Processing finished for the ${sourceLanguageName} to ${targetLanguageName} dub, but I couldn't prepare the dubbed video file. 😥`;
+                if (hasSharingLink) {
+                    partialFailureMessage += ` You might find project details here: ${backendResult.sharingLink}`;
+                }
+                if (backendResult.projectId) {
+                    partialFailureMessage += ` (Project ID: ${backendResult.projectId})`;
+                }
+                finalMessage = partialFailureMessage;
+            } else {
+                // Audio source but MP3 is missing
+                logger.warn(`[↩️ Reply Queue] Backend succeeded for ${mentionInfo.tweetId} but MP3 link is missing. Posting alternative message.`);
+                let partialFailureMessage = `${mentionInfo.username} Processing finished for the ${sourceLanguageName} to ${targetLanguageName} dub, but I couldn't prepare the MP3 audio file. 😥`;
+                if (hasSharingLink) {
+                    partialFailureMessage += ` You might find project details here: ${backendResult.sharingLink}`;
+                }
+                if (backendResult.projectId) {
+                    partialFailureMessage += ` (Project ID: ${backendResult.projectId})`;
+                }
+                finalMessage = partialFailureMessage;
             }
-            if (backendResult.projectId) {
-                 partialFailureMessage += ` (Project ID: ${backendResult.projectId})`;
-            }
-             finalMessage = partialFailureMessage;
-             // Keep mediaPathToAttach as undefined in this case too
-             mediaPathToAttach = undefined;
+            // Keep mediaPathToAttach as undefined in this case too
+            mediaPathToAttach = undefined;
         }
         // --- END MODIFIED SECTION ---
 
@@ -1864,21 +1879,47 @@ async function main() {
                 
                 for (const mention of mentions) {
                     // Skip if already in processed set, already in the current queue, or already seen in this batch
-                    if (processedMentions.has(mention.tweetId) || 
-                        currentQueueIds.has(mention.tweetId) || 
+                    if (processedMentions.has(mention.tweetId) ||
+                        currentQueueIds.has(mention.tweetId) ||
                         seenInThisBatch.has(mention.tweetId)) {
                         continue;
                     }
-                    
+
                     // Mark as seen in this batch
                     seenInThisBatch.add(mention.tweetId);
-                    
-                    // Then check if it's associated with a project
+
+                    // Check Supabase for existing mention status (this is the primary check)
+                    const existingMention = await getMention(mention.tweetId);
+
+                    if (existingMention) {
+                        logger.info(`[🔔 Mention] Found mention ${mention.tweetId} in Supabase with status: ${existingMention.status}`);
+
+                        // If status is complete or failed, mark as processed and skip
+                        if (existingMention.status === 'complete' || existingMention.status === 'failed') {
+                            logger.info(`[🔔 Mention] Mention ${mention.tweetId} is already ${existingMention.status}. Marking as processed.`);
+                            await markMentionAsProcessed(mention.tweetId, processedMentions);
+                            continue;
+                        }
+
+                        // If status is initiating or processing, skip (don't re-queue)
+                        if (existingMention.status === 'initiating' || existingMention.status === 'processing') {
+                            logger.info(`[🔔 Mention] Mention ${mention.tweetId} is already ${existingMention.status}. Skipping duplicate.`);
+                            continue;
+                        }
+
+                        // If status is pending, it's already in the queue somewhere, skip
+                        if (existingMention.status === 'pending') {
+                            logger.info(`[🔔 Mention] Mention ${mention.tweetId} is pending. Skipping duplicate.`);
+                            continue;
+                        }
+                    }
+
+                    // Also check if it's associated with a project (secondary check for legacy data)
                     const associatedProject = await getProjectForMention(mention.tweetId);
-                    
+
                     if (associatedProject) {
                         logger.info(`[🔔 Mention] Found mention ID=${mention.tweetId} already associated with project ${associatedProject.thirdPartyID} (status: ${associatedProject.status})`);
-                        
+
                         // If project is already completed or failed, mark the mention as processed
                         if (associatedProject.status === 'complete' || associatedProject.status === 'failed') {
                             logger.info(`[🔔 Mention] Project ${associatedProject.thirdPartyID} is already ${associatedProject.status}. Marking mention as processed.`);
@@ -1887,24 +1928,25 @@ async function main() {
                             // Project is still in progress, don't add to queue but log the state
                             logger.info(`[🔔 Mention] Project ${associatedProject.thirdPartyID} is still ${associatedProject.status}. Not queuing duplicate mention.`);
                         }
-                    } else {
-                        // No associated project found, process as new mention
-                        newMentionsFound++;
-                        logger.info(`[🔔 Mention] Found new unprocessed mention: ID=${mention.tweetId}, User=${mention.username}, Text="${mention.text?.substring(0, 50)}${mention.text?.length > 50 ? '...' : ''}"`);
-
-                        // Add to Supabase with 'pending' status
-                        await upsertMention({
-                            tweet_id: mention.tweetId,
-                            username: mention.username,
-                            tweet_url: mention.tweetUrl,
-                            tweet_text: mention.text || '',
-                            status: 'pending'
-                        });
-
-                        mentionQueue.push(mention);
-                        newMentions.push(mention);
-                        logger.info(`[⚙️ Queue] Mention ${mention.tweetId} added to initiation queue. Queue size: ${mentionQueue.length}`);
+                        continue;
                     }
+
+                    // No existing mention or project found, process as new mention
+                    newMentionsFound++;
+                    logger.info(`[🔔 Mention] Found new unprocessed mention: ID=${mention.tweetId}, User=${mention.username}, Text="${mention.text?.substring(0, 50)}${mention.text?.length > 50 ? '...' : ''}"`);
+
+                    // Add to Supabase with 'pending' status
+                    await upsertMention({
+                        tweet_id: mention.tweetId,
+                        username: mention.username,
+                        tweet_url: mention.tweetUrl,
+                        tweet_text: mention.text || '',
+                        status: 'pending'
+                    });
+
+                    mentionQueue.push(mention);
+                    newMentions.push(mention);
+                    logger.info(`[⚙️ Queue] Mention ${mention.tweetId} added to initiation queue. Queue size: ${mentionQueue.length}`);
                 }
                 
                 if (newMentionsFound > 0) {
