@@ -29,6 +29,7 @@
   "dependencies": {
     "@aws-sdk/client-s3": "^3.782.0",
     "@supabase/supabase-js": "^2.76.0",
+    "@twitter-api-v2/plugin-rate-limit": "^1.1.0",
     "@types/fs-extra": "^11.0.4",
     "axios": "^1.8.4",
     "cheerio": "^1.0.0",

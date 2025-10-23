@@ -1,4 +1,5 @@
 import { TwitterApi, TweetV2, EUploadMimeType } from 'twitter-api-v2';
+import { TwitterApiRateLimitPlugin } from '@twitter-api-v2/plugin-rate-limit';
 import logger from '../utils/logger';
 import { config } from '../utils/config';
 import * as fs from 'fs';
@@ -7,15 +8,23 @@ import * as fs from 'fs';
  * Service for polling Twitter mentions and posting replies using the Twitter API v2
  */
 
-// Initialize Twitter API client
+// Initialize rate limit plugin for automatic tracking
+const rateLimitPlugin = new TwitterApiRateLimitPlugin();
+
+// Initialize Twitter API client with rate limit plugin
 const twitterClient = new TwitterApi({
     appKey: config.TWITTER_API_KEY,
     appSecret: config.TWITTER_API_SECRET,
     accessToken: config.TWITTER_ACCESS_TOKEN,
     accessSecret: config.TWITTER_ACCESS_SECRET,
+}, {
+    plugins: [rateLimitPlugin]
 });
 
 const rwClient = twitterClient.readWrite;
+
+// Export rate limit plugin for external access
+export { rateLimitPlugin };
 
 // Rate limiting state
 let lastPollTime = 0;
@@ -60,6 +69,32 @@ export interface MentionData {
     hasVideo?: boolean;
     videoUrl?: string;
     videoVariants?: Array<{url: string; bitrate?: number; content_type: string}>;
+}
+
+/**
+ * Get current rate limit status for an endpoint
+ * @param endpoint The endpoint to check (e.g., 'users/:id/mentions')
+ * @returns Rate limit info or null if not available
+ */
+export async function getRateLimitStatus(endpoint: string) {
+    try {
+        const rateLimit = await rateLimitPlugin.v2.getRateLimit(endpoint);
+        if (rateLimit) {
+            logger.info(`[🐦 Rate Limit] Status for ${endpoint}:`);
+            logger.info(`[🐦 Rate Limit]   - Limit: ${rateLimit.limit} requests per window`);
+            logger.info(`[🐦 Rate Limit]   - Remaining: ${rateLimit.remaining}`);
+            logger.info(`[🐦 Rate Limit]   - Reset: ${new Date(rateLimit.reset * 1000).toISOString()}`);
+
+            const minutesUntilReset = Math.ceil((rateLimit.reset * 1000 - Date.now()) / 60000);
+            logger.info(`[🐦 Rate Limit]   - Minutes until reset: ${minutesUntilReset}`);
+
+            return rateLimit;
+        }
+        return null;
+    } catch (error) {
+        logger.error('[🐦 Rate Limit] Error getting rate limit status:', error);
+        return null;
+    }
 }
 
 /**
@@ -287,9 +322,10 @@ export async function fetchMentions(sinceId?: string, maxResults: number = 10): 
 
             // Check for rate limit headers in the response
             // Reference: https://docs.x.com/x-api/fundamentals/rate-limits
+            // Plugin automatically tracks these headers
             if (mentionsTimeline.rateLimit) {
                 logger.info(`[🐦 Mentions] ========================================`);
-                logger.info(`[🐦 Mentions] 📊 HTTP Rate Limit Headers:`);
+                logger.info(`[🐦 Mentions] 📊 HTTP Rate Limit Headers (auto-tracked by plugin):`);
                 logger.info(`[🐦 Mentions] ========================================`);
                 logger.info(`[🐦 Mentions] x-rate-limit-limit: ${mentionsTimeline.rateLimit.limit} (rate limit ceiling for endpoint)`);
                 logger.info(`[🐦 Mentions] x-rate-limit-remaining: ${mentionsTimeline.rateLimit.remaining} (remaining requests for 15-min window)`);
@@ -304,6 +340,16 @@ export async function fetchMentions(sinceId?: string, maxResults: number = 10): 
                 if (mentionsTimeline.rateLimit.remaining < 5) {
                     logger.warn(`[🐦 Mentions] ⚠️ Rate limit running low! Only ${mentionsTimeline.rateLimit.remaining} requests remaining`);
                 }
+            }
+
+            // Log the plugin's tracked rate limit (may differ from response if cached)
+            try {
+                const pluginLimit = await rateLimitPlugin.v2.getRateLimit(`users/${me.data.id}/mentions`);
+                if (pluginLimit) {
+                    logger.debug(`[🐦 Mentions] Plugin tracked rate limit: ${pluginLimit.remaining}/${pluginLimit.limit} remaining`);
+                }
+            } catch (err) {
+                // Ignore errors getting plugin rate limit
             }
 
         // Process mentions
