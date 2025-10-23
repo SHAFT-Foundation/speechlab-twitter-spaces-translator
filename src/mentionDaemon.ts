@@ -82,7 +82,7 @@ interface ProjectStatusInfo {
 }
 
 const PROCESSED_MENTIONS_PATH = path.join(process.cwd(), 'processed_mentions.json');
-const POLLING_INTERVAL_MS = 60 * 1000; // Check every 60 seconds (1 minute) for testing
+const POLLING_INTERVAL_MS = config.MENTION_POLL_INTERVAL_MS || (2 * 60 * 1000); // Check every 2 minutes (7-8 polls per 15min window - safe buffer)
 const SCREENSHOT_DIR = path.join(process.cwd(), 'debug-screenshots');
 const MANUAL_LOGIN_WAIT_MS = 60 * 1000; // Wait 60 seconds for manual login if needed
 

@@ -466,9 +466,10 @@ export async function waitForProjectCompletion(
             const elapsedMinutes = ((Date.now() - startTime) / 1000 / 60).toFixed(1);
             logger.info(`[🤖 SpeechLab] ✅ Poll #${pollCount} - Project completed successfully after ${elapsedMinutes} minutes!`);
             return project; // Return the full project object on success
-        } else if (project.job?.status === "FAILED") {
-            logger.error(`[🤖 SpeechLab] ❌ Poll #${pollCount} - Project failed to process!`);
-            return null; // Return null on failure
+        } else if (project.job?.status === "FAILED" || project.job?.status === "ERROR") {
+            logger.error(`[🤖 SpeechLab] ❌ Poll #${pollCount} - Project failed with status: ${project.job?.status}`);
+            logger.error(`[🤖 SpeechLab] ❌ Project error details:`, JSON.stringify(project.job, null, 2));
+            return null; // Return null on failure/error
         } else {
             // Calculate progress (simplified)
             const status = project.job?.status || "UNKNOWN";

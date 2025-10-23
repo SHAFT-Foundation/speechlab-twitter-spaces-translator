@@ -19,7 +19,7 @@ const rwClient = twitterClient.readWrite;
 
 // Rate limiting state
 let lastPollTime = 0;
-const MIN_POLL_INTERVAL_MS = 60000; // 1 minute between polls to avoid rate limits
+const MIN_POLL_INTERVAL_MS = 2 * 60 * 1000; // 2 minutes between polls (allows ~7 polls per 15min window)
 let rateLimitResetTime: number | null = null; // Track rate limit reset time
 
 // Retry configuration
