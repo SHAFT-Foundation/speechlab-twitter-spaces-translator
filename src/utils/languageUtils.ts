@@ -189,4 +189,65 @@ export function getLanguageName(code: string): string {
 
     const lang = SUPPORTED_LANGUAGES.find(l => l.code === code);
     return lang ? lang.label : code; // Return label or code if label not found
+}
+
+/**
+ * Validates if a mention text is a valid dubbing request
+ * Checks for dubbing keywords and supported language mentions
+ * @param text The text of the Twitter mention
+ * @returns True if this appears to be a valid dubbing request
+ */
+export function isValidDubbingRequest(text: string): boolean {
+    const lowerText = text.toLowerCase();
+
+    // IMPORTANT: The word "dub" appears in usernames like @DubbingAgent
+    // We need to check for actual dubbing intent, not just the presence of "dub"
+
+    // First, remove the @mentions to avoid false positives from usernames
+    const textWithoutMentions = lowerText.replace(/@\w+/g, '');
+
+    // Check for explicit dubbing request patterns
+    const dubbingPatterns = [
+        /\bdub\s+(?:this|it|to|in|from)/,           // "dub this", "dub it", "dub to", etc.
+        /\btranslate\s+(?:this|it|to|in|from)/,     // "translate this", etc.
+        /\bdubbing\s+(?:to|in|from)/,               // "dubbing to"
+        /\b(?:in|to)\s+\w+\s+(?:language|dub)/,     // "in spanish", "to french dub"
+        /\b(?:dub|translate)\b.*\b(?:in|to|from)\b/ // "dub" followed eventually by "in/to/from"
+    ];
+
+    const hasValidDubbingPattern = dubbingPatterns.some(pattern => pattern.test(textWithoutMentions));
+
+    if (!hasValidDubbingPattern) {
+        logger.debug(`[🗣️ Validation] No valid dubbing pattern found in: "${text.substring(0, 80)}..."`);
+        return false;
+    }
+
+    // Check if any supported language is mentioned (excluding common English words)
+    let hasLanguageMention = false;
+    const foundLanguages: string[] = [];
+
+    for (const lang of SUPPORTED_LANGUAGES) {
+        for (const alias of lang.aliases) {
+            // Skip very common English words that might be language codes
+            if (alias.length <= 2 && lang.code === 'en') continue;
+
+            // Check for word boundaries to avoid matching partial words
+            const wordBoundaryPattern = new RegExp(`\\b${alias.toLowerCase()}\\b`);
+            if (wordBoundaryPattern.test(lowerText)) {
+                hasLanguageMention = true;
+                foundLanguages.push(lang.label);
+                break;
+            }
+        }
+        if (hasLanguageMention) break;
+    }
+
+    if (!hasLanguageMention) {
+        logger.debug(`[🗣️ Validation] No supported language found in: "${text.substring(0, 80)}..."`);
+        return false;
+    }
+
+    logger.info(`[🗣️ Validation] ✅ Valid dubbing request detected - Language(s): ${foundLanguages.join(', ')}`);
+    logger.debug(`[🗣️ Validation] Full text: "${text}"`);
+    return true;
 } 

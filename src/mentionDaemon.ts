@@ -11,10 +11,10 @@ import {
     extractSpaceTitleFromModal,
     getVideoM3u8FromMention
 } from './services/twitterInteractionService';
-import { fetchMentions, postReplyWithMedia, MentionData, fetchVideoForMention } from './services/twitterMentionService';
+import { fetchMentions, postReplyWithMedia, MentionData, fetchVideoForMention, testTwitterApiConnection } from './services/twitterMentionService';
 import { downloadAndUploadAudio, downloadAndUploadVideo } from './services/audioService';
 import { createDubbingProject, waitForProjectCompletion, generateSharingLink, getProjectByThirdPartyID } from './services/speechlabApiService';
-import { detectLanguage, detectLanguages, getLanguageName } from './utils/languageUtils';
+import { detectLanguage, detectLanguages, getLanguageName, isValidDubbingRequest } from './utils/languageUtils';
 import { v4 as uuidv4 } from 'uuid';
 import { downloadFile } from './utils/fileUtils';
 import { mergeVideoDubbedAudio, extractAudioFromVideo } from './utils/videoUtils';
@@ -1479,6 +1479,15 @@ async function main() {
     }
     logger.info(`[😈 Daemon] Loaded ${supabaseProcessedMentions.size} processed mentions from Supabase`);
 
+    // Test Twitter API connection
+    logger.info('[😈 Daemon] Testing Twitter API connection...');
+    const apiTestSuccess = await testTwitterApiConnection();
+    if (!apiTestSuccess) {
+        logger.error('[😈 Daemon] ❌ Twitter API test failed! Please check your credentials.');
+        logger.error('[😈 Daemon] Exiting daemon...');
+        process.exit(1);
+    }
+
     // Set up more verbose logging if needed
     if (config.LOG_LEVEL === 'debug') {
         logger.info('[😈 Daemon] Debug logging enabled - will show detailed execution flow');
@@ -1528,7 +1537,9 @@ async function main() {
         const pollMentions = async () => {
             logger.info('[😈 Daemon Polling] Polling for new mentions...');
             try {
-                const apiMentions = await fetchMentions();
+                // Fetch only 10 most recent mentions to avoid rate limiting
+                // Videos are NOT fetched here - they'll be fetched on-demand for valid dubbing requests only
+                const apiMentions = await fetchMentions(undefined, 10);
                 // Convert MentionData to MentionInfo format
                 const mentions: MentionInfo[] = apiMentions
                     .filter(m => !processedMentions.has(m.tweetId))
@@ -1552,6 +1563,16 @@ async function main() {
                 const replyQueueIds = new Set(finalReplyQueue.map(r => r.mentionInfo.tweetId));
 
                 for (const mention of mentions) {
+                    // CRITICAL: Validate if this is a valid dubbing request FIRST
+                    // This prevents wasting resources on non-dubbing mentions
+                    if (!isValidDubbingRequest(mention.text)) {
+                        logger.info(`[😈 Daemon Polling] ⏭️  Skipping mention ${mention.tweetId} - Not a valid dubbing request`);
+                        // Mark as processed so we don't check it again
+                        processedMentions.add(mention.tweetId);
+                        await markMentionAsProcessed(mention.tweetId, processedMentions);
+                        continue;
+                    }
+
                     // Skip if already fully processed, currently in-progress, in any queue, or already seen in this batch
                     if (processedMentions.has(mention.tweetId) ||
                         inProgressMentions.has(mention.tweetId) ||
@@ -1648,8 +1669,9 @@ async function main() {
             logger.warn(`[😈 Daemon] SKIP_INITIAL_MENTIONS flag is set. Marking mentions older than 30 minutes as complete...`);
             try {
                 // Fetch mentions once to find what's currently available
-                // Skip video fetching for initial load to avoid rate limits
-                const apiMentions = await fetchMentions(undefined, true);
+                // Videos are NOT fetched here - they'll be fetched on-demand for valid dubbing requests only
+                // Limit to 10 most recent to avoid overwhelming the system
+                const apiMentions = await fetchMentions(undefined, 10);
                 const initialMentions: MentionInfo[] = apiMentions
                     .filter(m => !processedMentions.has(m.tweetId))
                     .map(m => ({
@@ -1668,6 +1690,15 @@ async function main() {
                 let keptCount = 0;
 
                 for (const mention of initialMentions) {
+                    // CRITICAL: Validate if this is a valid dubbing request FIRST
+                    if (!isValidDubbingRequest(mention.text)) {
+                        logger.info(`[😈 Daemon] ⏭️  Skipping mention ${mention.tweetId} - Not a valid dubbing request`);
+                        processedMentions.add(mention.tweetId);
+                        await markMentionAsProcessed(mention.tweetId, processedMentions);
+                        skippedCount++;
+                        continue;
+                    }
+
                     // Check if it's *not* already processed, just in case
                     if (!processedMentions.has(mention.tweetId)) {
                         // Calculate mention age from Twitter Snowflake ID

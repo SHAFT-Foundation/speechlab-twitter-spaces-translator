@@ -63,24 +63,174 @@ export interface MentionData {
 }
 
 /**
- * Get mentions from Twitter API
- * @param sinceId Optional tweet ID to only fetch mentions newer than this
- * @param skipVideoFetch Optional flag to skip fetching parent tweet videos (default true - fetch videos on demand)
- * @returns Array of mention data
+ * Test Twitter API connection and show verbose response
+ * @returns True if connection successful (or if rate limited but credentials valid)
  */
-export async function fetchMentions(sinceId?: string, skipVideoFetch: boolean = true): Promise<MentionData[]> {
+export async function testTwitterApiConnection(): Promise<boolean> {
+    try {
+        logger.info('[🐦 API Test] ========================================');
+        logger.info('[🐦 API Test] Testing Twitter API Connection...');
+        logger.info('[🐦 API Test] ========================================');
+
+        // Test 1: Get authenticated user info
+        logger.info('[🐦 API Test] Test 1: Fetching authenticated user info...');
+        const startTime = Date.now();
+        const me = await rwClient.v2.me();
+        const elapsed = Date.now() - startTime;
+
+        logger.info('[🐦 API Test] ✅ Successfully authenticated!');
+        logger.info('[🐦 API Test] Response time: ' + elapsed + 'ms');
+        logger.info('[🐦 API Test] User Details:');
+        logger.info('[🐦 API Test]   - Username: @' + me.data.username);
+        logger.info('[🐦 API Test]   - User ID: ' + me.data.id);
+        logger.info('[🐦 API Test]   - Name: ' + me.data.name);
+        logger.info('[🐦 API Test] Full API Response: ' + JSON.stringify(me.data, null, 2));
+
+        // Test 2: Try a simple mentions request to verify access
+        logger.info('[🐦 API Test] Test 2: Testing mentions endpoint access...');
+        const testStart = Date.now();
+        try {
+            const testMentions = await rwClient.v2.userMentionTimeline(me.data.id, {
+                max_results: 5,
+                'tweet.fields': 'created_at'
+            });
+            const testElapsed = Date.now() - testStart;
+
+            logger.info('[🐦 API Test] ✅ Mentions endpoint accessible!');
+            logger.info('[🐦 API Test] Response time: ' + testElapsed + 'ms');
+            logger.info('[🐦 API Test] Found ' + (testMentions.data.data?.length || 0) + ' recent mentions');
+
+            // Check rate limit info from response
+            // Reference: https://docs.x.com/x-api/fundamentals/rate-limits
+            if (testMentions.rateLimit) {
+                logger.info('[🐦 API Test] ========================================');
+                logger.info('[🐦 API Test] 📊 HTTP Rate Limit Headers:');
+                logger.info('[🐦 API Test] ========================================');
+                logger.info('[🐦 API Test] x-rate-limit-limit: ' + testMentions.rateLimit.limit + ' (rate limit ceiling for endpoint)');
+                logger.info('[🐦 API Test] x-rate-limit-remaining: ' + testMentions.rateLimit.remaining + ' (remaining requests for 15-min window)');
+                logger.info('[🐦 API Test] x-rate-limit-reset: ' + testMentions.rateLimit.reset + ' (UTC epoch seconds)');
+
+                const resetTime = new Date(testMentions.rateLimit.reset * 1000);
+                const minutesUntilReset = Math.ceil((testMentions.rateLimit.reset * 1000 - Date.now()) / 60000);
+                logger.info('[🐦 API Test] Reset time: ' + resetTime.toISOString() + ' (' + minutesUntilReset + ' minutes)');
+                logger.info('[🐦 API Test] ========================================');
+            }
+        } catch (mentionError: any) {
+            // If we hit rate limit (429), that's actually OK - it means credentials work
+            if (mentionError.code === 429) {
+                logger.warn('[🐦 API Test] ⚠️ Rate limited on mentions endpoint (expected if recently used)');
+
+                if (mentionError.rateLimit && mentionError.rateLimit.reset) {
+                    const resetTime = new Date(mentionError.rateLimit.reset * 1000);
+                    const waitMinutes = Math.ceil((mentionError.rateLimit.reset * 1000 - Date.now()) / 60000);
+                    logger.warn('[🐦 API Test] ========================================');
+                    logger.warn('[🐦 API Test] 📊 HTTP Rate Limit Headers (Error 429):');
+                    logger.warn('[🐦 API Test] ========================================');
+                    logger.warn('[🐦 API Test] x-rate-limit-limit: ' + mentionError.rateLimit.limit);
+                    logger.warn('[🐦 API Test] x-rate-limit-remaining: ' + mentionError.rateLimit.remaining);
+                    logger.warn('[🐦 API Test] x-rate-limit-reset: ' + mentionError.rateLimit.reset + ' (UTC epoch seconds)');
+                    logger.warn('[🐦 API Test] Reset time: ' + resetTime.toISOString() + ' (' + waitMinutes + ' minutes)');
+                    logger.warn('[🐦 API Test] ========================================');
+
+                    // Store the reset time globally
+                    rateLimitResetTime = resetTime.getTime();
+                    logger.info('[🐦 API Test] 💾 Stored rate limit reset time for daemon');
+                }
+
+                logger.info('[🐦 API Test] ✅ Credentials valid (rate limited but authenticated)');
+            } else {
+                // Other errors are actual failures
+                logger.error('[🐦 API Test] ❌ Failed to access mentions endpoint');
+                throw mentionError;
+            }
+        }
+
+        logger.info('[🐦 API Test] ========================================');
+        logger.info('[🐦 API Test] ✅ Twitter API Connection Test PASSED');
+        logger.info('[🐦 API Test] ========================================');
+
+        return true;
+    } catch (error: any) {
+        // Handle rate limit on authentication endpoint
+        if (error.code === 429) {
+            logger.warn('[🐦 API Test] ========================================');
+            logger.warn('[🐦 API Test] ⚠️ Rate Limited (429) - But This Is OK!');
+            logger.warn('[🐦 API Test] ========================================');
+            logger.warn('[🐦 API Test] You are currently rate limited by Twitter.');
+
+            if (error.rateLimit && error.rateLimit.reset) {
+                const resetTime = new Date(error.rateLimit.reset * 1000);
+                const waitMinutes = Math.ceil((error.rateLimit.reset * 1000 - Date.now()) / 60000);
+                logger.warn('[🐦 API Test] ========================================');
+                logger.warn('[🐦 API Test] 📊 HTTP Rate Limit Headers (Error 429):');
+                logger.warn('[🐦 API Test] ========================================');
+                logger.warn('[🐦 API Test] x-rate-limit-limit: ' + error.rateLimit.limit);
+                logger.warn('[🐦 API Test] x-rate-limit-remaining: ' + error.rateLimit.remaining);
+                logger.warn('[🐦 API Test] x-rate-limit-reset: ' + error.rateLimit.reset + ' (UTC epoch seconds)');
+                logger.warn('[🐦 API Test] Reset time: ' + resetTime.toISOString() + ' (' + waitMinutes + ' minutes)');
+                logger.warn('[🐦 API Test] ========================================');
+
+                // Store the reset time
+                rateLimitResetTime = resetTime.getTime();
+                logger.info('[🐦 API Test] 💾 Stored rate limit reset time - daemon will wait');
+            }
+
+            logger.info('[🐦 API Test] ========================================');
+            logger.info('[🐦 API Test] ✅ Continuing - Daemon will respect rate limits');
+            logger.info('[🐦 API Test] ========================================');
+            return true; // Allow daemon to continue
+        }
+
+        // For non-rate-limit errors, these are real failures
+        logger.error('[🐦 API Test] ========================================');
+        logger.error('[🐦 API Test] ❌ Twitter API Connection Test FAILED');
+        logger.error('[🐦 API Test] ========================================');
+        logger.error('[🐦 API Test] Error details:', error);
+
+        if (error.code) {
+            logger.error('[🐦 API Test] Error code: ' + error.code);
+        }
+        if (error.message) {
+            logger.error('[🐦 API Test] Error message: ' + error.message);
+        }
+        if (error.data) {
+            logger.error('[🐦 API Test] API response data: ' + JSON.stringify(error.data, null, 2));
+        }
+
+        return false;
+    }
+}
+
+/**
+ * Get mentions from Twitter API
+ * NOTE: This function does NOT fetch parent tweet videos to save API calls.
+ * Video fetching should be done on-demand AFTER validating the mention is a valid dubbing request.
+ * Use fetchVideoForMention() for on-demand video fetching.
+ *
+ * @param sinceId Optional tweet ID to only fetch mentions newer than this
+ * @param maxResults Maximum number of results to return (default 10, max 100)
+ * @returns Array of mention data (without video URLs - fetch separately if needed)
+ */
+export async function fetchMentions(sinceId?: string, maxResults: number = 10): Promise<MentionData[]> {
     logger.info('[🐦 Mentions] Fetching mentions from Twitter API...');
 
     // Retry loop for rate limiting
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
         try {
             // Check if we're in a known rate limit window
-            if (rateLimitResetTime && Date.now() < rateLimitResetTime) {
-                const waitUntilReset = rateLimitResetTime - Date.now();
-                const waitMinutes = Math.ceil(waitUntilReset / 60000);
-                logger.warn(`[🐦 Mentions] ⚠️ Known rate limit active. Waiting ${waitMinutes}m until reset...`);
-                await sleep(waitUntilReset + 5000); // Add 5s buffer
-                rateLimitResetTime = null;
+            if (rateLimitResetTime) {
+                if (Date.now() < rateLimitResetTime) {
+                    // Still rate limited - wait
+                    const waitUntilReset = rateLimitResetTime - Date.now();
+                    const waitMinutes = Math.ceil(waitUntilReset / 60000);
+                    logger.warn(`[🐦 Mentions] ⚠️ Known rate limit active. Waiting ${waitMinutes}m until reset...`);
+                    await sleep(waitUntilReset + 5000); // Add 5s buffer
+                    rateLimitResetTime = null;
+                } else {
+                    // Reset time has passed - clear it and proceed
+                    logger.info(`[🐦 Mentions] ✅ Rate limit reset time has passed, clearing and proceeding...`);
+                    rateLimitResetTime = null;
+                }
             }
 
             // Rate limit protection
@@ -97,13 +247,17 @@ export async function fetchMentions(sinceId?: string, skipVideoFetch: boolean = 
             logger.info(`[🐦 Mentions] Fetching mentions for @${me.data.username} (ID: ${me.data.id})`);
 
             // Build query parameters - include media fields and referenced tweets
+            // Clamp maxResults between 5 and 100
+            const clampedMaxResults = Math.max(5, Math.min(maxResults, 100));
             const params: any = {
-                max_results: 100, // Maximum allowed
+                max_results: clampedMaxResults,
                 'tweet.fields': 'created_at,author_id,conversation_id,attachments,referenced_tweets',
                 'user.fields': 'username',
                 expansions: 'author_id,attachments.media_keys,referenced_tweets.id',
                 'media.fields': 'type,url,variants,duration_ms',
             };
+
+            logger.info(`[🐦 Mentions] Requesting up to ${clampedMaxResults} mentions...`);
 
             if (sinceId) {
                 params.since_id = sinceId;
@@ -112,11 +266,40 @@ export async function fetchMentions(sinceId?: string, skipVideoFetch: boolean = 
 
             // Fetch mentions timeline
             logger.info(`[🐦 Mentions] Requesting mentions (attempt ${attempt + 1}/${MAX_RETRIES + 1})...`);
+            const fetchStartTime = Date.now();
             const mentionsTimeline = await rwClient.v2.userMentionTimeline(me.data.id, params);
+            const fetchDuration = Date.now() - fetchStartTime;
 
             lastPollTime = Date.now();
 
+            // Log verbose response info
+            logger.info(`[🐦 Mentions] ✅ Mentions API response received (${fetchDuration}ms)`);
+            logger.debug(`[🐦 Mentions] Response meta:`, JSON.stringify(mentionsTimeline.meta, null, 2));
+
+            // Check for rate limit headers in the response
+            // Reference: https://docs.x.com/x-api/fundamentals/rate-limits
+            if (mentionsTimeline.rateLimit) {
+                logger.info(`[🐦 Mentions] ========================================`);
+                logger.info(`[🐦 Mentions] 📊 HTTP Rate Limit Headers:`);
+                logger.info(`[🐦 Mentions] ========================================`);
+                logger.info(`[🐦 Mentions] x-rate-limit-limit: ${mentionsTimeline.rateLimit.limit} (rate limit ceiling for endpoint)`);
+                logger.info(`[🐦 Mentions] x-rate-limit-remaining: ${mentionsTimeline.rateLimit.remaining} (remaining requests for 15-min window)`);
+                logger.info(`[🐦 Mentions] x-rate-limit-reset: ${mentionsTimeline.rateLimit.reset} (UTC epoch seconds)`);
+
+                const resetTime = new Date(mentionsTimeline.rateLimit.reset * 1000);
+                const resetMinutes = Math.ceil((mentionsTimeline.rateLimit.reset * 1000 - Date.now()) / 60000);
+                logger.info(`[🐦 Mentions] Reset time: ${resetTime.toISOString()} (${resetMinutes} minutes)`);
+                logger.info(`[🐦 Mentions] ========================================`);
+
+                // Warn if running low on rate limit
+                if (mentionsTimeline.rateLimit.remaining < 5) {
+                    logger.warn(`[🐦 Mentions] ⚠️ Rate limit running low! Only ${mentionsTimeline.rateLimit.remaining} requests remaining`);
+                }
+            }
+
         // Process mentions
+        // NOTE: We do NOT fetch videos here to save API calls and rate limits
+        // Video fetching is done on-demand using fetchVideoForMention() after validation
         const mentions: MentionData[] = [];
 
         for (const tweet of mentionsTimeline.data.data || []) {
@@ -124,138 +307,7 @@ export async function fetchMentions(sinceId?: string, skipVideoFetch: boolean = 
             const author = mentionsTimeline.data.includes?.users?.find(u => u.id === tweet.author_id);
             const username = author?.username || 'unknown';
 
-            // Check for video attachments in parent tweet (referenced tweet)
-            let hasVideo = false;
-            let videoUrl: string | undefined;
-            let videoVariants: Array<{url: string; bitrate?: number; content_type: string}> | undefined;
-            let parentTweetId: string | undefined;
-
-            // If this is a reply, check the parent tweet for video
-            if (tweet.referenced_tweets && tweet.referenced_tweets.length > 0) {
-                const parentRef = tweet.referenced_tweets.find((ref: any) => ref.type === 'replied_to');
-                if (parentRef) {
-                    parentTweetId = parentRef.id;
-                    const parentTweet = mentionsTimeline.data.includes?.tweets?.find((t: any) => t.id === parentRef.id);
-
-                    // Check if parent tweet has media keys
-                    if (parentTweet?.attachments?.media_keys) {
-                        // Try to find media in the includes first
-                        if (mentionsTimeline.data.includes?.media) {
-                            for (const mediaKey of parentTweet.attachments.media_keys) {
-                                const media = mentionsTimeline.data.includes.media.find((m: any) => m.media_key === mediaKey);
-                                if (media && media.type === 'video') {
-                                    hasVideo = true;
-                                    videoVariants = media.variants || [];
-
-                                    // Get highest bitrate video variant
-                                    if (videoVariants.length > 0) {
-                                        const bestVariant = videoVariants
-                                            .filter(v => v.content_type === 'video/mp4')
-                                            .sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0))[0];
-
-                                        if (bestVariant) {
-                                            videoUrl = bestVariant.url;
-                                            logger.info(`[🐦 Mentions] Found video in parent tweet ${parentRef.id}: ${videoUrl}`);
-                                        }
-                                    }
-                                    break;
-                                }
-                            }
-                        }
-
-                        // FALLBACK: If no video found and we're not skipping video fetch,
-                        // fetch the parent tweet separately to get video (with caching)
-                        if (!hasVideo && !skipVideoFetch) {
-                        // Check cache first
-                        const cached = parentTweetVideoCache.get(parentRef.id);
-                        const now = Date.now();
-
-                        if (cached && (now - cached.timestamp) < CACHE_TTL_MS) {
-                            // Use cached data
-                            hasVideo = !!cached.videoUrl;
-                            videoUrl = cached.videoUrl;
-                            videoVariants = cached.videoVariants;
-                            logger.debug(`[🐦 Mentions] Using cached video data for parent tweet ${parentRef.id}`);
-                        } else {
-                            // Fetch from API
-                            logger.info(`[🐦 Mentions] Parent tweet ${parentRef.id} has media but not included in response. Fetching separately...`);
-                            try {
-                                const parentTweetData = await rwClient.v2.singleTweet(parentRef.id, {
-                                    'tweet.fields': 'attachments',
-                                    expansions: 'attachments.media_keys',
-                                    'media.fields': 'type,url,variants,duration_ms'
-                                });
-
-                                if (parentTweetData.includes?.media && parentTweetData.includes.media.length > 0) {
-                                    for (const media of parentTweetData.includes.media) {
-                                        if (media.type === 'video') {
-                                            hasVideo = true;
-                                            videoVariants = media.variants || [];
-
-                                            // Get highest bitrate video variant
-                                            if (videoVariants.length > 0) {
-                                                const bestVariant = videoVariants
-                                                    .filter((v: any) => v.content_type === 'video/mp4')
-                                                    .sort((a: any, b: any) => (b.bitrate || 0) - (a.bitrate || 0))[0];
-
-                                                if (bestVariant) {
-                                                    videoUrl = bestVariant.url;
-                                                    logger.info(`[🐦 Mentions] ✅ Fetched video from parent tweet ${parentRef.id}: ${videoUrl}`);
-                                                }
-                                            }
-                                            break;
-                                        }
-                                    }
-                                }
-
-                                // Cache the result (even if no video found)
-                                parentTweetVideoCache.set(parentRef.id, {
-                                    videoUrl,
-                                    videoVariants,
-                                    timestamp: now
-                                });
-
-                                // Add small delay to avoid rate limits
-                                await new Promise(resolve => setTimeout(resolve, 100));
-
-                            } catch (fetchError: any) {
-                                // Check if it's a rate limit error
-                                if (fetchError.code === 429) {
-                                    logger.warn(`[🐦 Mentions] Rate limited fetching parent tweet ${parentRef.id}. Will retry later.`);
-                                } else {
-                                    logger.error(`[🐦 Mentions] Failed to fetch parent tweet ${parentRef.id}:`, fetchError);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            }
-
-            // If no parent video, check mention tweet itself
-            if (!hasVideo && tweet.attachments?.media_keys && mentionsTimeline.data.includes?.media) {
-                for (const mediaKey of tweet.attachments.media_keys) {
-                    const media = mentionsTimeline.data.includes.media.find((m: any) => m.media_key === mediaKey);
-                    if (media && media.type === 'video') {
-                        hasVideo = true;
-                        videoVariants = media.variants || [];
-
-                        // Get highest bitrate video variant
-                        if (videoVariants.length > 0) {
-                            const bestVariant = videoVariants
-                                .filter(v => v.content_type === 'video/mp4')
-                                .sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0))[0];
-
-                            if (bestVariant) {
-                                videoUrl = bestVariant.url;
-                                logger.info(`[🐦 Mentions] Found video in mention tweet ${tweet.id}: ${videoUrl}`);
-                            }
-                        }
-                        break;
-                    }
-                }
-            }
-
+            // Build mention data WITHOUT video info (fetch on-demand later)
             mentions.push({
                 tweetId: tweet.id,
                 tweetUrl: `https://twitter.com/${username}/status/${tweet.id}`,
@@ -263,9 +315,9 @@ export async function fetchMentions(sinceId?: string, skipVideoFetch: boolean = 
                 text: tweet.text,
                 createdAt: tweet.created_at ? new Date(tweet.created_at) : new Date(),
                 authorId: tweet.author_id || '',
-                hasVideo,
-                videoUrl,
-                videoVariants,
+                hasVideo: false, // Will be determined on-demand
+                videoUrl: undefined, // Will be fetched on-demand if needed
+                videoVariants: undefined, // Will be fetched on-demand if needed
             });
         }
 
@@ -282,7 +334,13 @@ export async function fetchMentions(sinceId?: string, skipVideoFetch: boolean = 
 
             // Handle rate limiting with exponential backoff
             if (error.code === 429) {
-                logger.error(`[🐦 Mentions] 🚨 RATE LIMIT (429) - Attempt ${attempt + 1}/${MAX_RETRIES + 1}`);
+                logger.error(`[🐦 Mentions] ========================================`);
+                logger.error(`[🐦 Mentions] 🚨 RATE LIMIT ERROR (429) DETECTED`);
+                logger.error(`[🐦 Mentions] Attempt: ${attempt + 1}/${MAX_RETRIES + 1}`);
+                logger.error(`[🐦 Mentions] ========================================`);
+
+                // Log full error details for debugging
+                logger.debug(`[🐦 Mentions] Full error object:`, JSON.stringify(error, null, 2));
 
                 // Try to get reset time from headers
                 let resetWaitTime: number | null = null;
@@ -292,37 +350,65 @@ export async function fetchMentions(sinceId?: string, skipVideoFetch: boolean = 
                     const resetTime = new Date(error.rateLimit.reset * 1000);
                     resetWaitTime = resetTime.getTime() - Date.now();
                     const waitMinutes = Math.ceil(resetWaitTime / 60000);
-                    logger.error(`[🐦 Mentions] 📅 Rate limit resets at: ${resetTime.toISOString()} (in ~${waitMinutes} min)`);
+
+                    logger.error(`[🐦 Mentions] ========================================`);
+                    logger.error(`[🐦 Mentions] 📊 HTTP Rate Limit Headers (Error 429):`);
+                    logger.error(`[🐦 Mentions] ========================================`);
+                    logger.error(`[🐦 Mentions] x-rate-limit-limit: ${error.rateLimit.limit} (rate limit ceiling for endpoint)`);
+                    logger.error(`[🐦 Mentions] x-rate-limit-remaining: ${error.rateLimit.remaining} (remaining requests for 15-min window)`);
+                    logger.error(`[🐦 Mentions] x-rate-limit-reset: ${error.rateLimit.reset} (UTC epoch seconds)`);
+                    logger.error(`[🐦 Mentions] Reset time: ${resetTime.toISOString()} (${waitMinutes} minutes)`);
+                    logger.error(`[🐦 Mentions] ========================================`);
 
                     rateLimitResetTime = resetTime.getTime();
-                    logger.info(`[🐦 Mentions] 💾 Saved rate limit reset time globally`);
+                    logger.info(`[🐦 Mentions] 💾 Stored rate limit reset time globally for future requests`);
 
                     if (resetWaitTime > 0 && resetWaitTime <= MAX_RETRY_DELAY_MS) {
                         useResetTime = true;
                     }
+                } else {
+                    logger.warn(`[🐦 Mentions] ⚠️ No rate limit info in error response, using exponential backoff`);
                 }
 
                 if (isLastAttempt) {
-                    logger.error(`[🐦 Mentions] ❌ Max retries reached. Giving up.`);
+                    logger.error(`[🐦 Mentions] ========================================`);
+                    logger.error(`[🐦 Mentions] ❌ MAX RETRIES REACHED - GIVING UP`);
+                    logger.error(`[🐦 Mentions] This is normal if rate limits persist.`);
+                    logger.error(`[🐦 Mentions] Will retry on next polling interval.`);
+                    logger.error(`[🐦 Mentions] ========================================`);
                     return [];
                 }
 
                 // Choose delay strategy
                 const backoffDelay = useResetTime && resetWaitTime ? resetWaitTime : getExponentialBackoffDelay(attempt);
-                const delaySource = useResetTime ? "Twitter reset time" : "exponential backoff";
+                const delaySource = useResetTime ? "Twitter API reset time" : "exponential backoff";
                 const backoffMinutes = Math.floor(backoffDelay / 60000);
                 const backoffSeconds = Math.round((backoffDelay % 60000) / 1000);
 
-                logger.info(`[🐦 Mentions] ⏳ Retrying in ${backoffMinutes}m ${backoffSeconds}s using ${delaySource}...`);
+                logger.info(`[🐦 Mentions] ⏳ Strategy: ${delaySource}`);
+                logger.info(`[🐦 Mentions] ⏳ Waiting ${backoffMinutes}m ${backoffSeconds}s before retry ${attempt + 2}/${MAX_RETRIES + 1}...`);
                 await sleep(backoffDelay);
+                logger.info(`[🐦 Mentions] ⏭️  Wait complete, retrying now...`);
                 continue; // Retry
 
             } else {
                 // Non-rate-limit error - log and return empty
-                logger.error('[🐦 Mentions] ❌ Error fetching mentions:', error);
+                logger.error('[🐦 Mentions] ========================================');
+                logger.error('[🐦 Mentions] ❌ ERROR FETCHING MENTIONS');
+                logger.error('[🐦 Mentions] ========================================');
+                logger.error('[🐦 Mentions] Error details:', error);
+
                 if (error.code) {
-                    logger.error(`[🐦 Mentions] Twitter Error Code: ${error.code}, Message: ${error.message}`);
+                    logger.error(`[🐦 Mentions] Error Code: ${error.code}`);
                 }
+                if (error.message) {
+                    logger.error(`[🐦 Mentions] Error Message: ${error.message}`);
+                }
+                if (error.data) {
+                    logger.error(`[🐦 Mentions] API Response Data:`, JSON.stringify(error.data, null, 2));
+                }
+
+                logger.error('[🐦 Mentions] Returning empty results to avoid crash');
                 return [];
             }
         }
