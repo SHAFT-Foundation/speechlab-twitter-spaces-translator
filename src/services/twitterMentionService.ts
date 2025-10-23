@@ -74,9 +74,11 @@ export async function testTwitterApiConnection(): Promise<boolean> {
 
         // Test 1: Get authenticated user info
         logger.info('[🐦 API Test] Test 1: Fetching authenticated user info...');
+        logger.info('[🐦 API Call] 🔵 Calling Twitter API: GET /2/users/me');
         const startTime = Date.now();
         const me = await rwClient.v2.me();
         const elapsed = Date.now() - startTime;
+        logger.info(`[🐦 API Call] ✅ Response received from /2/users/me (${elapsed}ms)`);
 
         logger.info('[🐦 API Test] ✅ Successfully authenticated!');
         logger.info('[🐦 API Test] Response time: ' + elapsed + 'ms');
@@ -88,6 +90,7 @@ export async function testTwitterApiConnection(): Promise<boolean> {
 
         // Test 2: Try a simple mentions request to verify access
         logger.info('[🐦 API Test] Test 2: Testing mentions endpoint access...');
+        logger.info(`[🐦 API Call] 🔵 Calling Twitter API: GET /2/users/${me.data.id}/mentions?max_results=5`);
         const testStart = Date.now();
         try {
             const testMentions = await rwClient.v2.userMentionTimeline(me.data.id, {
@@ -95,6 +98,7 @@ export async function testTwitterApiConnection(): Promise<boolean> {
                 'tweet.fields': 'created_at'
             });
             const testElapsed = Date.now() - testStart;
+            logger.info(`[🐦 API Call] ✅ Response received from /2/users/${me.data.id}/mentions (${testElapsed}ms)`);
 
             logger.info('[🐦 API Test] ✅ Mentions endpoint accessible!');
             logger.info('[🐦 API Test] Response time: ' + testElapsed + 'ms');
@@ -243,7 +247,9 @@ export async function fetchMentions(sinceId?: string, maxResults: number = 10): 
             }
 
             // Get authenticated user info to fetch their mentions
+            logger.info(`[🐦 API Call] 🔵 Calling Twitter API: GET /2/users/me`);
             const me = await rwClient.v2.me();
+            logger.info(`[🐦 API Call] ✅ Response received from /2/users/me`);
             logger.info(`[🐦 Mentions] Fetching mentions for @${me.data.username} (ID: ${me.data.id})`);
 
             // Build query parameters - include media fields and referenced tweets
@@ -266,9 +272,12 @@ export async function fetchMentions(sinceId?: string, maxResults: number = 10): 
 
             // Fetch mentions timeline
             logger.info(`[🐦 Mentions] Requesting mentions (attempt ${attempt + 1}/${MAX_RETRIES + 1})...`);
+            logger.info(`[🐦 API Call] 🔵 Calling Twitter API: GET /2/users/${me.data.id}/mentions`);
+            logger.info(`[🐦 API Call] Parameters: ${JSON.stringify(params)}`);
             const fetchStartTime = Date.now();
             const mentionsTimeline = await rwClient.v2.userMentionTimeline(me.data.id, params);
             const fetchDuration = Date.now() - fetchStartTime;
+            logger.info(`[🐦 API Call] ✅ Response received from /2/users/${me.data.id}/mentions (${fetchDuration}ms)`);
 
             lastPollTime = Date.now();
 
@@ -340,7 +349,9 @@ export async function fetchMentions(sinceId?: string, maxResults: number = 10): 
                 logger.error(`[🐦 Mentions] ========================================`);
 
                 // Log full error details for debugging
-                logger.debug(`[🐦 Mentions] Full error object:`, JSON.stringify(error, null, 2));
+                logger.error(`[🐦 Mentions] Full error object:`, JSON.stringify(error, null, 2));
+                logger.error(`[🐦 Mentions] Error data:`, JSON.stringify(error.data, null, 2));
+                logger.error(`[🐦 Mentions] Error response body:`, error.data?.detail || error.data?.title || 'No detail available');
 
                 // Try to get reset time from headers
                 let resetWaitTime: number | null = null;
@@ -360,11 +371,23 @@ export async function fetchMentions(sinceId?: string, maxResults: number = 10): 
                     logger.error(`[🐦 Mentions] Reset time: ${resetTime.toISOString()} (${waitMinutes} minutes)`);
                     logger.error(`[🐦 Mentions] ========================================`);
 
-                    rateLimitResetTime = resetTime.getTime();
-                    logger.info(`[🐦 Mentions] 💾 Stored rate limit reset time globally for future requests`);
+                    // CRITICAL: Check if this is a FALSE 429 error
+                    // Sometimes Twitter returns 429 even when remaining > 0
+                    if (error.rateLimit.remaining > 0) {
+                        logger.warn(`[🐦 Mentions] ⚠️⚠️⚠️ FALSE RATE LIMIT DETECTED! ⚠️⚠️⚠️`);
+                        logger.warn(`[🐦 Mentions] Remaining requests: ${error.rateLimit.remaining} (should be 0 if truly rate limited)`);
+                        logger.warn(`[🐦 Mentions] This appears to be a Twitter API glitch or different limit being enforced`);
+                        logger.warn(`[🐦 Mentions] Will retry with shorter delay instead of waiting full reset time`);
 
-                    if (resetWaitTime > 0 && resetWaitTime <= MAX_RETRY_DELAY_MS) {
-                        useResetTime = true;
+                        // Use short retry delay for false 429s instead of waiting full reset time
+                        useResetTime = false;
+                    } else {
+                        rateLimitResetTime = resetTime.getTime();
+                        logger.info(`[🐦 Mentions] 💾 Stored rate limit reset time globally for future requests`);
+
+                        if (resetWaitTime > 0 && resetWaitTime <= MAX_RETRY_DELAY_MS) {
+                            useResetTime = true;
+                        }
                     }
                 } else {
                     logger.warn(`[🐦 Mentions] ⚠️ No rate limit info in error response, using exponential backoff`);
@@ -380,8 +403,21 @@ export async function fetchMentions(sinceId?: string, maxResults: number = 10): 
                 }
 
                 // Choose delay strategy
-                const backoffDelay = useResetTime && resetWaitTime ? resetWaitTime : getExponentialBackoffDelay(attempt);
-                const delaySource = useResetTime ? "Twitter API reset time" : "exponential backoff";
+                let backoffDelay: number;
+                let delaySource: string;
+
+                // For false 429s (remaining > 0), use short retry delay
+                if (error.rateLimit && error.rateLimit.remaining > 0) {
+                    backoffDelay = 5000; // 5 seconds for false 429s
+                    delaySource = "short retry (false 429)";
+                } else if (useResetTime && resetWaitTime) {
+                    backoffDelay = resetWaitTime;
+                    delaySource = "Twitter API reset time";
+                } else {
+                    backoffDelay = getExponentialBackoffDelay(attempt);
+                    delaySource = "exponential backoff";
+                }
+
                 const backoffMinutes = Math.floor(backoffDelay / 60000);
                 const backoffSeconds = Math.round((backoffDelay % 60000) / 1000);
 
