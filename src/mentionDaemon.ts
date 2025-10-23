@@ -188,7 +188,8 @@ async function loadProcessedMentions(): Promise<Set<string>> {
 }
 
 /**
- * Saves a mention ID to the processed mentions file.
+ * Saves a mention ID to Supabase (single source of truth)
+ * NOTE: No longer saves to JSON file - using Supabase only
  */
 async function markMentionAsProcessed(mentionId: string, processedMentions: Set<string>): Promise<void> {
     if (processedMentions.has(mentionId)) {
@@ -197,35 +198,9 @@ async function markMentionAsProcessed(mentionId: string, processedMentions: Set<
     }
 
     processedMentions.add(mentionId);
-    try {
-        // Load the current data first
-        await fs.access(PROCESSED_MENTIONS_PATH);
-        const data = await fs.readFile(PROCESSED_MENTIONS_PATH, 'utf-8');
-        let mentionData: ProcessedMentionData;
-        
-        try {
-            mentionData = JSON.parse(data);
-            // Ensure proper structure
-            if (!mentionData.mentions) {
-                mentionData = { mentions: [], projects: {} };
-            }
-        } catch (parseError) {
-            mentionData = { mentions: [], projects: {} };
-        }
-        
-        // Add the new mention ID to the array if not already there
-        if (!mentionData.mentions.includes(mentionId)) {
-            mentionData.mentions.push(mentionId);
-        }
-        
-        await fs.writeFile(PROCESSED_MENTIONS_PATH, JSON.stringify(mentionData, null, 2));
-        logger.debug(`[😈 Daemon] Marked mention ${mentionId} as processed and saved to file.`);
-    } catch (error) {
-        logger.error(`[😈 Daemon] Error saving processed mention ${mentionId} to ${PROCESSED_MENTIONS_PATH}:`, error);
-        // Remove from the set in memory if save fails to allow retry on next poll
-        processedMentions.delete(mentionId);
-        logger.warn(`[😈 Daemon] Removed ${mentionId} from in-memory set due to save failure.`);
-    }
+    logger.debug(`[😈 Daemon] Marked mention ${mentionId} as processed in memory (Supabase is source of truth).`);
+    // Note: Mention is already being tracked in Supabase via upsertMention() and updateMentionStatus()
+    // No need for separate persistence here
 }
 
 /**
@@ -1512,9 +1487,11 @@ async function main() {
     process.on('SIGTERM', () => shutdown('SIGTERM'));
 
     try {
-        processedMentions = await loadProcessedMentions();
-        
-        // Log active projects at startup
+        // Note: processedMentions already loaded from Supabase above (line 1476-1480)
+        // Using Supabase as single source of truth - no JSON file needed
+        logger.info('[😈 Daemon] Using Supabase as single source of truth for processed mentions');
+
+        // Log active projects at startup (still uses JSON temporarily for project status)
         logger.info('[😈 Daemon] Logging active projects at startup:');
         await logActiveProjects();
         
