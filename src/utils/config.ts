@@ -42,6 +42,8 @@ interface EnvConfig {
     // Video Processing Flags
     PROCESS_VIDEO_IN_MENTIONS: boolean;
     ATTACH_VIDEO_TO_REPLY: boolean;
+    // Mention polling interval
+    MENTION_POLL_INTERVAL_MS: number;
 }
 
 function validateConfig(env: NodeJS.ProcessEnv): EnvConfig {
@@ -91,6 +93,13 @@ function validateConfig(env: NodeJS.ProcessEnv): EnvConfig {
     // Default ATTACH_VIDEO_TO_REPLY to false if not set or invalid
     const attachVideoToReply = env.ATTACH_VIDEO_TO_REPLY ? env.ATTACH_VIDEO_TO_REPLY.toLowerCase() === 'true' : false;
 
+    // Parse MENTION_POLL_INTERVAL_MS with default of 5 minutes (300000ms)
+    const mentionPollIntervalMs = parseInt(env.MENTION_POLL_INTERVAL_MS || '300000', 10);
+    if (isNaN(mentionPollIntervalMs)) {
+        console.error(`❌ Invalid non-numeric value for MENTION_POLL_INTERVAL_MS: ${env.MENTION_POLL_INTERVAL_MS}`);
+        process.exit(1);
+    }
+
     return {
         SPEECHLAB_EMAIL: env.SPEECHLAB_EMAIL!,
         SPEECHLAB_PASSWORD: env.SPEECHLAB_PASSWORD!,
@@ -123,6 +132,8 @@ function validateConfig(env: NodeJS.ProcessEnv): EnvConfig {
         // Video processing flags
         PROCESS_VIDEO_IN_MENTIONS: processVideoInMentions,
         ATTACH_VIDEO_TO_REPLY: attachVideoToReply,
+        // Mention polling
+        MENTION_POLL_INTERVAL_MS: mentionPollIntervalMs,
     };
 }
 

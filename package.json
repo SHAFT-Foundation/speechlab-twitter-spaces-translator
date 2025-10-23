@@ -8,6 +8,7 @@
     "start": "node dist/main.js",
     "dev": "ts-node src/main.ts",
     "start:daemon": "tsx src/mentionDaemon.ts",
+    "start:daemon:api": "tsx src/mentionDaemonApi.ts",
     "login:twitter": "tsx src/manualTwitterLogin.ts",
     "save:cookies": "tsx src/saveCookies.ts",
     "save:cookies:simple": "tsx src/saveToCookiesFile.ts",
