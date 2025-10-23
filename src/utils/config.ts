@@ -44,6 +44,8 @@ interface EnvConfig {
     ATTACH_VIDEO_TO_REPLY: boolean;
     // Mention polling interval
     MENTION_POLL_INTERVAL_MS: number;
+    // Maximum mentions to fetch per poll
+    MAX_MENTIONS_PER_POLL: number;
 }
 
 function validateConfig(env: NodeJS.ProcessEnv): EnvConfig {
@@ -100,6 +102,13 @@ function validateConfig(env: NodeJS.ProcessEnv): EnvConfig {
         process.exit(1);
     }
 
+    // Parse MAX_MENTIONS_PER_POLL with default of 10, clamp between 5 and 100
+    const maxMentionsPerPoll = Math.max(5, Math.min(parseInt(env.MAX_MENTIONS_PER_POLL || '10', 10), 100));
+    if (isNaN(maxMentionsPerPoll)) {
+        console.error(`❌ Invalid non-numeric value for MAX_MENTIONS_PER_POLL: ${env.MAX_MENTIONS_PER_POLL}`);
+        process.exit(1);
+    }
+
     return {
         SPEECHLAB_EMAIL: env.SPEECHLAB_EMAIL!,
         SPEECHLAB_PASSWORD: env.SPEECHLAB_PASSWORD!,
@@ -134,6 +143,7 @@ function validateConfig(env: NodeJS.ProcessEnv): EnvConfig {
         ATTACH_VIDEO_TO_REPLY: attachVideoToReply,
         // Mention polling
         MENTION_POLL_INTERVAL_MS: mentionPollIntervalMs,
+        MAX_MENTIONS_PER_POLL: maxMentionsPerPoll,
     };
 }
 

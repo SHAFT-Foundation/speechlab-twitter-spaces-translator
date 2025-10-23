@@ -1514,9 +1514,11 @@ async function main() {
         const pollMentions = async () => {
             logger.info('[😈 Daemon Polling] Polling for new mentions...');
             try {
-                // Fetch only 10 most recent mentions to avoid rate limiting
+                // Fetch up to MAX_MENTIONS_PER_POLL mentions (default 100)
                 // Videos are NOT fetched here - they'll be fetched on-demand for valid dubbing requests only
-                const apiMentions = await fetchMentions(undefined, 10);
+                // Since we filter invalid mentions, fetching more gives us more valid dubbing requests
+                const maxMentions = config.MAX_MENTIONS_PER_POLL || 100;
+                const apiMentions = await fetchMentions(undefined, maxMentions);
                 // Convert MentionData to MentionInfo format
                 const mentions: MentionInfo[] = apiMentions
                     .filter(m => !processedMentions.has(m.tweetId))
@@ -1647,8 +1649,9 @@ async function main() {
             try {
                 // Fetch mentions once to find what's currently available
                 // Videos are NOT fetched here - they'll be fetched on-demand for valid dubbing requests only
-                // Limit to 10 most recent to avoid overwhelming the system
-                const apiMentions = await fetchMentions(undefined, 10);
+                // Fetch up to MAX_MENTIONS_PER_POLL (default 100) to maximize valid requests
+                const maxMentions = config.MAX_MENTIONS_PER_POLL || 100;
+                const apiMentions = await fetchMentions(undefined, maxMentions);
                 const initialMentions: MentionInfo[] = apiMentions
                     .filter(m => !processedMentions.has(m.tweetId))
                     .map(m => ({
