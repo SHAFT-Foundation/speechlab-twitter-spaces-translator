@@ -566,47 +566,53 @@ export async function uploadMedia(mediaPath: string): Promise<string | null> {
     }
 
     // Retry loop with exponential backoff
-    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-        try {
-            logger.debug(`[🐦 Upload] Uploading with mime type: ${mimeType} (attempt ${attempt + 1}/${MAX_RETRIES + 1})`);
+    try {
+        for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+            try {
+                logger.debug(`[🐦 Upload] Uploading with mime type: ${mimeType} (attempt ${attempt + 1}/${MAX_RETRIES + 1})`);
 
-            // Upload using v1.1 API
-            const mediaId = await twitterClient.v1.uploadMedia(mediaPath, { mimeType });
+                // Upload using v1.1 API
+                const mediaId = await twitterClient.v1.uploadMedia(mediaPath, { mimeType });
 
-            logger.info(`[🐦 Upload] ✅ Media uploaded successfully. Media ID: ${mediaId}`);
-            return mediaId;
+                logger.info(`[🐦 Upload] ✅ Media uploaded successfully. Media ID: ${mediaId}`);
+                return mediaId;
 
-        } catch (error: any) {
-            const isLastAttempt = attempt === MAX_RETRIES;
-            const isNetworkError = !error.code || error.type === 'request';
+            } catch (error: any) {
+                const isLastAttempt = attempt === MAX_RETRIES;
+                const isNetworkError = !error.code || error.type === 'request';
 
-            // Retry on network errors
-            if (isNetworkError && !isLastAttempt) {
-                const retryDelay = 5000; // 5 seconds for network errors
-                logger.warn(`[🐦 Upload] ⚠️ Network error on attempt ${attempt + 1}/${MAX_RETRIES + 1}. Retrying in ${retryDelay/1000}s...`);
-                await sleep(retryDelay);
-                continue;
+                // Retry on network errors
+                if (isNetworkError && !isLastAttempt) {
+                    const retryDelay = 5000; // 5 seconds for network errors
+                    logger.warn(`[🐦 Upload] ⚠️ Network error on attempt ${attempt + 1}/${MAX_RETRIES + 1}. Retrying in ${retryDelay/1000}s...`);
+                    await sleep(retryDelay);
+                    continue;
+                }
+
+                // Retry on rate limits with exponential backoff
+                if (error.code === 429 && !isLastAttempt) {
+                    logger.error(`[🐦 Upload] 🚨 RATE LIMIT (429) - Attempt ${attempt + 1}/${MAX_RETRIES + 1}`);
+
+                    const backoffDelay = getExponentialBackoffDelay(attempt);
+                    const backoffMinutes = Math.floor(backoffDelay / 60000);
+                    const backoffSeconds = Math.round((backoffDelay % 60000) / 1000);
+                    logger.info(`[🐦 Upload] ⏳ Retrying in ${backoffMinutes}m ${backoffSeconds}s...`);
+                    await sleep(backoffDelay);
+                    continue;
+                }
+
+                // Last attempt or non-retryable error
+                logger.error(`[🐦 Upload] ❌ Media upload failed (attempt ${attempt + 1}/${MAX_RETRIES + 1}):`, error);
+                if (error.code) {
+                    logger.error(`[🐦 Upload] Twitter Error Code: ${error.code}, Message: ${error.message}`);
+                }
+                return null;
             }
-
-            // Retry on rate limits with exponential backoff
-            if (error.code === 429 && !isLastAttempt) {
-                logger.error(`[🐦 Upload] 🚨 RATE LIMIT (429) - Attempt ${attempt + 1}/${MAX_RETRIES + 1}`);
-
-                const backoffDelay = getExponentialBackoffDelay(attempt);
-                const backoffMinutes = Math.floor(backoffDelay / 60000);
-                const backoffSeconds = Math.round((backoffDelay % 60000) / 1000);
-                logger.info(`[🐦 Upload] ⏳ Retrying in ${backoffMinutes}m ${backoffSeconds}s...`);
-                await sleep(backoffDelay);
-                continue;
-            }
-
-            // Last attempt or non-retryable error
-            logger.error(`[🐦 Upload] ❌ Media upload failed (attempt ${attempt + 1}/${MAX_RETRIES + 1}):`, error);
-            if (error.code) {
-                logger.error(`[🐦 Upload] Twitter Error Code: ${error.code}, Message: ${error.message}`);
-            }
-            return null;
         }
+    } catch (error: any) {
+        // Catch any unexpected errors that escape the inner try-catch
+        logger.error(`[🐦 Upload] ❌ Unexpected error during upload:`, error);
+        return null;
     }
 
     return null;

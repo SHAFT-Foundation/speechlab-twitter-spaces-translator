@@ -102,8 +102,8 @@ function validateConfig(env: NodeJS.ProcessEnv): EnvConfig {
         process.exit(1);
     }
 
-    // Parse MAX_MENTIONS_PER_POLL with default of 10, clamp between 5 and 100
-    const maxMentionsPerPoll = Math.max(5, Math.min(parseInt(env.MAX_MENTIONS_PER_POLL || '10', 10), 100));
+    // Parse MAX_MENTIONS_PER_POLL with default of 100, clamp between 5 and 100
+    const maxMentionsPerPoll = Math.max(5, Math.min(parseInt(env.MAX_MENTIONS_PER_POLL || '100', 10), 100));
     if (isNaN(maxMentionsPerPoll)) {
         console.error(`❌ Invalid non-numeric value for MAX_MENTIONS_PER_POLL: ${env.MAX_MENTIONS_PER_POLL}`);
         process.exit(1);

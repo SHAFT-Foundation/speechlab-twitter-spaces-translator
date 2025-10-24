@@ -1151,12 +1151,12 @@ async function runInitiationQueue(): Promise<void> {
         } catch (replyError) {
             logger.error(`[🚀 Initiate Queue] Failed to post error reply:`, replyError);
         }
+    } finally {
+        // Remove from in-progress
+        inProgressMentions.delete(mentionToProcess.tweetId);
+        logger.info(`[🚀 Initiate Queue] Finished initiation work for ${mentionToProcess.tweetId}. Queue status: ${mentionQueue.length} remaining.`);
+        isInitiatingProcessing = false;
     }
-
-    // Remove from in-progress
-    inProgressMentions.delete(mentionToProcess.tweetId);
-    logger.info(`[🚀 Initiate Queue] Finished initiation work for ${mentionToProcess.tweetId}. Queue status: ${mentionQueue.length} remaining.`);
-    isInitiatingProcessing = false;
 }
 
 /**
