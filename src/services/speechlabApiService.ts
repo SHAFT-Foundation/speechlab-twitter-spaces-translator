@@ -439,18 +439,19 @@ export async function getProjectByThirdPartyID(thirdPartyID: string): Promise<Pr
  * @returns {Promise<Project | null>} The full project object if completed successfully, otherwise null
  */
 export async function waitForProjectCompletion(
-    thirdPartyID: string, 
+    thirdPartyID: string,
     maxWaitTimeMs = 60 * 60 * 1000, // 1 hour default
     checkIntervalMs = 30000 // 30 seconds default
 ): Promise<Project | null> {
-    logger.info(`[🤖 SpeechLab] Waiting for project completion: ${thirdPartyID}`);
-    logger.info(`[🤖 SpeechLab] Maximum wait time: ${maxWaitTimeMs/1000/60} minutes, Check interval: ${checkIntervalMs/1000} seconds`);
-    
-    const startTime = Date.now();
-    let pollCount = 0;
-    let lastProjectDetails: Project | null = null; // Store last retrieved details
-    
-    while (Date.now() - startTime < maxWaitTimeMs) {
+    try {
+        logger.info(`[🤖 SpeechLab] Waiting for project completion: ${thirdPartyID}`);
+        logger.info(`[🤖 SpeechLab] Maximum wait time: ${maxWaitTimeMs/1000/60} minutes, Check interval: ${checkIntervalMs/1000} seconds`);
+
+        const startTime = Date.now();
+        let pollCount = 0;
+        let lastProjectDetails: Project | null = null; // Store last retrieved details
+
+        while (Date.now() - startTime < maxWaitTimeMs) {
         pollCount++;
         const elapsedSeconds = ((Date.now() - startTime) / 1000).toFixed(1);
         
@@ -492,7 +493,11 @@ export async function waitForProjectCompletion(
         await new Promise(resolve => setTimeout(resolve, checkIntervalMs));
     }
     
-    const maxWaitMinutes = (maxWaitTimeMs/1000/60).toFixed(1);
-    logger.warn(`[🤖 SpeechLab] ⏰ Poll #${pollCount} - Maximum wait time of ${maxWaitMinutes} minutes exceeded without project completion.`);
-    return lastProjectDetails?.job?.status === "COMPLETE" ? lastProjectDetails : null; // Return last details only if complete, else null
+        const maxWaitMinutes = (maxWaitTimeMs/1000/60).toFixed(1);
+        logger.warn(`[🤖 SpeechLab] ⏰ Poll #${pollCount} - Maximum wait time of ${maxWaitMinutes} minutes exceeded without project completion.`);
+        return lastProjectDetails?.job?.status === "COMPLETE" ? lastProjectDetails : null; // Return last details only if complete, else null
+    } catch (error) {
+        logger.error(`[🤖 SpeechLab] ❌ Error while waiting for project completion:`, error);
+        return null;
+    }
 } 

@@ -60,58 +60,64 @@ function getExponentialBackoffDelay(attempt: number): number {
  * @returns {Promise<string | null>} The media_id_string if upload is successful, otherwise null.
  */
 async function uploadMedia(mediaPath: string): Promise<string | null> {
-    logger.info(`[🐦 API Upload] Starting media upload for: ${mediaPath}`);
+    try {
+        logger.info(`[🐦 API Upload] Starting media upload for: ${mediaPath}`);
 
-    if (!fs.existsSync(mediaPath)) {
-        logger.error(`[🐦 API Upload] File not found: ${mediaPath}`);
-        return null;
-    }
-
-    // Retry logic for network errors
-    const UPLOAD_MAX_RETRIES = 3;
-    const UPLOAD_RETRY_DELAY_MS = 5000; // 5 seconds
-
-    for (let attempt = 0; attempt < UPLOAD_MAX_RETRIES; attempt++) {
-        try {
-            // Determine MIME type (adjust if supporting images later)
-            const mimeType = EUploadMimeType.Mp4;
-
-            logger.debug(`[🐦 API Upload] Uploading with mime type: ${mimeType} (attempt ${attempt + 1}/${UPLOAD_MAX_RETRIES})`);
-            // Use the v1.1 client for media uploads as v2 doesn't fully support chunked video yet
-            const mediaId = await twitterClient.v1.uploadMedia(mediaPath, { mimeType });
-
-            logger.info(`[🐦 API Upload] ✅ Media uploaded successfully. Media ID: ${mediaId}`);
-            return mediaId;
-
-        } catch (error: any) {
-            const isLastAttempt = attempt === UPLOAD_MAX_RETRIES - 1;
-
-            // Check if it's a network/TLS error (no error.code means it's likely a network issue)
-            const isNetworkError = !error.code || error.type === 'request';
-
-            if (isNetworkError && !isLastAttempt) {
-                logger.warn(`[🐦 API Upload] ⚠️ Network error on attempt ${attempt + 1}/${UPLOAD_MAX_RETRIES}. Retrying in ${UPLOAD_RETRY_DELAY_MS/1000}s...`);
-                logger.debug(`[🐦 API Upload] Error details: ${error.message}`);
-                await sleep(UPLOAD_RETRY_DELAY_MS);
-                continue;
-            }
-
-            // Last attempt or non-network error - fail
-            logger.error(`[🐦 API Upload] ❌ Media upload failed (attempt ${attempt + 1}/${UPLOAD_MAX_RETRIES}):`, error);
-            // Log specific Twitter API errors if available
-            if (error.code) {
-                 logger.error(`[🐦 API Upload] Twitter Error Code: ${error.code}, Message: ${error.message}`);
-            }
-
-            if (isLastAttempt) {
-                logger.error(`[🐦 API Upload] ❌ All ${UPLOAD_MAX_RETRIES} upload attempts failed`);
-            }
-
+        if (!fs.existsSync(mediaPath)) {
+            logger.error(`[🐦 API Upload] File not found: ${mediaPath}`);
             return null;
         }
-    }
 
-    return null;
+        // Retry logic for network errors
+        const UPLOAD_MAX_RETRIES = 3;
+        const UPLOAD_RETRY_DELAY_MS = 5000; // 5 seconds
+
+        for (let attempt = 0; attempt < UPLOAD_MAX_RETRIES; attempt++) {
+            try {
+                // Determine MIME type (adjust if supporting images later)
+                const mimeType = EUploadMimeType.Mp4;
+
+                logger.debug(`[🐦 API Upload] Uploading with mime type: ${mimeType} (attempt ${attempt + 1}/${UPLOAD_MAX_RETRIES})`);
+                // Use the v1.1 client for media uploads as v2 doesn't fully support chunked video yet
+                const mediaId = await twitterClient.v1.uploadMedia(mediaPath, { mimeType });
+
+                logger.info(`[🐦 API Upload] ✅ Media uploaded successfully. Media ID: ${mediaId}`);
+                return mediaId;
+
+            } catch (error: any) {
+                const isLastAttempt = attempt === UPLOAD_MAX_RETRIES - 1;
+
+                // Check if it's a network/TLS error (no error.code means it's likely a network issue)
+                const isNetworkError = !error.code || error.type === 'request';
+
+                if (isNetworkError && !isLastAttempt) {
+                    logger.warn(`[🐦 API Upload] ⚠️ Network error on attempt ${attempt + 1}/${UPLOAD_MAX_RETRIES}. Retrying in ${UPLOAD_RETRY_DELAY_MS/1000}s...`);
+                    logger.debug(`[🐦 API Upload] Error details: ${error.message}`);
+                    await sleep(UPLOAD_RETRY_DELAY_MS);
+                    continue;
+                }
+
+                // Last attempt or non-network error - fail
+                logger.error(`[🐦 API Upload] ❌ Media upload failed (attempt ${attempt + 1}/${UPLOAD_MAX_RETRIES}):`, error);
+                // Log specific Twitter API errors if available
+                if (error.code) {
+                     logger.error(`[🐦 API Upload] Twitter Error Code: ${error.code}, Message: ${error.message}`);
+                }
+
+                if (isLastAttempt) {
+                    logger.error(`[🐦 API Upload] ❌ All ${UPLOAD_MAX_RETRIES} upload attempts failed`);
+                }
+
+                return null;
+            }
+        }
+
+        return null;
+    } catch (outerError: any) {
+        // Catch any unexpected errors that escape the inner try-catch
+        logger.error(`[🐦 API Upload] ❌ Unexpected error during upload:`, outerError);
+        return null;
+    }
 }
 
 /**
@@ -126,19 +132,25 @@ export async function postTweetReplyWithMediaApi(
     tweetIdToReplyTo: string,
     mediaPath?: string
 ): Promise<boolean> {
-    logger.info(`[🐦 API Post] Attempting to post API reply to tweet ID: ${tweetIdToReplyTo}${mediaPath ? ' with media' : ''}`);
-    logger.info(`[🐦 API Post] Full Reply Text: ${tweetText}`);
+    try {
+        logger.info(`[🐦 API Post] Attempting to post API reply to tweet ID: ${tweetIdToReplyTo}${mediaPath ? ' with media' : ''}`);
+        logger.info(`[🐦 API Post] Full Reply Text: ${tweetText}`);
 
-    let mediaId: string | null = null;
+        let mediaId: string | null = null;
 
-    // Step 1: Upload media if path is provided (no retry for media upload)
-    if (mediaPath) {
-        mediaId = await uploadMedia(mediaPath);
-        if (!mediaId) {
-            logger.error('[🐦 API Post] ❌ Failed to upload media, cannot post tweet with attachment.');
-            return false;
+        // Step 1: Upload media if path is provided (no retry for media upload)
+        if (mediaPath) {
+            try {
+                mediaId = await uploadMedia(mediaPath);
+                if (!mediaId) {
+                    logger.error('[🐦 API Post] ❌ Failed to upload media, cannot post tweet with attachment.');
+                    return false;
+                }
+            } catch (uploadError: any) {
+                logger.error('[🐦 API Post] ❌ Exception during media upload:', uploadError);
+                return false;
+            }
         }
-    }
 
     // Step 2: Construct tweet payload
     const tweetPayload: any = {
@@ -292,7 +304,11 @@ export async function postTweetReplyWithMediaApi(
         }
     }
 
-    // Should never reach here, but just in case
-    logger.error('[🐦 API Post] ❌ Unexpected: Exhausted all retries without returning.');
-    return false;
+        // Should never reach here, but just in case
+        logger.error('[🐦 API Post] ❌ Unexpected: Exhausted all retries without returning.');
+        return false;
+    } catch (outerError: any) {
+        logger.error('[🐦 API Post] ❌ Unexpected error in postTweetReplyWithMediaApi:', outerError);
+        return false;
+    }
 } 

@@ -63,6 +63,7 @@ export interface MentionData {
     tweetId: string;
     tweetUrl: string;
     username: string;
+    parentUsername?: string;
     text: string;
     createdAt: Date;
     authorId: string;
@@ -326,8 +327,8 @@ export async function fetchMentions(sinceId?: string, maxResults: number = 100):
                 max_results: clampedMaxResults,
                 'tweet.fields': 'created_at,author_id,conversation_id,attachments,referenced_tweets',
                 'user.fields': 'username',
-                expansions: 'author_id,attachments.media_keys,referenced_tweets.id',
-                'media.fields': 'type,url,variants,duration_ms',
+                expansions: 'author_id,attachments.media_keys,referenced_tweets.id,referenced_tweets.id.attachments.media_keys',
+                'media.fields': 'type,url,variants,duration_ms,media_key',
             };
 
             logger.info(`[🐦 Mentions] Requesting up to ${clampedMaxResults} mentions...`);
@@ -385,26 +386,103 @@ export async function fetchMentions(sinceId?: string, maxResults: number = 100):
             }
 
         // Process mentions
-        // NOTE: We do NOT fetch videos here to save API calls and rate limits
-        // Video fetching is done on-demand using fetchVideoForMention() after validation
+        // NOTE: Videos are extracted from parent tweets in the API response
         const mentions: MentionData[] = [];
+
+        // Debug: Log what includes we got back
+        logger.debug(`[🐦 Mentions] Includes in response:`, {
+            users: mentionsTimeline.data.includes?.users?.length || 0,
+            tweets: mentionsTimeline.data.includes?.tweets?.length || 0,
+            media: mentionsTimeline.data.includes?.media?.length || 0
+        });
 
         for (const tweet of mentionsTimeline.data.data || []) {
             // Get author username from includes
             const author = mentionsTimeline.data.includes?.users?.find(u => u.id === tweet.author_id);
             const username = author?.username || 'unknown';
 
-            // Build mention data WITHOUT video info (fetch on-demand later)
+            // Get parent tweet info if this is a reply
+            let parentUsername: string | undefined;
+            let videoUrl: string | undefined;
+            let hasVideo = false;
+
+            if (tweet.referenced_tweets && tweet.referenced_tweets.length > 0) {
+                // Find the replied-to tweet
+                const referencedTweet = tweet.referenced_tweets.find(ref => ref.type === 'replied_to');
+                if (referencedTweet && referencedTweet.id) {
+                    logger.debug(`[🐦 Mentions] Tweet ${tweet.id} references parent tweet ${referencedTweet.id}`);
+
+                    // Find the parent tweet in includes
+                    const parentTweet = mentionsTimeline.data.includes?.tweets?.find(t => t.id === referencedTweet.id);
+                    if (parentTweet) {
+                        logger.debug(`[🐦 Mentions] Found parent tweet ${referencedTweet.id} in includes`);
+                        logger.debug(`[🐦 Mentions] Parent tweet attachments:`, parentTweet.attachments);
+
+                        // Get parent author username
+                        if (parentTweet.author_id) {
+                            const parentAuthor = mentionsTimeline.data.includes?.users?.find(u => u.id === parentTweet.author_id);
+                            parentUsername = parentAuthor?.username;
+                        }
+
+                        // Extract video from parent tweet if it has media
+                        if (parentTweet.attachments?.media_keys) {
+                            logger.debug(`[🐦 Mentions] Parent tweet has ${parentTweet.attachments.media_keys.length} media keys`);
+
+                            if (mentionsTimeline.data.includes?.media) {
+                                logger.debug(`[🐦 Mentions] Total media items in response: ${mentionsTimeline.data.includes.media.length}`);
+
+                                for (const mediaKey of parentTweet.attachments.media_keys) {
+                                    logger.debug(`[🐦 Mentions] Looking for media_key: ${mediaKey}`);
+                                    const media = mentionsTimeline.data.includes.media.find(m => m.media_key === mediaKey);
+
+                                    if (media) {
+                                        logger.debug(`[🐦 Mentions] Found media for key ${mediaKey}, type: ${media.type}`);
+
+                                        if (media.type === 'video' && media.variants) {
+                                            logger.debug(`[🐦 Mentions] Video has ${media.variants.length} variants`);
+
+                                            // Get highest bitrate MP4 variant
+                                            const bestVariant = media.variants
+                                                .filter((v: any) => v.content_type === 'video/mp4')
+                                                .sort((a: any, b: any) => (b.bitrate || 0) - (a.bitrate || 0))[0];
+
+                                            if (bestVariant) {
+                                                videoUrl = bestVariant.url;
+                                                hasVideo = true;
+                                                logger.info(`[🐦 Mentions] ✅ Found video in parent tweet ${referencedTweet.id}: ${videoUrl}`);
+                                            } else {
+                                                logger.warn(`[🐦 Mentions] ⚠️ No MP4 variants found for video`);
+                                            }
+                                            break;
+                                        }
+                                    } else {
+                                        logger.warn(`[🐦 Mentions] ⚠️ Media key ${mediaKey} not found in includes.media`);
+                                    }
+                                }
+                            } else {
+                                logger.warn(`[🐦 Mentions] ⚠️ No media in includes despite parent having media_keys`);
+                            }
+                        } else {
+                            logger.debug(`[🐦 Mentions] Parent tweet has no media_keys`);
+                        }
+                    } else {
+                        logger.warn(`[🐦 Mentions] ⚠️ Parent tweet ${referencedTweet.id} NOT found in includes!`);
+                    }
+                }
+            }
+
+            // Build mention data WITH video info from parent tweet
             mentions.push({
                 tweetId: tweet.id,
                 tweetUrl: `https://twitter.com/${username}/status/${tweet.id}`,
                 username: username,
+                parentUsername: parentUsername,
                 text: tweet.text,
                 createdAt: tweet.created_at ? new Date(tweet.created_at) : new Date(),
                 authorId: tweet.author_id || '',
-                hasVideo: false, // Will be determined on-demand
-                videoUrl: undefined, // Will be fetched on-demand if needed
-                videoVariants: undefined, // Will be fetched on-demand if needed
+                hasVideo: hasVideo,
+                videoUrl: videoUrl,
+                videoVariants: undefined,
             });
         }
 
@@ -581,17 +659,61 @@ export async function uploadMedia(mediaPath: string): Promise<string | null> {
                 const isLastAttempt = attempt === MAX_RETRIES;
                 const isNetworkError = !error.code || error.type === 'request';
 
+                // Log comprehensive error details
+                logger.error(`[🐦 Upload] ========================================`);
+                logger.error(`[🐦 Upload] ❌ Upload Error (Attempt ${attempt + 1}/${MAX_RETRIES + 1})`);
+                logger.error(`[🐦 Upload] ========================================`);
+                logger.error(`[🐦 Upload] Error type: ${error.type || 'unknown'}`);
+                logger.error(`[🐦 Upload] Error code: ${error.code || 'N/A'}`);
+                logger.error(`[🐦 Upload] Error message: ${error.message || 'No message'}`);
+
+                if (error.errors) {
+                    logger.error(`[🐦 Upload] API Errors:`, JSON.stringify(error.errors, null, 2));
+                }
+
+                if (error.data) {
+                    logger.error(`[🐦 Upload] Error data:`, JSON.stringify(error.data, null, 2));
+                }
+
+                // Log network-specific details
+                if (isNetworkError) {
+                    logger.error(`[🐦 Upload] 🌐 Network Error Details:`);
+                    logger.error(`[🐦 Upload] - Error name: ${error.name || 'unknown'}`);
+                    logger.error(`[🐦 Upload] - Error type: ${error.type || 'unknown'}`);
+                    logger.error(`[🐦 Upload] - Syscall: ${error.syscall || 'N/A'}`);
+                    logger.error(`[🐦 Upload] - Error code: ${error.code || error.errno || 'N/A'}`);
+                    logger.error(`[🐦 Upload] - Host: ${error.hostname || error.address || 'N/A'}`);
+                    logger.error(`[🐦 Upload] - Port: ${error.port || 'N/A'}`);
+                }
+
+                logger.error(`[🐦 Upload] Full error stack:`, error.stack);
+                logger.error(`[🐦 Upload] ========================================`);
+
                 // Retry on network errors
                 if (isNetworkError && !isLastAttempt) {
                     const retryDelay = 5000; // 5 seconds for network errors
-                    logger.warn(`[🐦 Upload] ⚠️ Network error on attempt ${attempt + 1}/${MAX_RETRIES + 1}. Retrying in ${retryDelay/1000}s...`);
+                    logger.warn(`[🐦 Upload] ⚠️ Network error detected. Retrying in ${retryDelay/1000}s...`);
                     await sleep(retryDelay);
                     continue;
                 }
 
                 // Retry on rate limits with exponential backoff
                 if (error.code === 429 && !isLastAttempt) {
-                    logger.error(`[🐦 Upload] 🚨 RATE LIMIT (429) - Attempt ${attempt + 1}/${MAX_RETRIES + 1}`);
+                    logger.error(`[🐦 Upload] 🚨 RATE LIMIT (429)`);
+
+                    // Log rate limit headers if available
+                    if (error.rateLimit) {
+                        const resetTime = error.rateLimit.reset ? new Date(error.rateLimit.reset * 1000) : null;
+                        const waitMinutes = resetTime ? Math.ceil((resetTime.getTime() - Date.now()) / 60000) : 'unknown';
+
+                        logger.error(`[🐦 Upload] 📊 Rate Limit Headers:`);
+                        logger.error(`[🐦 Upload] x-rate-limit-limit: ${error.rateLimit.limit || 'N/A'}`);
+                        logger.error(`[🐦 Upload] x-rate-limit-remaining: ${error.rateLimit.remaining || 'N/A'}`);
+                        logger.error(`[🐦 Upload] x-rate-limit-reset: ${error.rateLimit.reset || 'N/A'}`);
+                        if (resetTime) {
+                            logger.error(`[🐦 Upload] Reset time: ${resetTime.toISOString()} (in ${waitMinutes} minutes)`);
+                        }
+                    }
 
                     const backoffDelay = getExponentialBackoffDelay(attempt);
                     const backoffMinutes = Math.floor(backoffDelay / 60000);
@@ -602,9 +724,8 @@ export async function uploadMedia(mediaPath: string): Promise<string | null> {
                 }
 
                 // Last attempt or non-retryable error
-                logger.error(`[🐦 Upload] ❌ Media upload failed (attempt ${attempt + 1}/${MAX_RETRIES + 1}):`, error);
-                if (error.code) {
-                    logger.error(`[🐦 Upload] Twitter Error Code: ${error.code}, Message: ${error.message}`);
+                if (isLastAttempt) {
+                    logger.error(`[🐦 Upload] ❌ All ${MAX_RETRIES + 1} attempts failed. Giving up.`);
                 }
                 return null;
             }
@@ -630,101 +751,137 @@ export async function postReplyWithMedia(
     replyToTweetId: string,
     mediaPath?: string
 ): Promise<boolean> {
-    logger.info(`[🐦 Reply] Posting reply to tweet ID: ${replyToTweetId}`);
-    logger.info(`[🐦 Reply] Reply text: "${tweetText}"`);
+    try {
+        logger.info(`[🐦 Reply] Posting reply to tweet ID: ${replyToTweetId}`);
+        logger.info(`[🐦 Reply] Reply text: "${tweetText}"`);
 
-    // Upload media if provided (uploadMedia already has retry logic)
-    let mediaId: string | null = null;
-    if (mediaPath) {
-        logger.info(`[🐦 Reply] Uploading media: ${mediaPath}`);
-        mediaId = await uploadMedia(mediaPath);
-        if (!mediaId) {
-            logger.error('[🐦 Reply] ❌ Failed to upload media');
-            return false;
-        }
-    }
-
-    // Construct tweet payload
-    const tweetPayload: any = {
-        text: tweetText,
-        reply: {
-            in_reply_to_tweet_id: replyToTweetId
-        }
-    };
-
-    if (mediaId) {
-        tweetPayload.media = { media_ids: [mediaId] };
-    }
-
-    // Retry loop for posting tweet
-    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-        try {
-            // Post tweet
-            logger.info(`[🐦 Reply] Posting tweet (attempt ${attempt + 1}/${MAX_RETRIES + 1})...`);
-            const result = await rwClient.v2.tweet(tweetPayload);
-
-            if (result.data?.id) {
-                logger.info(`[🐦 Reply] ✅ Reply posted successfully! Tweet ID: ${result.data.id}`);
-                return true;
-            } else {
-                logger.error('[🐦 Reply] ❌ No tweet ID in response', result.errors);
+        // Upload media if provided (uploadMedia already has retry logic)
+        let mediaId: string | null = null;
+        if (mediaPath) {
+            logger.info(`[🐦 Reply] Uploading media: ${mediaPath}`);
+            try {
+                mediaId = await uploadMedia(mediaPath);
+                if (!mediaId) {
+                    logger.error('[🐦 Reply] ❌ Failed to upload media');
+                    return false;
+                }
+            } catch (uploadError: any) {
+                logger.error('[🐦 Reply] ❌ Exception during media upload:', uploadError);
                 return false;
             }
+        }
 
-        } catch (error: any) {
-            const isLastAttempt = attempt === MAX_RETRIES;
+        // Construct tweet payload
+        const tweetPayload: any = {
+            text: tweetText,
+            reply: {
+                in_reply_to_tweet_id: replyToTweetId
+            }
+        };
 
-            // Handle rate limiting with exponential backoff
-            if (error.code === 429) {
-                logger.error(`[🐦 Reply] 🚨 RATE LIMIT (429) - Attempt ${attempt + 1}/${MAX_RETRIES + 1}`);
+        if (mediaId) {
+            tweetPayload.media = { media_ids: [mediaId] };
+        }
 
-                if (isLastAttempt) {
-                    logger.error(`[🐦 Reply] ❌ Max retries reached. Giving up.`);
+        // Retry loop for posting tweet
+        for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+            try {
+                // Post tweet
+                logger.info(`[🐦 Reply] Posting tweet (attempt ${attempt + 1}/${MAX_RETRIES + 1})...`);
+                const result = await rwClient.v2.tweet(tweetPayload);
+
+                if (result.data?.id) {
+                    logger.info(`[🐦 Reply] ✅ Reply posted successfully! Tweet ID: ${result.data.id}`);
+                    return true;
+                } else {
+                    logger.error('[🐦 Reply] ❌ No tweet ID in response', result.errors);
                     return false;
                 }
 
-                const backoffDelay = getExponentialBackoffDelay(attempt);
-                const backoffMinutes = Math.floor(backoffDelay / 60000);
-                const backoffSeconds = Math.round((backoffDelay % 60000) / 1000);
-                logger.info(`[🐦 Reply] ⏳ Retrying in ${backoffMinutes}m ${backoffSeconds}s...`);
-                await sleep(backoffDelay);
-                continue;
+            } catch (error: any) {
+                const isLastAttempt = attempt === MAX_RETRIES;
 
-            } else if (error.code === 403) {
-                // 403 errors usually aren't retryable (duplicate, permissions, etc.)
-                logger.error(`[🐦 Reply] ❌ Forbidden (403) - Not retrying. Error: ${error.message}`);
-                if (error.data?.errors) {
-                    logger.error(`[🐦 Reply] Twitter API Errors: ${JSON.stringify(error.data.errors)}`);
+                // Handle rate limiting with exponential backoff
+                if (error.code === 429) {
+                    logger.error(`[🐦 Reply] ========================================`);
+                    logger.error(`[🐦 Reply] 🚨 RATE LIMIT ERROR (429) DETECTED`);
+                    logger.error(`[🐦 Reply] Attempt: ${attempt + 1}/${MAX_RETRIES + 1}`);
+                    logger.error(`[🐦 Reply] ========================================`);
+
+                    // Log rate limit headers if available
+                    if (error.rateLimit) {
+                        const resetTime = error.rateLimit.reset ? new Date(error.rateLimit.reset * 1000) : null;
+                        const waitMinutes = resetTime ? Math.ceil((resetTime.getTime() - Date.now()) / 60000) : 'unknown';
+
+                        logger.error(`[🐦 Reply] 📊 HTTP Rate Limit Headers:`);
+                        logger.error(`[🐦 Reply] x-rate-limit-limit: ${error.rateLimit.limit || 'N/A'}`);
+                        logger.error(`[🐦 Reply] x-rate-limit-remaining: ${error.rateLimit.remaining || 'N/A'}`);
+                        logger.error(`[🐦 Reply] x-rate-limit-reset: ${error.rateLimit.reset || 'N/A'}`);
+                        if (resetTime) {
+                            logger.error(`[🐦 Reply] Reset time: ${resetTime.toISOString()} (in ${waitMinutes} minutes)`);
+                        }
+                        logger.error(`[🐦 Reply] ========================================`);
+
+                        // Warn about false rate limits
+                        if (error.rateLimit.remaining > 0) {
+                            logger.warn(`[🐦 Reply] ⚠️ FALSE RATE LIMIT? Remaining: ${error.rateLimit.remaining} (should be 0)`);
+                        }
+                    } else {
+                        logger.error(`[🐦 Reply] ⚠️ No rate limit headers in error response`);
+                        logger.error(`[🐦 Reply] Full error:`, JSON.stringify(error, null, 2));
+                    }
+
+                    if (isLastAttempt) {
+                        logger.error(`[🐦 Reply] ❌ Max retries reached. Giving up.`);
+                        return false;
+                    }
+
+                    const backoffDelay = getExponentialBackoffDelay(attempt);
+                    const backoffMinutes = Math.floor(backoffDelay / 60000);
+                    const backoffSeconds = Math.round((backoffDelay % 60000) / 1000);
+                    logger.info(`[🐦 Reply] ⏳ Retrying in ${backoffMinutes}m ${backoffSeconds}s...`);
+                    await sleep(backoffDelay);
+                    continue;
+
+                } else if (error.code === 403) {
+                    // 403 errors usually aren't retryable (duplicate, permissions, etc.)
+                    logger.error(`[🐦 Reply] ❌ Forbidden (403) - Not retrying. Error: ${error.message}`);
+                    if (error.data?.errors) {
+                        logger.error(`[🐦 Reply] Twitter API Errors: ${JSON.stringify(error.data.errors)}`);
+                    }
+                    return false;
+
+                } else if (error.code && [500, 502, 503, 504].includes(error.code) && !isLastAttempt) {
+                    // Server errors - retry with backoff
+                    logger.error(`[🐦 Reply] ⚠️ Server error (${error.code}) - Attempt ${attempt + 1}/${MAX_RETRIES + 1}`);
+
+                    const backoffDelay = getExponentialBackoffDelay(attempt);
+                    const backoffMinutes = Math.floor(backoffDelay / 60000);
+                    const backoffSeconds = Math.round((backoffDelay % 60000) / 1000);
+                    logger.info(`[🐦 Reply] ⏳ Retrying in ${backoffMinutes}m ${backoffSeconds}s...`);
+                    await sleep(backoffDelay);
+                    continue;
+
+                } else {
+                    // Other errors - fail immediately
+                    logger.error('[🐦 Reply] ❌ Error posting reply:', error);
+                    if (error.code) {
+                        logger.error(`[🐦 Reply] Twitter Error Code: ${error.code}, Message: ${error.message}`);
+                    }
+                    if (error.data?.errors) {
+                        logger.error(`[🐦 Reply] Twitter API Errors: ${JSON.stringify(error.data.errors)}`);
+                    }
+                    return false;
                 }
-                return false;
-
-            } else if (error.code && [500, 502, 503, 504].includes(error.code) && !isLastAttempt) {
-                // Server errors - retry with backoff
-                logger.error(`[🐦 Reply] ⚠️ Server error (${error.code}) - Attempt ${attempt + 1}/${MAX_RETRIES + 1}`);
-
-                const backoffDelay = getExponentialBackoffDelay(attempt);
-                const backoffMinutes = Math.floor(backoffDelay / 60000);
-                const backoffSeconds = Math.round((backoffDelay % 60000) / 1000);
-                logger.info(`[🐦 Reply] ⏳ Retrying in ${backoffMinutes}m ${backoffSeconds}s...`);
-                await sleep(backoffDelay);
-                continue;
-
-            } else {
-                // Other errors - fail immediately
-                logger.error('[🐦 Reply] ❌ Error posting reply:', error);
-                if (error.code) {
-                    logger.error(`[🐦 Reply] Twitter Error Code: ${error.code}, Message: ${error.message}`);
-                }
-                if (error.data?.errors) {
-                    logger.error(`[🐦 Reply] Twitter API Errors: ${JSON.stringify(error.data.errors)}`);
-                }
-                return false;
             }
         }
-    }
 
-    logger.error('[🐦 Reply] ❌ Exhausted all retries without success');
-    return false;
+        logger.error('[🐦 Reply] ❌ Exhausted all retries without success');
+        return false;
+    } catch (outerError: any) {
+        logger.error('[🐦 Reply] ❌ Unexpected error in postReplyWithMedia:', outerError);
+        return false;
+    }
 }
 
 /**
@@ -754,26 +911,49 @@ export async function getLatestTweetId(userId: string): Promise<string | null> {
  */
 export async function fetchVideoForMention(mentionId: string): Promise<{ videoUrl?: string; parentTweetId?: string }> {
     try {
-        // Get the mention tweet to find its parent
+        // Get the mention tweet with media fields AND referenced tweets
         const mentionTweet = await rwClient.v2.singleTweet(mentionId, {
-            'tweet.fields': 'referenced_tweets',
-            expansions: 'referenced_tweets.id',
+            'tweet.fields': 'referenced_tweets,attachments',
+            expansions: 'referenced_tweets.id,attachments.media_keys',
+            'media.fields': 'type,url,variants,duration_ms'
         });
 
+        // FIRST: Check if the mention itself has a video attached
+        if (mentionTweet.includes?.media && mentionTweet.includes.media.length > 0) {
+            for (const media of mentionTweet.includes.media) {
+                if (media.type === 'video') {
+                    const videoVariants = media.variants || [];
+                    if (videoVariants.length > 0) {
+                        const bestVariant = videoVariants
+                            .filter((v: any) => v.content_type === 'video/mp4')
+                            .sort((a: any, b: any) => (b.bitrate || 0) - (a.bitrate || 0))[0];
+
+                        if (bestVariant) {
+                            const videoUrl = bestVariant.url;
+                            logger.info(`[🐦 Video Fetch] ✅ Found video directly on mention tweet: ${videoUrl}`);
+                            return { videoUrl, parentTweetId: undefined };
+                        }
+                    }
+                }
+            }
+        }
+
+        // SECOND: Check parent tweet if no video on mention itself
         const parentRef = mentionTweet.data.referenced_tweets?.find((ref: any) => ref.type === 'replied_to');
         if (!parentRef) {
-            logger.debug(`[🐦 Video Fetch] Mention ${mentionId} has no parent tweet`);
+            logger.warn(`[🐦 Video Fetch] ❌ Mention ${mentionId} has no video and no parent tweet`);
             return {};
         }
 
         const parentTweetId = parentRef.id;
+        logger.info(`[🐦 Video Fetch] Found parent tweet ID: ${parentTweetId}`);
 
         // Check cache first
         const cached = parentTweetVideoCache.get(parentTweetId);
         const now = Date.now();
 
         if (cached && (now - cached.timestamp) < CACHE_TTL_MS) {
-            logger.debug(`[🐦 Video Fetch] Using cached video for parent tweet ${parentTweetId}`);
+            logger.info(`[🐦 Video Fetch] ✅ Using cached video for parent tweet ${parentTweetId}: ${cached.videoUrl}`);
             return { videoUrl: cached.videoUrl, parentTweetId };
         }
 
@@ -785,12 +965,17 @@ export async function fetchVideoForMention(mentionId: string): Promise<{ videoUr
             'media.fields': 'type,url,variants,duration_ms'
         });
 
+        logger.debug(`[🐦 Video Fetch] Parent tweet response: ${JSON.stringify(parentTweetData, null, 2)}`);
+
         let videoUrl: string | undefined;
 
         if (parentTweetData.includes?.media && parentTweetData.includes.media.length > 0) {
+            logger.info(`[🐦 Video Fetch] Found ${parentTweetData.includes.media.length} media items in parent tweet`);
             for (const media of parentTweetData.includes.media) {
+                logger.info(`[🐦 Video Fetch] Media type: ${media.type}`);
                 if (media.type === 'video') {
                     const videoVariants = media.variants || [];
+                    logger.info(`[🐦 Video Fetch] Found video with ${videoVariants.length} variants`);
 
                     // Get highest bitrate video variant
                     if (videoVariants.length > 0) {
@@ -801,11 +986,18 @@ export async function fetchVideoForMention(mentionId: string): Promise<{ videoUr
                         if (bestVariant) {
                             videoUrl = bestVariant.url;
                             logger.info(`[🐦 Video Fetch] ✅ Found video: ${videoUrl}`);
+                        } else {
+                            logger.warn(`[🐦 Video Fetch] ⚠️ No MP4 variants found`);
                         }
+                    } else {
+                        logger.warn(`[🐦 Video Fetch] ⚠️ Video has no variants`);
                     }
                     break;
                 }
             }
+        } else {
+            logger.warn(`[🐦 Video Fetch] ❌ No media found in parent tweet ${parentTweetId}`);
+            logger.warn(`[🐦 Video Fetch] Includes object: ${JSON.stringify(parentTweetData.includes)}`);
         }
 
         // Cache the result

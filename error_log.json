@@ -178,5 +178,47 @@
     "error": "Failed to post reply",
     "timestamp": "2025-10-22T20:10:31.697Z",
     "count": 1
+  },
+  "1981711149306716414": {
+    "phase": "reply",
+    "error": "Failed to post reply",
+    "timestamp": "2025-10-24T13:23:29.117Z",
+    "count": 1
+  },
+  "1981711062253875570": {
+    "phase": "reply",
+    "error": "Failed to post reply",
+    "timestamp": "2025-10-24T13:29:27.908Z",
+    "count": 1
+  },
+  "1981711253962887646": {
+    "phase": "reply",
+    "error": "Failed to post reply",
+    "timestamp": "2025-10-24T13:43:10.019Z",
+    "count": 1
+  },
+  "1981511147233915049": {
+    "phase": "reply",
+    "error": "Failed to post reply",
+    "timestamp": "2025-10-24T14:40:38.419Z",
+    "count": 1
+  },
+  "1981510872620290246": {
+    "phase": "reply",
+    "error": "Failed to post reply",
+    "timestamp": "2025-10-24T15:09:43.186Z",
+    "count": 1
+  },
+  "1981510483946434704": {
+    "phase": "reply",
+    "error": "Failed to post reply",
+    "timestamp": "2025-10-24T15:17:47.480Z",
+    "count": 1
+  },
+  "1981510379680510000": {
+    "phase": "reply",
+    "error": "Failed to post reply",
+    "timestamp": "2025-10-24T16:14:41.206Z",
+    "count": 1
   }
 }

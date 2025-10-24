@@ -30,9 +30,11 @@ export function getSupabase(): SupabaseClient {
 export interface MentionRecord {
     tweet_id: string;
     username: string;
+    parent_username?: string;
     tweet_url: string;
     tweet_text: string;
-    status: 'pending' | 'initiating' | 'processing' | 'complete' | 'failed';
+    status: 'pending' | 'initiating' | 'processing' | 'complete' | 'failed' | 'final_failure';
+    retry_count?: number;
     third_party_id?: string;
     project_id?: string;
     m3u8_url?: string;
@@ -58,9 +60,11 @@ export async function upsertMention(mention: MentionRecord): Promise<boolean> {
             .upsert({
                 tweet_id: mention.tweet_id,
                 username: mention.username,
+                parent_username: mention.parent_username,
                 tweet_url: mention.tweet_url,
                 tweet_text: mention.tweet_text,
                 status: mention.status,
+                retry_count: mention.retry_count,
                 third_party_id: mention.third_party_id,
                 project_id: mention.project_id,
                 m3u8_url: mention.m3u8_url,
@@ -168,7 +172,7 @@ export async function getAllProcessedMentions(): Promise<Set<string>> {
         const { data, error } = await supabase
             .from('mentions')
             .select('tweet_id')
-            .in('status', ['complete', 'failed']);
+            .in('status', ['complete', 'final_failure']);
 
         if (error) {
             logger.error(`[📊 Supabase] Error fetching processed mentions:`, error);
@@ -181,5 +185,30 @@ export async function getAllProcessedMentions(): Promise<Set<string>> {
     } catch (error) {
         logger.error(`[📊 Supabase] Exception fetching processed mentions:`, error);
         return new Set();
+    }
+}
+
+/**
+ * Get mentions stuck in 'initiating', 'processing', or 'failed' status (with retry limit)
+ */
+export async function getStuckMentions(): Promise<MentionRecord[]> {
+    try {
+        const supabase = getSupabase();
+
+        const { data, error } = await supabase
+            .from('mentions')
+            .select('tweet_id, tweet_url, status, updated_at, tweet_text, username, retry_count')
+            .in('status', ['initiating', 'processing', 'failed'])
+            .order('updated_at', { ascending: true });
+
+        if (error) {
+            logger.error(`[📊 Supabase] Error fetching stuck mentions:`, error);
+            return [];
+        }
+
+        return data || [];
+    } catch (error) {
+        logger.error(`[📊 Supabase] Exception fetching stuck mentions:`, error);
+        return [];
     }
 }

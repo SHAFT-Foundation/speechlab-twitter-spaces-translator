@@ -35,8 +35,8 @@ export async function downloadFile(url: string, destinationPath: string): Promis
         // Pipe the response data to the file
         response.data.pipe(writer);
 
-        // Return a promise that resolves when the download finishes or rejects on error
-        return new Promise((resolve, reject) => {
+        // Return a promise that resolves when the download finishes or resolves with false on error
+        return new Promise((resolve) => {
             writer.on('finish', () => {
                 logger.info(`[📥 File] ✅ Successfully downloaded and saved file to ${destinationPath}`);
                 resolve(true);
@@ -44,26 +44,26 @@ export async function downloadFile(url: string, destinationPath: string): Promis
             writer.on('error', (error) => {
                 logger.error(`[📥 File] ❌ Error writing file to ${destinationPath}:`, error);
                 // Clean up partially downloaded file on error
-                try { 
+                try {
                     if (fs.existsSync(destinationPath)) {
                         fs.unlinkSync(destinationPath);
                     }
                 } catch (cleanupError) {
                     logger.warn(`[📥 File] Failed to clean up partial file ${destinationPath}:`, cleanupError);
                 }
-                reject(false); 
+                resolve(false);
             });
             response.data.on('error', (error: Error) => {
                 logger.error(`[📥 File] ❌ Error during download stream from ${url}:`, error);
                  // Clean up partially downloaded file on error
-                try { 
+                try {
                      if (fs.existsSync(destinationPath)) {
                          fs.unlinkSync(destinationPath);
                     }
                 } catch (cleanupError) {
                      logger.warn(`[📥 File] Failed to clean up partial file ${destinationPath} after stream error:`, cleanupError);
                  }
-                reject(false); 
+                resolve(false);
             });
         });
 

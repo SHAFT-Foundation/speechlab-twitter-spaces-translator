@@ -23,7 +23,7 @@ import util from 'util';
 import { postTweetReplyWithMediaApi } from './services/twitterApiService';
 import { uploadLocalFileToS3 } from './services/audioService';
 import * as fsExtra from 'fs-extra';
-import { initSupabase, upsertMention, updateMentionStatus, getAllProcessedMentions, getMention } from './services/supabaseService';
+import { initSupabase, upsertMention, updateMentionStatus, getAllProcessedMentions, getMention, getStuckMentions } from './services/supabaseService';
 
 const execPromise = util.promisify(exec);
 
@@ -41,7 +41,8 @@ let processedCount = 0; // Track how many mentions processed since startup
 // --- End added section ---
 
 // --- MOVED: Global Set for Processed Mentions ---
-let processedMentions: Set<string> = new Set();
+let processedMentions: Set<string> = new Set(); // Only mentions with status='complete' or 'failed'
+let skippedInvalidMentions: Set<string> = new Set(); // Invalid dubbing requests (not retried)
 // --- END MOVED SECTION ---
 
 // Interface for data passed from initiation to backend
@@ -410,7 +411,7 @@ async function initiateProcessing(mentionInfo: MentionInfo, page: any): Promise<
 
                 // Extract pseudo space ID from video URL or use tweet ID
                 const spaceId = videoM3u8Url.match(/([a-zA-Z0-9_-]+)\/(?:chunk|playlist)/)?.[1] || `video_${mentionInfo.tweetId}`;
-                const spaceTitle = `Video from @${mentionInfo.username}`;
+                const spaceTitle = `Video from ${ensureAtSymbol(mentionInfo.username)}`;
 
                 // Post acknowledgement reply
                 try {
@@ -440,7 +441,7 @@ async function initiateProcessing(mentionInfo: MentionInfo, page: any): Promise<
                 };
             } else if (hasVideo && !videoM3u8Url) {
                 logger.warn(`[🎬 Initiate] Video detected but M3U8 URL could not be captured.`);
-                const errorReplyText = `${mentionInfo.username} Sorry, I found a video but couldn't extract the stream URL. The video might be protected or not yet available.`;
+                const errorReplyText = `${ensureAtSymbol(mentionInfo.username)} Sorry, I found a video but couldn't extract the stream URL. The video might be protected or not yet available.`;
                 logger.info(`[🎬 Initiate] Posting error reply: ${errorReplyText}`);
                 // TODO: Replace with API call: await postReplyWithMedia(errorReplyText, mentionInfo.tweetId);
                 // await postReplyToTweet(page, mentionInfo.tweetUrl, errorReplyText);
@@ -486,13 +487,13 @@ async function initiateProcessing(mentionInfo: MentionInfo, page: any): Promise<
             // Check if this was a text-only mention (no video, no Space)
             if (!spaceUrl && config.PROCESS_VIDEO_IN_MENTIONS) {
                 // This was a text-only mention with no content to process
-                const errorReplyText = `${mentionInfo.username} To dub content, please:\n1. Attach a video to your mention, OR\n2. Include a Twitter Space URL in your tweet\n\nExample: "@DubbingAgent [video attached] dub to German"`;
+                const errorReplyText = `${ensureAtSymbol(mentionInfo.username)} To dub content, please:\n1. Attach a video to your mention, OR\n2. Include a Twitter Space URL in your tweet\n\nExample: "@DubbingAgent [video attached] dub to German"`;
                 logger.info(`[🚀 Initiate] Posting helpful error reply for text-only mention: ${errorReplyText}`);
                 // TODO: Replace with API call: await postReplyWithMedia(errorReplyText, mentionInfo.tweetId);
                 // await postReplyToTweet(page, mentionInfo.tweetUrl, errorReplyText);
             } else {
                 // Normal Space not found error
-                const errorReplyText = `${mentionInfo.username} Sorry, I couldn't find a playable Twitter Space associated with this tweet.`;
+                const errorReplyText = `${ensureAtSymbol(mentionInfo.username)} Sorry, I couldn't find a playable Twitter Space associated with this tweet.`;
                 logger.info(`[🚀 Initiate] Posting error reply: ${errorReplyText}`);
                 // TODO: Replace with API call: await postReplyWithMedia(errorReplyText, mentionInfo.tweetId);
                 // await postReplyToTweet(page, mentionInfo.tweetUrl, errorReplyText);
@@ -507,7 +508,7 @@ async function initiateProcessing(mentionInfo: MentionInfo, page: any): Promise<
         if (!(error instanceof Error && error.message.includes('Playable Space article not found'))) {
             try {
                  // --- ADDED: Log error reply before sending ---
-                 const errorReplyText = `${mentionInfo.username} Sorry, I had trouble loading the tweet to find the Space.`;
+                 const errorReplyText = `${ensureAtSymbol(mentionInfo.username)} Sorry, I had trouble loading the tweet to find the Space.`;
                  logger.info(`[🚀 Initiate] Posting error reply: ${errorReplyText}`);
                  // TODO: Replace with API call: await postReplyWithMedia(errorReplyText, mentionInfo.tweetId);
                  // await postReplyToTweet(page, mentionInfo.tweetUrl, errorReplyText);
@@ -588,7 +589,7 @@ async function initiateProcessing(mentionInfo: MentionInfo, page: any): Promise<
              const errMsg = `Failed to capture M3U8 URL for tweet ${mentionInfo.tweetId}.`;
              logger.error(`[🚀 Initiate] ${errMsg}`);
             // --- ADDED: Log error reply before sending ---
-            const errorReplyText = `${mentionInfo.username} Sorry, I could find the Space but couldn't get its audio stream. It might be finished or protected.`;
+            const errorReplyText = `${ensureAtSymbol(mentionInfo.username)} Sorry, I could find the Space but couldn't get its audio stream. It might be finished or protected.`;
             logger.info(`[🚀 Initiate] Posting error reply: ${errorReplyText}`);
             // TODO: Replace with API call: await postReplyWithMedia(errorReplyText, mentionInfo.tweetId);
             // await postReplyToTweet(page, mentionInfo.tweetUrl, errorReplyText);
@@ -617,7 +618,7 @@ async function initiateProcessing(mentionInfo: MentionInfo, page: any): Promise<
          logger.error(`[🚀 Initiate] Error during M3U8 capture for ${mentionInfo.tweetId}:`, error);
          try {
              // --- ADDED: Log error reply before sending ---
-             const errorReplyText = `${mentionInfo.username} Sorry, I encountered an error trying to access the Space audio.`;
+             const errorReplyText = `${ensureAtSymbol(mentionInfo.username)} Sorry, I encountered an error trying to access the Space audio.`;
              logger.info(`[🚀 Initiate] Posting error reply: ${errorReplyText}`);
              // TODO: Replace with API call: await postReplyWithMedia(errorReplyText, mentionInfo.tweetId);
              // await postReplyToTweet(page, mentionInfo.tweetUrl, errorReplyText);
@@ -999,7 +1000,105 @@ async function performBackendProcessing(initData: InitiationResult): Promise<Bac
     }
 }
 
-// --- Queues & Workers --- 
+/**
+ * Checks Supabase for mentions stuck in 'initiating' or 'processing' status
+ * and retries them if they've been stuck longer than the timeout period.
+ */
+async function retryStuckMentions(stuckTimeoutMs: number): Promise<void> {
+    try {
+        logger.info('[🔄 Retry] Checking for stuck mentions in Supabase...');
+
+        const stuckMentions = await getStuckMentions();
+
+        if (!stuckMentions || stuckMentions.length === 0) {
+            logger.info('[🔄 Retry] No stuck mentions found.');
+            return;
+        }
+
+        const now = Date.now();
+        let retriedCount = 0;
+
+        for (const mention of stuckMentions) {
+            // Skip if updated_at is missing
+            if (!mention.updated_at) {
+                logger.warn(`[🔄 Retry] Mention ${mention.tweet_id} has no updated_at timestamp - skipping`);
+                continue;
+            }
+
+            const updatedAt = new Date(mention.updated_at as string).getTime();
+            const stuckDuration = now - updatedAt;
+            const stuckMinutes = Math.floor(stuckDuration / 60000);
+
+            if (stuckDuration < stuckTimeoutMs) {
+                logger.debug(`[🔄 Retry] Mention ${mention.tweet_id} (${mention.status}) stuck for ${stuckMinutes}m - not yet timed out`);
+                continue;
+            }
+
+            // Check retry count - mark as final_failure if already retried 3+ times
+            const retryCount = mention.retry_count || 0;
+            if (retryCount >= 3) {
+                logger.warn(`[🔄 Retry] ❌ Mention ${mention.tweet_id} has already been retried ${retryCount} times - marking as final_failure`);
+                await updateMentionStatus(mention.tweet_id, 'final_failure' as any, {
+                    error_message: `Failed after ${retryCount} retry attempts`
+                });
+                continue;
+            }
+
+            // Skip if already in queue or in-progress
+            if (inProgressMentions.has(mention.tweet_id) ||
+                mentionQueue.some(m => m.tweetId === mention.tweet_id) ||
+                finalReplyQueue.some(r => r.mentionInfo.tweetId === mention.tweet_id)) {
+                logger.debug(`[🔄 Retry] Mention ${mention.tweet_id} already being processed - skipping retry`);
+                continue;
+            }
+
+            logger.warn(`[🔄 Retry] 🔁 Mention ${mention.tweet_id} (${ensureAtSymbol(mention.username)}) stuck in '${mention.status}' for ${stuckMinutes}m - RETRYING (attempt ${retryCount + 1}/3)`);
+
+            // Increment retry count and reset status to 'pending'
+            const newRetryCount = retryCount + 1;
+            const updateSuccess = await upsertMention({
+                tweet_id: mention.tweet_id,
+                username: mention.username,
+                tweet_url: mention.tweet_url,
+                tweet_text: mention.tweet_text,
+                status: 'pending',
+                retry_count: newRetryCount
+            });
+
+            if (!updateSuccess) {
+                logger.error(`[🔄 Retry] Failed to reset status for ${mention.tweet_id}`);
+                continue;
+            }
+
+            // Fetch video for this mention
+            const { videoUrl } = await fetchVideoForMention(mention.tweet_id);
+
+            // Add back to mention queue
+            mentionQueue.push({
+                tweetId: mention.tweet_id,
+                tweetUrl: `https://twitter.com/user/status/${mention.tweet_id}`,
+                username: mention.username,
+                text: mention.tweet_text,
+                hasVideo: !!videoUrl,
+                videoM3u8Url: videoUrl || undefined
+            });
+
+            retriedCount++;
+            logger.info(`[🔄 Retry] ✅ Re-queued stuck mention ${mention.tweet_id} for retry (${retriedCount} retried)`);
+        }
+
+        if (retriedCount > 0) {
+            logger.info(`[🔄 Retry] 🔁 Retried ${retriedCount} stuck mention(s). Queue size now: ${mentionQueue.length}`);
+        } else {
+            logger.info(`[🔄 Retry] No mentions needed retry (${stuckMentions.length} stuck but within timeout or already queued)`);
+        }
+
+    } catch (error) {
+        logger.error('[🔄 Retry] Unexpected error in retryStuckMentions:', error);
+    }
+}
+
+// --- Queues & Workers ---
 /**
  * Adds a completed backend job to the final reply queue and triggers the worker.
  */
@@ -1063,27 +1162,20 @@ async function runInitiationQueue(): Promise<void> {
         const { sourceLanguageCode, sourceLanguageName, targetLanguageCode, targetLanguageName } = detectLanguages(mentionToProcess.text);
         logger.info(`[🚀 Initiate] Detected languages: Source: ${sourceLanguageName} (${sourceLanguageCode}), Target: ${targetLanguageName} (${targetLanguageCode})`);
 
-        // Fetch video on-demand if not already present
+        // Check if video was found during initial fetch (we already tried to extract from parent tweet)
         if (!mentionToProcess.hasVideo || !mentionToProcess.videoM3u8Url) {
-            logger.info(`[🚀 Initiate] Video not found in mention data. Fetching on-demand for ${mentionToProcess.tweetId}...`);
-            const { videoUrl } = await fetchVideoForMention(mentionToProcess.tweetId);
-            if (videoUrl) {
-                mentionToProcess.hasVideo = true;
-                mentionToProcess.videoM3u8Url = videoUrl;
-                logger.info(`[🚀 Initiate] ✅ Video fetched on-demand: ${videoUrl}`);
-            } else {
-                logger.warn(`[🚀 Initiate] No video found for mention ${mentionToProcess.tweetId}. Posting error reply.`);
-                await postReplyWithMedia(
-                    `@${mentionToProcess.username} Please mention me with a Space URL or video attachment!`,
-                    mentionToProcess.tweetId
-                );
-                await updateMentionStatus(mentionToProcess.tweetId, 'failed', {
-                    error_message: 'No video found in mention'
-                });
-                inProgressMentions.delete(mentionToProcess.tweetId);
-                isInitiatingProcessing = false;
-                return;
-            }
+            logger.warn(`[🚀 Initiate] No video found for mention ${mentionToProcess.tweetId}. Video should have been extracted during fetchMentions.`);
+            logger.info(`[🚀 Initiate] Posting error reply for missing video...`);
+            await postReplyWithMedia(
+                `${ensureAtSymbol(mentionToProcess.username)} Please mention me with a Space URL or video attachment!`,
+                mentionToProcess.tweetId
+            );
+            await updateMentionStatus(mentionToProcess.tweetId, 'failed', {
+                error_message: 'No video found in mention or parent tweet'
+            });
+            inProgressMentions.delete(mentionToProcess.tweetId);
+            isInitiatingProcessing = false;
+            return;
         }
 
         logger.info(`[🚀 Initiate] Found video URL: ${mentionToProcess.videoM3u8Url}`);
@@ -1091,7 +1183,7 @@ async function runInitiationQueue(): Promise<void> {
         // Post acknowledgement reply
         logger.info(`[🚀 Initiate] Posting acknowledgement reply...`);
         const ackSuccess = await postReplyWithMedia(
-            `@${mentionToProcess.username} Got it! Dubbing your video from ${sourceLanguageName} to ${targetLanguageName}. I'll reply when ready! 🎬`,
+            `${ensureAtSymbol(mentionToProcess.username)} Got it! Dubbing your video from ${sourceLanguageName} to ${targetLanguageName}. I'll reply when ready! 🎬`,
             mentionToProcess.tweetId
         );
 
@@ -1101,7 +1193,7 @@ async function runInitiationQueue(): Promise<void> {
 
         // Prepare initiation result
         const spaceId = `video_${mentionToProcess.tweetId}`;
-        const spaceTitle = `Video from @${mentionToProcess.username}`;
+        const spaceTitle = `Video from ${ensureAtSymbol(mentionToProcess.username)}`;
 
         const initResult: InitiationResult = {
             spaceId,
@@ -1126,12 +1218,32 @@ async function runInitiationQueue(): Promise<void> {
             finalReplyQueue.push({ mentionInfo: mentionToProcess, backendResult });
         } else {
             logger.error(`[🚀 Initiate] ❌ Backend processing failed for ${mentionToProcess.tweetId}: ${backendResult.error}`);
-            await updateMentionStatus(mentionToProcess.tweetId, 'failed', {
-                error_message: backendResult.error || 'Backend processing failed'
-            });
+
+            // Get current retry count and increment
+            const existingMention = await getMention(mentionToProcess.tweetId);
+            const currentRetryCount = existingMention?.retry_count || 0;
+            const newRetryCount = currentRetryCount + 1;
+
+            logger.info(`[🚀 Initiate] Retry count for ${mentionToProcess.tweetId}: ${newRetryCount}/3`);
+
+            // If we've reached the retry limit, mark as final_failure
+            if (newRetryCount >= 3) {
+                logger.warn(`[🚀 Initiate] ❌ Mention ${mentionToProcess.tweetId} has failed ${newRetryCount} times - marking as final_failure`);
+                await updateMentionStatus(mentionToProcess.tweetId, 'final_failure', {
+                    error_message: backendResult.error || 'Backend processing failed after 3 attempts',
+                    retry_count: newRetryCount
+                });
+            } else {
+                // Mark as failed with incremented retry count (will be retried)
+                await updateMentionStatus(mentionToProcess.tweetId, 'failed', {
+                    error_message: backendResult.error || 'Backend processing failed',
+                    retry_count: newRetryCount
+                });
+            }
+
             // Post error reply
             await postReplyWithMedia(
-                `@${mentionToProcess.username} Sorry, I encountered an error processing your video. Please try again later.`,
+                `${ensureAtSymbol(mentionToProcess.username)} Sorry, I encountered an error processing your video. Please try again later.`,
                 mentionToProcess.tweetId
             );
         }
@@ -1139,13 +1251,33 @@ async function runInitiationQueue(): Promise<void> {
     } catch (error: any) {
         logger.error(`[🚀 Initiate Queue] Error processing mention ${mentionToProcess.tweetId}:`, error);
         await logMentionError(mentionToProcess.tweetId, error, 'initiation');
-        await updateMentionStatus(mentionToProcess.tweetId, 'failed', {
-            error_message: error.message || 'Unknown error during initiation'
-        });
+
+        // Get current retry count and increment
+        const existingMention = await getMention(mentionToProcess.tweetId);
+        const currentRetryCount = existingMention?.retry_count || 0;
+        const newRetryCount = currentRetryCount + 1;
+
+        logger.info(`[🚀 Initiate Queue] Retry count for ${mentionToProcess.tweetId}: ${newRetryCount}/3`);
+
+        // If we've reached the retry limit, mark as final_failure
+        if (newRetryCount >= 3) {
+            logger.warn(`[🚀 Initiate Queue] ❌ Mention ${mentionToProcess.tweetId} has failed ${newRetryCount} times - marking as final_failure`);
+            await updateMentionStatus(mentionToProcess.tweetId, 'final_failure', {
+                error_message: error.message || 'Unknown error during initiation after 3 attempts',
+                retry_count: newRetryCount
+            });
+        } else {
+            // Mark as failed with incremented retry count (will be retried)
+            await updateMentionStatus(mentionToProcess.tweetId, 'failed', {
+                error_message: error.message || 'Unknown error during initiation',
+                retry_count: newRetryCount
+            });
+        }
+
         // Post error reply
         try {
             await postReplyWithMedia(
-                `@${mentionToProcess.username} Sorry, I encountered an error processing your request. Please try again later.`,
+                `${ensureAtSymbol(mentionToProcess.username)} Sorry, I encountered an error processing your request. Please try again later.`,
                 mentionToProcess.tweetId
             );
         } catch (replyError) {
@@ -1194,7 +1326,8 @@ async function runFinalReplyQueue(): Promise<void> {
         // NEW: Check for video link FIRST (videos take priority over audio)
         if (hasVideoLink && backendResult.publicVideoUrl) {
             // Video dubbing success - include SHAFT branding
-            finalMessage = `${mentionInfo.username} Your video dubbed to ${targetLanguageName}! Provided by @shaftfinance $shaft`;
+            // CRITICAL: Must include @ symbol to mention the user
+            finalMessage = `${ensureAtSymbol(mentionInfo.username)} Your video dubbed to ${targetLanguageName}! Provided by @shaftfinance $shaft`;
 
             // Download video for inline attachment to tweet
             logger.info(`[↩️ Reply Queue] Downloading dubbed video for inline attachment...`);
@@ -1227,8 +1360,8 @@ async function runFinalReplyQueue(): Promise<void> {
                  // Sharing Link comes second if available
                 linkParts.push(`Link: ${backendResult.sharingLink}`);
             }
-            // Construct success message with links in the desired order - ensure both usernames have @ symbols
-            finalMessage = `@RyanAtSpeechlab ${mentionInfo.username} Your ${sourceLanguageName} to ${targetLanguageName} dub is ready! $shaft 🎉 ${linkParts.join(' | ')}`;
+            // Construct success message with links in the desired order - ensure username has @ symbol
+            finalMessage = `${ensureAtSymbol(mentionInfo.username)} Your ${sourceLanguageName} to ${targetLanguageName} dub is ready! $shaft 🎉 ${linkParts.join(' | ')}`;
             
         } else {
             // Neither video nor MP3 is available, even though backendResult.success is true
@@ -1238,7 +1371,7 @@ async function runFinalReplyQueue(): Promise<void> {
                 logger.warn(`[↩️ Reply Queue] Backend succeeded for video tweet ${mentionInfo.tweetId} but video link is missing.`);
                 logger.error(`[↩️ Reply Queue] Video processing error details: ${backendResult.error || 'Unknown error'}`);
 
-                let partialFailureMessage = `${mentionInfo.username} Processing finished for the ${sourceLanguageName} to ${targetLanguageName} dub, but I couldn't prepare the dubbed video file. 😥`;
+                let partialFailureMessage = `${ensureAtSymbol(mentionInfo.username)} Processing finished for the ${sourceLanguageName} to ${targetLanguageName} dub, but I couldn't prepare the dubbed video file. 😥`;
 
                 // Include specific error reason if available
                 if (backendResult.error) {
@@ -1255,7 +1388,7 @@ async function runFinalReplyQueue(): Promise<void> {
             } else {
                 // Audio source but MP3 is missing
                 logger.warn(`[↩️ Reply Queue] Backend succeeded for ${mentionInfo.tweetId} but MP3 link is missing. Posting alternative message.`);
-                let partialFailureMessage = `${mentionInfo.username} Processing finished for the ${sourceLanguageName} to ${targetLanguageName} dub, but I couldn't prepare the MP3 audio file. 😥`;
+                let partialFailureMessage = `${ensureAtSymbol(mentionInfo.username)} Processing finished for the ${sourceLanguageName} to ${targetLanguageName} dub, but I couldn't prepare the MP3 audio file. 😥`;
                 if (hasSharingLink) {
                     partialFailureMessage += ` You might find project details here: ${backendResult.sharingLink}`;
                 }
@@ -1336,11 +1469,9 @@ async function runFinalReplyQueue(): Promise<void> {
                     logger.error(`[↩️ Reply Queue] CRITICAL: Failed to mark mention ${mentionInfo.tweetId} as processed after successful reply:`, markError);
                 }
              } else {
-                 logger.info(`[↩️ Reply Queue] Backend failed, marking mention ${mentionInfo.tweetId} as processed to prevent requeuing.`);
-                 // Always mark as processed even if backend failed
-                 await markMentionAsProcessed(mentionInfo.tweetId, processedMentions);
-                 
-                 // Update Supabase with failed status
+                 logger.warn(`[↩️ Reply Queue] Backend failed for ${mentionInfo.tweetId}. NOT marking as processed - will retry on restart.`);
+
+                 // Update Supabase with failed status (but don't mark as processed)
                  await updateMentionStatus(mentionInfo.tweetId, 'failed', {
                      error_message: backendResult.error || 'Unknown backend error'
                  });
@@ -1385,16 +1516,58 @@ async function runFinalReplyQueue(): Promise<void> {
             }
             // -----------------------------
         } else {
-            logger.warn(`[↩️ Reply Queue] Failed to post final reply via Twitter API for ${mentionInfo.tweetId}. Marking as processed anyway to prevent requeuing.`);
-            // Mark as processed even if reply failed
-            await markMentionAsProcessed(mentionInfo.tweetId, processedMentions);
+            logger.warn(`[↩️ Reply Queue] Failed to post final reply via Twitter API for ${mentionInfo.tweetId}. NOT marking as processed - will retry on restart.`);
+
+            // Get current retry count and increment
+            const existingMention = await getMention(mentionInfo.tweetId);
+            const currentRetryCount = existingMention?.retry_count || 0;
+            const newRetryCount = currentRetryCount + 1;
+
+            logger.info(`[↩️ Reply Queue] Retry count for ${mentionInfo.tweetId}: ${newRetryCount}/3`);
+
+            // If we've reached the retry limit, mark as final_failure
+            if (newRetryCount >= 3) {
+                logger.warn(`[↩️ Reply Queue] ❌ Mention ${mentionInfo.tweetId} has failed ${newRetryCount} times - marking as final_failure`);
+                await updateMentionStatus(mentionInfo.tweetId, 'final_failure', {
+                    error_message: 'Failed to post reply after 3 attempts',
+                    retry_count: newRetryCount
+                });
+            } else {
+                // Mark as failed with incremented retry count (will be retried)
+                await updateMentionStatus(mentionInfo.tweetId, 'failed', {
+                    error_message: 'Failed to post reply',
+                    retry_count: newRetryCount
+                });
+            }
+
             // Log to error log file
             logMentionError(mentionInfo.tweetId, 'Failed to post reply', 'reply');
         }
     } catch (replyError) {
         logger.error(`[↩️ Reply Queue] CRITICAL: Error posting final Twitter API reply for ${mentionInfo.tweetId}:`, replyError);
-        // Mark as processed even if reply throws error
-        await markMentionAsProcessed(mentionInfo.tweetId, processedMentions);
+
+        // Get current retry count and increment
+        const existingMention = await getMention(mentionInfo.tweetId);
+        const currentRetryCount = existingMention?.retry_count || 0;
+        const newRetryCount = currentRetryCount + 1;
+
+        logger.info(`[↩️ Reply Queue] Retry count for ${mentionInfo.tweetId}: ${newRetryCount}/3`);
+
+        // If we've reached the retry limit, mark as final_failure
+        if (newRetryCount >= 3) {
+            logger.warn(`[↩️ Reply Queue] ❌ Mention ${mentionInfo.tweetId} has failed ${newRetryCount} times - marking as final_failure`);
+            await updateMentionStatus(mentionInfo.tweetId, 'final_failure', {
+                error_message: replyError instanceof Error ? replyError.message + ' (after 3 attempts)' : String(replyError) + ' (after 3 attempts)',
+                retry_count: newRetryCount
+            });
+        } else {
+            // Mark as failed with incremented retry count (will be retried)
+            await updateMentionStatus(mentionInfo.tweetId, 'failed', {
+                error_message: replyError instanceof Error ? replyError.message : String(replyError),
+                retry_count: newRetryCount
+            });
+        }
+
         // Log to error log file
         logMentionError(mentionInfo.tweetId, replyError, 'reply');
     } finally {
@@ -1437,6 +1610,14 @@ function logQueueStatus() {
 // Browser trigger functions removed - using Twitter API instead
 // TODO: Refactor to use API-based queue workers
 
+/**
+ * Helper function to ensure username has @ prefix (exactly one)
+ * Removes any existing @ symbols and adds one
+ */
+function ensureAtSymbol(username: string): string {
+    return `@${username.replace(/^@+/, '')}`;
+}
+
 // --- Main Daemon Logic ---
 async function main() {
     logger.info('[😈 Daemon] Starting Mention Monitoring Daemon...');
@@ -1446,13 +1627,15 @@ async function main() {
     logger.info('[😈 Daemon] Initializing Supabase connection...');
     initSupabase();
 
-    // Load processed mentions from Supabase
-    logger.info('[😈 Daemon] Loading processed mentions from Supabase...');
+    // Load ONLY completed/failed mentions from Supabase
+    // Mentions in 'processing' or 'initiating' state will be retried (crash recovery)
+    logger.info('[😈 Daemon] Loading completed/failed mentions from Supabase...');
     const supabaseProcessedMentions = await getAllProcessedMentions();
     for (const tweetId of supabaseProcessedMentions) {
         processedMentions.add(tweetId);
     }
-    logger.info(`[😈 Daemon] Loaded ${supabaseProcessedMentions.size} processed mentions from Supabase`);
+    logger.info(`[😈 Daemon] Loaded ${supabaseProcessedMentions.size} completed/failed mentions from Supabase`);
+    logger.info('[😈 Daemon] ♻️ Mentions in processing/initiating state will be retried (crash recovery)');
 
     // Test Twitter API connection
     logger.info('[😈 Daemon] Testing Twitter API connection...');
@@ -1486,6 +1669,17 @@ async function main() {
     process.on('SIGINT', () => shutdown('SIGINT'));
     process.on('SIGTERM', () => shutdown('SIGTERM'));
 
+    // Global error handlers to prevent daemon crashes
+    process.on('uncaughtException', (error) => {
+        logger.error('[😈 Daemon] 🚨 UNCAUGHT EXCEPTION - Daemon should continue:', error);
+        logger.error('[😈 Daemon] Stack:', error.stack);
+    });
+
+    process.on('unhandledRejection', (reason, promise) => {
+        logger.error('[😈 Daemon] 🚨 UNHANDLED REJECTION - Daemon should continue:', reason);
+        logger.error('[😈 Daemon] Promise:', promise);
+    });
+
     try {
         // Note: processedMentions already loaded from Supabase above (line 1476-1480)
         // Using Supabase as single source of truth - no JSON file needed
@@ -1515,21 +1709,23 @@ async function main() {
             logger.info('[😈 Daemon Polling] Polling for new mentions...');
             try {
                 // Fetch up to MAX_MENTIONS_PER_POLL mentions (default 100)
-                // Videos are NOT fetched here - they'll be fetched on-demand for valid dubbing requests only
-                // Since we filter invalid mentions, fetching more gives us more valid dubbing requests
+                // Videos are already extracted during fetchMentions from parent tweets
                 const maxMentions = config.MAX_MENTIONS_PER_POLL || 100;
                 const apiMentions = await fetchMentions(undefined, maxMentions);
+
                 // Convert MentionData to MentionInfo format
-                const mentions: MentionInfo[] = apiMentions
-                    .filter(m => !processedMentions.has(m.tweetId))
-                    .map(m => ({
-                        tweetId: m.tweetId,
-                        tweetUrl: m.tweetUrl,
-                        username: m.username,
-                        text: m.text,
-                        hasVideo: m.hasVideo,
-                        videoM3u8Url: m.videoUrl
-                    }));
+                // DO NOT filter by processedMentions here - we need to check Supabase as source of truth
+                const mentions: MentionInfo[] = apiMentions.map(m => ({
+                    tweetId: m.tweetId,
+                    tweetUrl: m.tweetUrl,
+                    username: m.username,
+                    parentUsername: m.parentUsername,
+                    text: m.text,
+                    hasVideo: m.hasVideo,
+                    videoM3u8Url: m.videoUrl
+                }));
+
+                logger.info(`[😈 Daemon Polling] Fetched ${mentions.length} mentions from Twitter API`);
                 let newMentionsFound = 0;
                 
                 // Create a preview of new mentions being added
@@ -1542,24 +1738,13 @@ async function main() {
                 const replyQueueIds = new Set(finalReplyQueue.map(r => r.mentionInfo.tweetId));
 
                 for (const mention of mentions) {
-                    // CRITICAL: Validate if this is a valid dubbing request FIRST
-                    // This prevents wasting resources on non-dubbing mentions
-                    if (!isValidDubbingRequest(mention.text)) {
-                        logger.info(`[😈 Daemon Polling] ⏭️  Skipping mention ${mention.tweetId} - Not a valid dubbing request`);
-                        // Mark as processed so we don't check it again
-                        processedMentions.add(mention.tweetId);
-                        await markMentionAsProcessed(mention.tweetId, processedMentions);
+                    // Skip if already seen in this batch
+                    if (seenInThisBatch.has(mention.tweetId)) {
                         continue;
                     }
 
-                    // Skip if already fully processed, currently in-progress, in any queue, or already seen in this batch
-                    if (processedMentions.has(mention.tweetId) ||
-                        inProgressMentions.has(mention.tweetId) ||
-                        currentQueueIds.has(mention.tweetId) ||
-                        replyQueueIds.has(mention.tweetId) ||
-                        seenInThisBatch.has(mention.tweetId)) {
-                        continue;
-                    }
+                    // Mark as seen in this batch
+                    seenInThisBatch.add(mention.tweetId);
 
                     // Skip tweets from the bot itself (avoid processing own replies as mentions)
                     if (config.TWITTER_USERNAME) {
@@ -1571,22 +1756,26 @@ async function main() {
                         }
                     }
 
-                    // Mark as seen in this batch
-                    seenInThisBatch.add(mention.tweetId);
+                    // Skip if currently in progress or queued (avoid duplicate processing in same run)
+                    if (inProgressMentions.has(mention.tweetId) ||
+                        currentQueueIds.has(mention.tweetId) ||
+                        replyQueueIds.has(mention.tweetId)) {
+                        logger.debug(`[🔔 Mention] ${mention.tweetId} already queued or in-progress - skipping`);
+                        continue;
+                    }
 
-                    // Check Supabase for existing mention status - simple logic:
-                    // If NOT in DB → add and process
-                    // If status is 'complete' → skip (already done)
-                    // Otherwise (pending, initiating, processing, failed) → retry
+                    // Check Supabase for existing mention status (SINGLE SOURCE OF TRUTH)
+                    // This makes the system resilient to crashes - all state is in the database
                     const existingMention = await getMention(mention.tweetId);
 
                     if (existingMention) {
-                        logger.info(`[🔔 Mention] Found mention ${mention.tweetId} in Supabase with status: ${existingMention.status}`);
+                        logger.debug(`[🔔 Mention] Found mention ${mention.tweetId} in Supabase with status: ${existingMention.status}`);
 
-                        // Only skip if status is 'complete' (final tweet was posted successfully)
-                        if (existingMention.status === 'complete') {
-                            logger.info(`[🔔 Mention] Mention ${mention.tweetId} is complete. Skipping.`);
-                            await markMentionAsProcessed(mention.tweetId, processedMentions);
+                        // Skip if status is 'complete' OR 'final_failure' (both are terminal states)
+                        if (existingMention.status === 'complete' || existingMention.status === 'final_failure') {
+                            logger.debug(`[🔔 Mention] Mention ${mention.tweetId} is ${existingMention.status}. Skipping.`);
+                            // Add to in-memory set to speed up future checks in this run
+                            processedMentions.add(mention.tweetId);
                             continue;
                         }
 
@@ -1597,27 +1786,60 @@ async function main() {
                             existingMention.sharing_link) {
                             logger.info(`[🔔 Mention] Mention ${mention.tweetId} has status 'processing' but has all completion data. Marking as complete.`);
                             await updateMentionStatus(mention.tweetId, 'complete');
-                            await markMentionAsProcessed(mention.tweetId, processedMentions);
+                            processedMentions.add(mention.tweetId);
+                            continue;
+                        }
+
+                        // Check if retry limit reached
+                        const retryCount = existingMention.retry_count || 0;
+                        if (retryCount >= 3) {
+                            logger.warn(`[🔔 Mention] Mention ${mention.tweetId} has retry_count=${retryCount} >= 3. Should be final_failure but found as '${existingMention.status}'. Marking as final_failure.`);
+                            await updateMentionStatus(mention.tweetId, 'final_failure', {
+                                error_message: `Exceeded retry limit (${retryCount} attempts)`,
+                                retry_count: retryCount
+                            });
+                            processedMentions.add(mention.tweetId);
                             continue;
                         }
 
                         // For any other status (pending, initiating, failed) or processing without completion data, retry
-                        logger.info(`[🔔 Mention] Mention ${mention.tweetId} has status '${existingMention.status}'. Will retry processing.`);
+                        logger.info(`[🔔 Mention] Mention ${mention.tweetId} has status '${existingMention.status}' with retry_count=${retryCount}. Will retry processing.`);
+                    }
+
+                    // SAVE TO SUPABASE IMMEDIATELY (for new mentions or update existing)
+                    // This ensures ALL mentions are tracked from the moment we see them
+                    const retryCount = existingMention?.retry_count || 0;
+                    const saveSuccess = await upsertMention({
+                        tweet_id: mention.tweetId,
+                        username: mention.username,
+                        parent_username: mention.parentUsername,
+                        tweet_url: mention.tweetUrl,
+                        tweet_text: mention.text || '',
+                        status: 'pending',
+                        retry_count: retryCount
+                    });
+
+                    if (!saveSuccess) {
+                        logger.error(`[🔔 Mention] Failed to save mention ${mention.tweetId} to Supabase - SKIPPING for safety`);
+                        continue;
+                    }
+
+                    logger.info(`[🔔 Mention] ${existingMention ? 'Updated' : 'Saved new'} mention ${mention.tweetId} in Supabase with status 'pending'`);
+
+                    // NOW validate if this is a valid dubbing request
+                    if (!isValidDubbingRequest(mention.text)) {
+                        logger.info(`[😈 Daemon Polling] ⏭️  Mention ${mention.tweetId} is not a valid dubbing request - marking as final_failure`);
+                        await updateMentionStatus(mention.tweetId, 'final_failure', {
+                            error_message: 'Invalid dubbing request format'
+                        });
+                        processedMentions.add(mention.tweetId);
+                        continue;
                     }
 
                     // Process the mention (new or retry)
                     newMentionsFound++;
                     const actionType = existingMention ? 'Retrying' : 'Found new';
                     logger.info(`[🔔 Mention] ${actionType} mention: ID=${mention.tweetId}, User=${mention.username}, Text="${mention.text?.substring(0, 50)}${mention.text?.length > 50 ? '...' : ''}"`);
-
-                    // Add/update in Supabase with 'pending' status
-                    await upsertMention({
-                        tweet_id: mention.tweetId,
-                        username: mention.username,
-                        tweet_url: mention.tweetUrl,
-                        tweet_text: mention.text || '',
-                        status: 'pending'
-                    });
 
                     mentionQueue.push(mention);
                     newMentions.push(mention);
@@ -1658,6 +1880,7 @@ async function main() {
                         tweetId: m.tweetId,
                         tweetUrl: m.tweetUrl,
                         username: m.username,
+                        parentUsername: m.parentUsername,
                         text: m.text,
                         hasVideo: m.hasVideo,
                         videoM3u8Url: m.videoUrl
@@ -1673,14 +1896,13 @@ async function main() {
                     // CRITICAL: Validate if this is a valid dubbing request FIRST
                     if (!isValidDubbingRequest(mention.text)) {
                         logger.info(`[😈 Daemon] ⏭️  Skipping mention ${mention.tweetId} - Not a valid dubbing request`);
-                        processedMentions.add(mention.tweetId);
-                        await markMentionAsProcessed(mention.tweetId, processedMentions);
+                        skippedInvalidMentions.add(mention.tweetId);
                         skippedCount++;
                         continue;
                     }
 
-                    // Check if it's *not* already processed, just in case
-                    if (!processedMentions.has(mention.tweetId)) {
+                    // Check if it's *not* already processed or skipped, just in case
+                    if (!processedMentions.has(mention.tweetId) && !skippedInvalidMentions.has(mention.tweetId)) {
                         // Calculate mention age from Twitter Snowflake ID
                         // Twitter Snowflake IDs encode timestamp in first 41 bits
                         const tweetTimestamp = (BigInt(mention.tweetId) >> BigInt(22)) + BigInt(1288834974657); // Twitter epoch
@@ -1688,18 +1910,10 @@ async function main() {
                         const mentionAge = now - tweetDate.getTime();
                         const ageMinutes = Math.round(mentionAge / 60000);
 
-                        // Only skip mentions older than 30 minutes
+                        // Skip adding old mentions to queue (but don't mark as complete)
+                        // Recent mentions get processed normally
                         if (mentionAge > THIRTY_MINUTES_MS) {
-                            logger.info(`[😈 Daemon] Marking old mention ${mention.tweetId} (${ageMinutes} min old) as complete (skipping queue).`);
-
-                            // Mark the mention as processed in local cache
-                            await markMentionAsProcessed(mention.tweetId, processedMentions);
-
-                            // Update Supabase to status 'complete' so it won't be retried
-                            await updateMentionStatus(mention.tweetId, 'complete', {
-                                error_message: `Skipped - ${ageMinutes} minutes old at daemon startup with SKIP_INITIAL_MENTIONS=true`
-                            });
-
+                            logger.info(`[😈 Daemon] Skipping old mention ${mention.tweetId} (${ageMinutes} min old) - not adding to queue`);
                             skippedCount++;
                         } else {
                             logger.info(`[😈 Daemon] Keeping recent mention ${mention.tweetId} (${ageMinutes} min old) - will process normally.`);
@@ -1709,7 +1923,7 @@ async function main() {
                          logger.debug(`[😈 Daemon] Initially found mention ${mention.tweetId} was already marked as processed.`);
                     }
                 }
-                logger.info(`[😈 Daemon] Finished: ${skippedCount} old mentions marked complete, ${keptCount} recent mentions kept for processing.`);
+                logger.info(`[😈 Daemon] Finished: ${skippedCount} old mentions skipped (not queued), ${keptCount} recent mentions kept for processing.`);
 
                 // If we kept any recent mentions, do an immediate poll to process them
                 if (keptCount > 0) {
@@ -1748,6 +1962,30 @@ async function main() {
         }, WORKER_INTERVAL_MS);
 
         logger.info(`[🚀 Workers] Queue workers started (checking every ${WORKER_INTERVAL_MS / 1000}s)`);
+
+        // Start stuck mention retry mechanism
+        logger.info('[🔄 Retry] Starting stuck mention retry mechanism...');
+        const RETRY_CHECK_INTERVAL_MS = 5 * 60 * 1000; // Check every 5 minutes
+        const STUCK_TIMEOUT_MS = 20 * 60 * 1000; // Retry if stuck for 20+ minutes (SpeechLab can take up to 20min)
+
+        // Run immediately on startup to catch any stuck mentions from previous run
+        logger.info('[🔄 Retry] Running initial stuck mention check...');
+        try {
+            await retryStuckMentions(STUCK_TIMEOUT_MS);
+        } catch (error) {
+            logger.error('[🔄 Retry] Error in initial stuck mention check:', error);
+        }
+
+        // Then run every 5 minutes
+        setInterval(async () => {
+            try {
+                await retryStuckMentions(STUCK_TIMEOUT_MS);
+            } catch (error) {
+                logger.error('[🔄 Retry] Error in stuck mention retry:', error);
+            }
+        }, RETRY_CHECK_INTERVAL_MS);
+
+        logger.info(`[🔄 Retry] Retry mechanism started (checking every ${RETRY_CHECK_INTERVAL_MS / 60000} minutes, timeout: ${STUCK_TIMEOUT_MS / 60000} minutes)`);
         logger.info('[😈 Daemon] Daemon initialization complete. Monitoring mentions...');
 
     } catch (error) {
@@ -1844,4 +2082,8 @@ async function logActiveProjects(): Promise<void> {
     }
 }
 
-main(); 
+main().catch((error) => {
+    logger.error('[😈 Daemon] ❌ FATAL: Unhandled error in main():', error);
+    logger.error('[😈 Daemon] The daemon has crashed. Please check the logs and restart.');
+    process.exit(1);
+}); 
