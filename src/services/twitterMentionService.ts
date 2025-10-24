@@ -392,11 +392,30 @@ export async function fetchMentions(sinceId?: string, maxResults: number = 100):
         const mentions: MentionData[] = [];
 
         // Debug: Log what includes we got back
-        logger.debug(`[🐦 Mentions] Includes in response:`, {
-            users: mentionsTimeline.data.includes?.users?.length || 0,
-            tweets: mentionsTimeline.data.includes?.tweets?.length || 0,
-            media: mentionsTimeline.data.includes?.media?.length || 0
-        });
+        logger.info(`[🐦 Mentions] ========================================`);
+        logger.info(`[🐦 Mentions] API RESPONSE INCLUDES:`);
+        logger.info(`[🐦 Mentions] ========================================`);
+        logger.info(`[🐦 Mentions] Users: ${mentionsTimeline.data.includes?.users?.length || 0}`);
+        logger.info(`[🐦 Mentions] Tweets (referenced): ${mentionsTimeline.data.includes?.tweets?.length || 0}`);
+        logger.info(`[🐦 Mentions] Media: ${mentionsTimeline.data.includes?.media?.length || 0}`);
+        logger.info(`[🐦 Mentions] ========================================`);
+
+        // Log full response for first mention to debug
+        if (mentionsTimeline.data.data && mentionsTimeline.data.data.length > 0) {
+            const firstMention = mentionsTimeline.data.data[0];
+            logger.info(`[🐦 Mentions] FIRST MENTION SAMPLE:`);
+            logger.info(`[🐦 Mentions] Tweet ID: ${firstMention.id}`);
+            logger.info(`[🐦 Mentions] Has referenced_tweets: ${!!firstMention.referenced_tweets}`);
+            if (firstMention.referenced_tweets) {
+                logger.info(`[🐦 Mentions] Referenced tweets: ${JSON.stringify(firstMention.referenced_tweets)}`);
+            }
+            logger.info(`[🐦 Mentions] Has attachments: ${!!firstMention.attachments}`);
+            if (firstMention.attachments) {
+                logger.info(`[🐦 Mentions] Attachments: ${JSON.stringify(firstMention.attachments)}`);
+            }
+        }
+
+        logger.debug(`[🐦 Mentions] Full includes object:`, JSON.stringify(mentionsTimeline.data.includes, null, 2));
 
         for (const tweet of mentionsTimeline.data.data || []) {
             // Get author username from includes

@@ -1237,20 +1237,31 @@ async function runInitiationQueue(): Promise<void> {
         const { sourceLanguageCode, sourceLanguageName, targetLanguageCode, targetLanguageName } = detectLanguages(mentionToProcess.text);
         logger.info(`[🚀 Initiate] Detected languages: Source: ${sourceLanguageName} (${sourceLanguageCode}), Target: ${targetLanguageName} (${targetLanguageCode})`);
 
-        // Check if video was found during initial fetch (we already tried to extract from parent tweet)
+        // Check if video was found during initial fetch
+        // If not, make a direct API call to fetch parent tweet video
         if (!mentionToProcess.hasVideo || !mentionToProcess.videoM3u8Url) {
-            logger.warn(`[🚀 Initiate] No video found for mention ${mentionToProcess.tweetId}. Video should have been extracted during fetchMentions.`);
-            logger.info(`[🚀 Initiate] Posting error reply for missing video...`);
-            await postReplyWithMedia(
-                `${ensureAtSymbol(mentionToProcess.username)} Please mention me with a Space URL or video attachment!`,
-                mentionToProcess.tweetId
-            );
-            await updateMentionStatus(mentionToProcess.tweetId, 'failed', {
-                error_message: 'No video found in mention or parent tweet'
-            });
-            inProgressMentions.delete(mentionToProcess.tweetId);
-            isInitiatingProcessing = false;
-            return;
+            logger.info(`[🚀 Initiate] No video in initial fetch. Attempting to fetch parent tweet video...`);
+
+            const { videoUrl, parentTweetId } = await fetchVideoForMention(mentionToProcess.tweetId);
+
+            if (videoUrl) {
+                logger.info(`[🚀 Initiate] ✅ Found video in parent tweet ${parentTweetId}: ${videoUrl}`);
+                mentionToProcess.hasVideo = true;
+                mentionToProcess.videoM3u8Url = videoUrl;
+            } else {
+                logger.warn(`[🚀 Initiate] ❌ No video found for mention ${mentionToProcess.tweetId} even after fetching parent tweet.`);
+                logger.info(`[🚀 Initiate] Posting error reply for missing video...`);
+                await postReplyWithMedia(
+                    `${ensureAtSymbol(mentionToProcess.username)} Please mention me with a Space URL or video attachment!`,
+                    mentionToProcess.tweetId
+                );
+                await updateMentionStatus(mentionToProcess.tweetId, 'failed', {
+                    error_message: 'No video found in mention or parent tweet'
+                });
+                inProgressMentions.delete(mentionToProcess.tweetId);
+                isInitiatingProcessing = false;
+                return;
+            }
         }
 
         logger.info(`[🚀 Initiate] Found video URL: ${mentionToProcess.videoM3u8Url}`);
