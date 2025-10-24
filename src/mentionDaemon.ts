@@ -1406,7 +1406,7 @@ async function runFinalReplyQueue(): Promise<void> {
         // Construct error message for the single reply (original logic)
         const { sourceLanguageName, targetLanguageName } = detectLanguages(mentionInfo.text);
         const errorReason = backendResult.error || 'processing failed';
-         finalMessage = `${mentionInfo.username} Oops! 😥 Couldn't complete the ${sourceLanguageName} to ${targetLanguageName} dub for this Space (${errorReason}). Maybe try again later?`;
+         finalMessage = `${ensureAtSymbol(mentionInfo.username)} Oops! 😥 Couldn't complete the ${sourceLanguageName} to ${targetLanguageName} dub for this Space (${errorReason}). Maybe try again later?`;
          mediaPathToAttach = undefined; // Ensure no media attached on failure
     }
     

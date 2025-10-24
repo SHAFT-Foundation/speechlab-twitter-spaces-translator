@@ -624,6 +624,45 @@ export async function uploadMedia(mediaPath: string): Promise<string | null> {
         return null;
     }
 
+    // Verify file has actual content and is stable (not currently being written)
+    try {
+        const stats = fs.statSync(mediaPath);
+        const fileSizeMB = (stats.size / (1024 * 1024)).toFixed(2);
+
+        if (stats.size === 0) {
+            logger.error(`[🐦 Upload] ❌ File exists but is empty (0 bytes): ${mediaPath}`);
+            return null;
+        }
+
+        logger.info(`[🐦 Upload] File verification: ${fileSizeMB} MB`);
+
+        // Wait a moment and check if file size is still changing (indicating active write)
+        await sleep(500); // 500ms delay
+        const stats2 = fs.statSync(mediaPath);
+
+        if (stats.size !== stats2.size) {
+            logger.warn(`[🐦 Upload] ⚠️ File size changed during verification (${stats.size} → ${stats2.size} bytes)`);
+            logger.warn(`[🐦 Upload] File may still be downloading. Waiting 2 seconds...`);
+            await sleep(2000);
+
+            // Final check
+            const stats3 = fs.statSync(mediaPath);
+            const finalSizeMB = (stats3.size / (1024 * 1024)).toFixed(2);
+            logger.info(`[🐦 Upload] Final file size after wait: ${finalSizeMB} MB`);
+
+            if (stats3.size === 0) {
+                logger.error(`[🐦 Upload] ❌ File is still empty after waiting`);
+                return null;
+            }
+        }
+
+        logger.info(`[🐦 Upload] ✅ File validation passed, proceeding with upload`);
+
+    } catch (statError) {
+        logger.error(`[🐦 Upload] ❌ Error validating file:`, statError);
+        return null;
+    }
+
     // Determine MIME type based on file extension
     const ext = mediaPath.toLowerCase();
     let mimeType: EUploadMimeType;
