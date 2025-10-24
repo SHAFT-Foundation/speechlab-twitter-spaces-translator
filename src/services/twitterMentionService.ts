@@ -157,12 +157,25 @@ export async function testTwitterApiConnection(): Promise<boolean> {
         } catch (mentionError: any) {
             // If we hit rate limit (429), that's actually OK - it means credentials work
             if (mentionError.code === 429) {
-                logger.warn('[🐦 API Test] ⚠️ Rate limited on mentions endpoint (expected if recently used)');
+                // CRITICAL: Check if this is a FALSE 429 error
+                // Sometimes Twitter returns 429 even when remaining > 0
+                const isFalse429 = mentionError.rateLimit && mentionError.rateLimit.remaining > 0;
+
+                if (isFalse429) {
+                    logger.warn('[🐦 API Test] ⚠️⚠️⚠️ FALSE RATE LIMIT DETECTED! ⚠️⚠️⚠️');
+                    logger.warn('[🐦 API Test] Twitter returned 429 but you have ' + mentionError.rateLimit.remaining + ' requests remaining!');
+                    logger.warn('[🐦 API Test] This is a Twitter API glitch - ignoring false rate limit');
+                    logger.info('[🐦 API Test] ✅ API connection test passed (false 429 ignored)');
+                } else {
+                    logger.warn('[🐦 API Test] ⚠️  Rate Limited (429) - But This Is OK!');
+                    logger.warn('[🐦 API Test] ========================================');
+                    logger.warn('[🐦 API Test] You are currently rate limited by Twitter.');
+                    logger.warn('[🐦 API Test] ========================================');
+                }
 
                 if (mentionError.rateLimit && mentionError.rateLimit.reset) {
                     const resetTime = new Date(mentionError.rateLimit.reset * 1000);
                     const waitMinutes = Math.ceil((mentionError.rateLimit.reset * 1000 - Date.now()) / 60000);
-                    logger.warn('[🐦 API Test] ========================================');
                     logger.warn('[🐦 API Test] 📊 HTTP Rate Limit Headers (Error 429):');
                     logger.warn('[🐦 API Test] ========================================');
                     logger.warn('[🐦 API Test] x-rate-limit-limit: ' + mentionError.rateLimit.limit);
@@ -171,12 +184,14 @@ export async function testTwitterApiConnection(): Promise<boolean> {
                     logger.warn('[🐦 API Test] Reset time: ' + resetTime.toISOString() + ' (' + waitMinutes + ' minutes)');
                     logger.warn('[🐦 API Test] ========================================');
 
-                    // Store the reset time globally
-                    rateLimitResetTime = resetTime.getTime();
-                    logger.info('[🐦 API Test] 💾 Stored rate limit reset time for daemon');
+                    // Only store reset time if it's a REAL rate limit (remaining = 0)
+                    if (!isFalse429) {
+                        rateLimitResetTime = resetTime.getTime();
+                        logger.info('[🐦 API Test] 💾 Stored rate limit reset time for daemon');
+                    }
                 }
 
-                logger.info('[🐦 API Test] ✅ Credentials valid (rate limited but authenticated)');
+                logger.info('[🐦 API Test] ✅ Credentials valid (rate limit status checked)');
             } else {
                 // Other errors are actual failures
                 logger.error('[🐦 API Test] ❌ Failed to access mentions endpoint');
