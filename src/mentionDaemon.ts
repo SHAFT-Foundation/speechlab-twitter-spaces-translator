@@ -853,42 +853,81 @@ async function performBackendProcessing(initData: InitiationResult): Promise<Bac
                 d.category === 'video' && d.format === 'mp4' && d.operationType === 'OUTPUT'
             );
 
-            // If video not found immediately, retry up to 3 times with 10s delay (race condition fix)
+            // If video not found immediately, retry up to 10 times with increasing delays
+            // (Speechlab might still be uploading the video to S3)
             if (!outputVideo?.presignedURL) {
-                logger.warn(`[⚙️ Backend] Video output not found in initial response. Retrying up to 3 times...`);
-                for (let retryAttempt = 1; retryAttempt <= 3; retryAttempt++) {
-                    logger.info(`[⚙️ Backend] Retry ${retryAttempt}/3: Waiting 10 seconds then re-fetching project...`);
-                    await new Promise(resolve => setTimeout(resolve, 10000)); // Wait 10 seconds
+                logger.warn(`[⚙️ Backend] Video output not found in initial response. Retrying up to 10 times with exponential backoff...`);
+                const retryDelays = [5000, 5000, 10000, 10000, 15000, 20000, 30000, 30000, 45000, 60000]; // Total: ~4 minutes
 
-                    // Re-fetch the project
+                for (let retryAttempt = 1; retryAttempt <= retryDelays.length; retryAttempt++) {
+                    const delayMs = retryDelays[retryAttempt - 1];
+                    const delaySec = (delayMs / 1000).toFixed(0);
+                    logger.info(`[⚙️ Backend] Retry ${retryAttempt}/${retryDelays.length}: Waiting ${delaySec}s then re-fetching project from Speechlab API...`);
+                    await new Promise(resolve => setTimeout(resolve, delayMs));
+
+                    // Re-fetch the project from Speechlab API
                     const refetchedProject = await getProjectByThirdPartyID(thirdPartyID);
                     if (refetchedProject) {
-                        logger.info(`[⚙️ Backend] Re-fetched project. Checking for video output...`);
+                        logger.info(`[⚙️ Backend] Re-fetched project ${refetchedProject.id}. Status: ${refetchedProject.job?.status}. Checking for video output...`);
+
+                        // Update completedProject reference for final logging
+                        completedProject = refetchedProject;
+
                         outputVideo = refetchedProject.translations?.[0]?.dub?.[0]?.medias?.find(d =>
                             d.category === 'video' && d.format === 'mp4' && d.operationType === 'OUTPUT'
                         );
 
                         if (outputVideo?.presignedURL) {
-                            logger.info(`[⚙️ Backend] ✅ Found video output on retry ${retryAttempt}!`);
+                            logger.info(`[⚙️ Backend] ✅ Found video output on retry ${retryAttempt}! URL: ${outputVideo.presignedURL}`);
                             break; // Found it!
                         } else {
-                            logger.warn(`[⚙️ Backend] Retry ${retryAttempt}/3: Video still not found.`);
+                            const availableMedias = refetchedProject.translations?.[0]?.dub?.[0]?.medias || [];
+                            logger.warn(`[⚙️ Backend] Retry ${retryAttempt}/${retryDelays.length}: Video still not found. Available media count: ${availableMedias.length}`);
+
+                            // Log what we found on every 3rd retry
+                            if (retryAttempt % 3 === 0) {
+                                availableMedias.forEach((media, idx) => {
+                                    logger.info(`[⚙️ Backend]   Media ${idx}: ${media.category}/${media.format}/${media.operationType} - hasURL: ${!!media.presignedURL}`);
+                                });
+                            }
                         }
                     } else {
-                        logger.error(`[⚙️ Backend] Failed to re-fetch project on retry ${retryAttempt}.`);
+                        logger.error(`[⚙️ Backend] Failed to re-fetch project from Speechlab API on retry ${retryAttempt}.`);
                     }
+                }
+
+                if (!outputVideo?.presignedURL) {
+                    logger.error(`[⚙️ Backend] ❌ Video URL still not available after ${retryDelays.length} retries (~4 minutes of waiting).`);
                 }
             }
 
             if (!outputVideo?.presignedURL) {
                 // Log all available media to understand what we got
                 const allMedias = completedProject.translations?.[0]?.dub?.[0]?.medias || [];
+                logger.error(`[⚙️ Backend] ========================================`);
                 logger.error(`[⚙️ Backend] ❌ DUBBED VIDEO output not found after retries!`);
+                logger.error(`[⚙️ Backend] ========================================`);
+                logger.error(`[⚙️ Backend] Project ID: ${completedProject.id}`);
+                logger.error(`[⚙️ Backend] ThirdPartyID: ${thirdPartyID}`);
+                logger.error(`[⚙️ Backend] Project Status: ${completedProject.job?.status}`);
                 logger.error(`[⚙️ Backend] Available medias count: ${allMedias.length}`);
+                logger.error(`[⚙️ Backend] ========================================`);
+
                 allMedias.forEach((media, idx) => {
-                    logger.error(`[⚙️ Backend]   Media ${idx}: category=${media.category}, format=${media.format}, operationType=${media.operationType}, hasURL=${!!media.presignedURL}`);
+                    logger.error(`[⚙️ Backend] Media ${idx}:`);
+                    logger.error(`[⚙️ Backend]   - category: ${media.category}`);
+                    logger.error(`[⚙️ Backend]   - format: ${media.format}`);
+                    logger.error(`[⚙️ Backend]   - operationType: ${media.operationType}`);
+                    logger.error(`[⚙️ Backend]   - hasURL: ${!!media.presignedURL}`);
+                    logger.error(`[⚙️ Backend]   - url: ${media.presignedURL || 'NONE'}`);
                 });
-                videoProcessingError = 'SpeechLab did not return dubbed video output after 3 retries';
+
+                logger.error(`[⚙️ Backend] ========================================`);
+                logger.error(`[⚙️ Backend] FULL PROJECT RESPONSE (for debugging):`);
+                logger.error(JSON.stringify(completedProject, null, 2));
+                logger.error(`[⚙️ Backend] ========================================`);
+
+                videoProcessingError = 'SpeechLab did not return dubbed video output after 3 retries - check logs for full response';
             } else {
                 logger.info(`[⚙️ Backend] ✅ Found DUBBED VIDEO URL: ${outputVideo.presignedURL}`);
                 const TEMP_VIDEO_DIR = path.join(process.cwd(), 'temp_video');
@@ -1439,17 +1478,35 @@ async function runFinalReplyQueue(): Promise<void> {
                 }
             }
 
-            // Update Supabase with completion status
-            await updateMentionStatus(mentionInfo.tweetId, 'complete', {
-                third_party_id: backendResult.thirdPartyID,
-                project_id: backendResult.projectId,
-                sharing_link: backendResult.sharingLink,
-                public_video_url: backendResult.publicVideoUrl,
-                public_mp3_url: backendResult.publicMp3Url
-            });
+            // Determine if this should be marked as complete or failed
+            // If it's a video mention but we don't have the video URL, mark as failed to enable retry
+            const shouldMarkComplete = backendResult.success &&
+                (!mentionInfo.hasVideo || backendResult.publicVideoUrl);
+
+            if (shouldMarkComplete) {
+                // Update Supabase with completion status
+                await updateMentionStatus(mentionInfo.tweetId, 'complete', {
+                    third_party_id: backendResult.thirdPartyID,
+                    project_id: backendResult.projectId,
+                    sharing_link: backendResult.sharingLink,
+                    public_video_url: backendResult.publicVideoUrl,
+                    public_mp3_url: backendResult.publicMp3Url
+                });
+            } else {
+                // Video URL is missing for a video mention - mark as failed to enable retry
+                const detailedError = `Video URL not available from Speechlab. Project completed (${backendResult.projectId}) but video output missing. Error: ${backendResult.error || 'Unknown'}`;
+                logger.warn(`[↩️ Reply Queue] Video URL missing for video mention ${mentionInfo.tweetId}. Marking as failed to enable retry.`);
+                logger.error(`[↩️ Reply Queue] Detailed error: ${detailedError}`);
+                await updateMentionStatus(mentionInfo.tweetId, 'failed', {
+                    third_party_id: backendResult.thirdPartyID,
+                    project_id: backendResult.projectId,
+                    sharing_link: backendResult.sharingLink,
+                    error_message: detailedError
+                });
+            }
 
             // --- Mark Processed After Successful Reply ---
-            if (backendResult.success) { // Only mark processed if the backend succeeded
+            if (shouldMarkComplete) { // Only mark processed if truly complete
                 logger.info(`[↩️ Reply Queue] Marking mention ${mentionInfo.tweetId} as processed now.`);
                 try {
                     await markMentionAsProcessed(mentionInfo.tweetId, processedMentions); 
