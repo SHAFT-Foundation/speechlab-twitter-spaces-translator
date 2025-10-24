@@ -207,10 +207,23 @@ export async function testTwitterApiConnection(): Promise<boolean> {
     } catch (error: any) {
         // Handle rate limit on authentication endpoint
         if (error.code === 429) {
-            logger.warn('[🐦 API Test] ========================================');
-            logger.warn('[🐦 API Test] ⚠️ Rate Limited (429) - But This Is OK!');
-            logger.warn('[🐦 API Test] ========================================');
-            logger.warn('[🐦 API Test] You are currently rate limited by Twitter.');
+            // CRITICAL: Check if this is a FALSE 429 error
+            // Sometimes Twitter returns 429 even when remaining > 0
+            const isFalse429 = error.rateLimit && error.rateLimit.remaining > 0;
+
+            if (isFalse429) {
+                logger.warn('[🐦 API Test] ========================================');
+                logger.warn('[🐦 API Test] ⚠️⚠️⚠️ FALSE RATE LIMIT DETECTED! ⚠️⚠️⚠️');
+                logger.warn('[🐦 API Test] ========================================');
+                logger.warn('[🐦 API Test] Twitter returned 429 but you have ' + error.rateLimit.remaining + ' requests remaining!');
+                logger.warn('[🐦 API Test] This is a Twitter API glitch - ignoring false rate limit');
+                logger.info('[🐦 API Test] ✅ API connection test passed (false 429 ignored)');
+            } else {
+                logger.warn('[🐦 API Test] ========================================');
+                logger.warn('[🐦 API Test] ⚠️ Rate Limited (429) - But This Is OK!');
+                logger.warn('[🐦 API Test] ========================================');
+                logger.warn('[🐦 API Test] You are currently rate limited by Twitter.');
+            }
 
             if (error.rateLimit && error.rateLimit.reset) {
                 const resetTime = new Date(error.rateLimit.reset * 1000);
@@ -224,9 +237,13 @@ export async function testTwitterApiConnection(): Promise<boolean> {
                 logger.warn('[🐦 API Test] Reset time: ' + resetTime.toISOString() + ' (' + waitMinutes + ' minutes)');
                 logger.warn('[🐦 API Test] ========================================');
 
-                // Store the reset time
-                rateLimitResetTime = resetTime.getTime();
-                logger.info('[🐦 API Test] 💾 Stored rate limit reset time - daemon will wait');
+                // Only store reset time if it's a REAL rate limit (remaining = 0)
+                if (!isFalse429) {
+                    rateLimitResetTime = resetTime.getTime();
+                    logger.info('[🐦 API Test] 💾 Stored rate limit reset time - daemon will wait');
+                } else {
+                    logger.info('[🐦 API Test] ⏭️  Skipping reset time storage (false 429)');
+                }
             }
 
             logger.info('[🐦 API Test] ========================================');
