@@ -825,7 +825,7 @@ async function performBackendProcessing(initData: InitiationResult): Promise<Bac
         logger.info(`[⚙️ Backend] Waiting up to 6 hours for SpeechLab project completion (thirdPartyID: ${thirdPartyID})...`);
         const maxWaitTimeMs = 6 * 60 * 60 * 1000; // 6 hours in milliseconds
         // Pass thirdPartyID to wait function, as it uses that for polling
-        const completedProject = await waitForProjectCompletion(thirdPartyID, maxWaitTimeMs); 
+        let completedProject = await waitForProjectCompletion(thirdPartyID, maxWaitTimeMs); 
         if (!completedProject || completedProject.job?.status !== 'COMPLETE') {
             const finalStatus = completedProject?.job?.status || 'TIMEOUT';
             // Update our tracking with failed status
@@ -849,9 +849,45 @@ async function performBackendProcessing(initData: InitiationResult): Promise<Bac
             logger.debug(JSON.stringify(completedProject, null, 2));
 
             // Look for dubbed VIDEO file (SpeechLab returns MP4 for video dubbing)
+            logger.info(`[⚙️ Backend] ========================================`);
+            logger.info(`[⚙️ Backend] 🔍 SEARCHING FOR VIDEO OUTPUT IN SPEECHLAB RESPONSE`);
+            logger.info(`[⚙️ Backend] ========================================`);
+            logger.info(`[⚙️ Backend] Project ID: ${completedProject.id}`);
+            logger.info(`[⚙️ Backend] Translations count: ${completedProject.translations?.length || 0}`);
+
+            if (completedProject.translations?.[0]) {
+                logger.info(`[⚙️ Backend] First translation - dub count: ${completedProject.translations[0].dub?.length || 0}`);
+
+                if (completedProject.translations[0].dub?.[0]) {
+                    const firstDub = completedProject.translations[0].dub[0];
+                    logger.info(`[⚙️ Backend] First dub - medias count: ${firstDub.medias?.length || 0}`);
+
+                    if (firstDub.medias && firstDub.medias.length > 0) {
+                        logger.info(`[⚙️ Backend] ALL MEDIAS IN FIRST DUB:`);
+                        firstDub.medias.forEach((media, idx) => {
+                            logger.info(`[⚙️ Backend]   Media[${idx}]:`);
+                            logger.info(`[⚙️ Backend]     - category: ${media.category}`);
+                            logger.info(`[⚙️ Backend]     - format: ${media.format}`);
+                            logger.info(`[⚙️ Backend]     - operationType: ${media.operationType}`);
+                            logger.info(`[⚙️ Backend]     - presignedURL exists: ${!!media.presignedURL}`);
+                            if (media.presignedURL) {
+                                logger.info(`[⚙️ Backend]     - presignedURL: ${media.presignedURL.substring(0, 100)}...`);
+                            }
+                        });
+                    }
+                }
+            }
+            logger.info(`[⚙️ Backend] ========================================`);
+
             let outputVideo = completedProject.translations?.[0]?.dub?.[0]?.medias?.find(d =>
                 d.category === 'video' && d.format === 'mp4' && d.operationType === 'OUTPUT'
             );
+
+            if (outputVideo?.presignedURL) {
+                logger.info(`[⚙️ Backend] ✅ FOUND VIDEO OUTPUT: category=${outputVideo.category}, format=${outputVideo.format}, operationType=${outputVideo.operationType}`);
+            } else {
+                logger.error(`[⚙️ Backend] ❌ VIDEO OUTPUT NOT FOUND with criteria: category='video', format='mp4', operationType='OUTPUT'`);
+            }
 
             // If video not found immediately, retry up to 10 times with increasing delays
             // (Speechlab might still be uploading the video to S3)
