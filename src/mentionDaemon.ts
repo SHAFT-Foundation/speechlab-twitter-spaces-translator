@@ -1361,7 +1361,7 @@ async function runFinalReplyQueue(): Promise<void> {
                 linkParts.push(`Link: ${backendResult.sharingLink}`);
             }
             // Construct success message with links in the desired order - ensure username has @ symbol
-            finalMessage = `${ensureAtSymbol(mentionInfo.username)} Your ${sourceLanguageName} to ${targetLanguageName} dub is ready! $shaft 🎉 ${linkParts.join(' | ')}`;
+            finalMessage = `${ensureAtSymbol(mentionInfo.username)} Your ${sourceLanguageName} to ${targetLanguageName} dub is ready! Provided by @shaftfinance $shaft 🎉 ${linkParts.join(' | ')}`;
             
         } else {
             // Neither video nor MP3 is available, even though backendResult.success is true
