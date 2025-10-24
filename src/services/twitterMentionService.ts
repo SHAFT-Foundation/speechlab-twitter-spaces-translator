@@ -327,7 +327,9 @@ export async function fetchMentions(sinceId?: string, maxResults: number = 100):
                 max_results: clampedMaxResults,
                 'tweet.fields': 'created_at,author_id,conversation_id,attachments,referenced_tweets',
                 'user.fields': 'username',
-                expansions: 'author_id,attachments.media_keys,referenced_tweets.id,referenced_tweets.id.attachments.media_keys',
+                // CRITICAL: referenced_tweets.id expansion tells Twitter to include the parent tweet data
+                // attachments.media_keys expansion applies to BOTH mention tweets AND referenced tweets
+                expansions: 'author_id,attachments.media_keys,referenced_tweets.id,referenced_tweets.id.author_id',
                 'media.fields': 'type,url,variants,duration_ms,media_key',
             };
 
