@@ -279,10 +279,10 @@ export async function testTwitterApiConnection(): Promise<boolean> {
  * Use fetchVideoForMention() for on-demand video fetching.
  *
  * @param sinceId Optional tweet ID to only fetch mentions newer than this
- * @param maxResults Maximum number of results to return (default 10, max 100)
+ * @param maxResults Maximum number of results to return (default 100, max 100)
  * @returns Array of mention data (without video URLs - fetch separately if needed)
  */
-export async function fetchMentions(sinceId?: string, maxResults: number = 10): Promise<MentionData[]> {
+export async function fetchMentions(sinceId?: string, maxResults: number = 100): Promise<MentionData[]> {
     logger.info('[🐦 Mentions] Fetching mentions from Twitter API...');
 
     // Retry loop for rate limiting
