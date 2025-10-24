@@ -617,10 +617,13 @@ export async function fetchMentions(sinceId?: string, maxResults: number = 100):
  * @returns Media ID string or null if failed
  */
 export async function uploadMedia(mediaPath: string): Promise<string | null> {
-    logger.info(`[🐦 Upload] Starting media upload for: ${mediaPath}`);
+    logger.info(`[🐦 Upload] ========================================`);
+    logger.info(`[🐦 Upload] Starting media upload`);
+    logger.info(`[🐦 Upload] File path: ${mediaPath}`);
+    logger.info(`[🐦 Upload] ========================================`);
 
     if (!fs.existsSync(mediaPath)) {
-        logger.error(`[🐦 Upload] File not found: ${mediaPath}`);
+        logger.error(`[🐦 Upload] ❌ File not found: ${mediaPath}`);
         return null;
     }
 
@@ -628,13 +631,16 @@ export async function uploadMedia(mediaPath: string): Promise<string | null> {
     try {
         const stats = fs.statSync(mediaPath);
         const fileSizeMB = (stats.size / (1024 * 1024)).toFixed(2);
+        const fileSizeKB = (stats.size / 1024).toFixed(2);
 
         if (stats.size === 0) {
             logger.error(`[🐦 Upload] ❌ File exists but is empty (0 bytes): ${mediaPath}`);
             return null;
         }
 
-        logger.info(`[🐦 Upload] File verification: ${fileSizeMB} MB`);
+        logger.info(`[🐦 Upload] ✅ File exists: ${mediaPath}`);
+        logger.info(`[🐦 Upload] 📊 File size: ${fileSizeMB} MB (${fileSizeKB} KB, ${stats.size} bytes)`);
+        logger.info(`[🐦 Upload] 🕒 File modified: ${stats.mtime.toISOString()}`);
 
         // Wait a moment and check if file size is still changing (indicating active write)
         await sleep(500); // 500ms delay

@@ -1921,11 +1921,8 @@ async function main() {
 
                     // NOW validate if this is a valid dubbing request
                     if (!isValidDubbingRequest(mention.text)) {
-                        logger.info(`[😈 Daemon Polling] ⏭️  Mention ${mention.tweetId} is not a valid dubbing request - marking as final_failure`);
-                        await updateMentionStatus(mention.tweetId, 'final_failure', {
-                            error_message: 'Invalid dubbing request format'
-                        });
-                        processedMentions.add(mention.tweetId);
+                        logger.info(`[😈 Daemon Polling] ⏭️  Mention ${mention.tweetId} is not a valid dubbing request - skipping (not saving to DB)`);
+                        skippedInvalidMentions.add(mention.tweetId);
                         continue;
                     }
 
