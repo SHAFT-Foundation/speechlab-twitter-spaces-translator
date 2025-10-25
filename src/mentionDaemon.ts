@@ -1206,7 +1206,7 @@ function addToFinalReplyQueue(mentionInfo: MentionInfo, backendResult: BackendRe
  */
 // Track when worker last started to detect stuck state
 let lastWorkerStartTime: number | null = null;
-const WORKER_TIMEOUT_MS = 60000; // 60 seconds - if worker has been "running" for this long, force reset
+const WORKER_TIMEOUT_MS = 600000; // 10 minutes - allows for retry logic with exponential backoff (fetchVideoForMention can take ~7min with 429 retries)
 
 async function runInitiationQueue(): Promise<void> {
     logger.info(`\n${'='.repeat(80)}`);
@@ -1618,13 +1618,15 @@ async function runFinalReplyQueue(): Promise<void> {
                 if (downloadSuccess) {
                     logger.info(`[↩️ Reply Queue] ✅ Video downloaded for attachment: ${localVideoPath}`);
                     mediaPathToAttach = localVideoPath;
+                    // ALWAYS include URL as fallback in case upload to Twitter fails
+                    finalMessage += `\n\nWatch here: ${backendResult.publicVideoUrl}`;
                 } else {
                     logger.warn(`[↩️ Reply Queue] Failed to download video for attachment. Will include URL in text.`);
-                    finalMessage += `\n\n${backendResult.publicVideoUrl}`;
+                    finalMessage += `\n\nWatch here: ${backendResult.publicVideoUrl}`;
                 }
             } catch (videoDownloadError) {
                 logger.error(`[↩️ Reply Queue] Error downloading video for attachment:`, videoDownloadError);
-                finalMessage += `\n\n${backendResult.publicVideoUrl}`;
+                finalMessage += `\n\nWatch here: ${backendResult.publicVideoUrl}`;
             }
         } else if (hasMp3Link) {
             // MP3 is available - construct the success message

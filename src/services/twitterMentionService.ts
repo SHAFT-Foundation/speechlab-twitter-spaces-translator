@@ -867,12 +867,14 @@ export async function postReplyWithMedia(
             try {
                 mediaId = await uploadMedia(mediaPath);
                 if (!mediaId) {
-                    logger.error('[🐦 Reply] ❌ Failed to upload media');
-                    return false;
+                    logger.warn('[🐦 Reply] ⚠️ Failed to upload media after all retries');
+                    logger.warn('[🐦 Reply] Will post text-only reply (media upload failed but reply will still go through)');
+                    // Continue without media instead of failing completely
                 }
             } catch (uploadError: any) {
                 logger.error('[🐦 Reply] ❌ Exception during media upload:', uploadError);
-                return false;
+                logger.warn('[🐦 Reply] Will post text-only reply (media upload exception but reply will still go through)');
+                // Continue without media instead of failing completely
             }
         }
 
@@ -1101,8 +1103,9 @@ export async function fetchVideoForMention(mentionId: string): Promise<{ videoUr
                     const backoffMinutes = Math.floor(backoffDelay / 60000);
                     const backoffSeconds = Math.round((backoffDelay % 60000) / 1000);
                     logger.error(`[🐦 Video Fetch] 🚨 RATE LIMIT (429) fetching mention ${mentionId} - Attempt ${attempt + 1}/${MAX_RETRIES + 1}`);
-                    logger.info(`[🐦 Video Fetch] ⏳ Retrying in ${backoffMinutes}m ${backoffSeconds}s...`);
+                    logger.info(`[🐦 Video Fetch] ⏳ Retrying in ${backoffMinutes}m ${backoffSeconds}s... (worker still alive, not stuck)`);
                     await sleep(backoffDelay);
+                    logger.info(`[🐦 Video Fetch] ⏰ Backoff wait complete, retrying now...`);
                     continue;
                 }
                 throw error; // Re-throw if not 429 or last attempt
@@ -1165,8 +1168,9 @@ export async function fetchVideoForMention(mentionId: string): Promise<{ videoUr
                     const backoffMinutes = Math.floor(backoffDelay / 60000);
                     const backoffSeconds = Math.round((backoffDelay % 60000) / 1000);
                     logger.error(`[🐦 Video Fetch] 🚨 RATE LIMIT (429) fetching parent tweet ${parentTweetId} - Attempt ${attempt + 1}/${MAX_RETRIES + 1}`);
-                    logger.info(`[🐦 Video Fetch] ⏳ Retrying in ${backoffMinutes}m ${backoffSeconds}s...`);
+                    logger.info(`[🐦 Video Fetch] ⏳ Retrying in ${backoffMinutes}m ${backoffSeconds}s... (worker still alive, not stuck)`);
                     await sleep(backoffDelay);
+                    logger.info(`[🐦 Video Fetch] ⏰ Backoff wait complete, retrying now...`);
                     continue;
                 }
                 throw error; // Re-throw if not 429 or last attempt

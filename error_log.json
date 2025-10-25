@@ -250,5 +250,17 @@
     "error": "Failed to post reply",
     "timestamp": "2025-10-25T02:18:35.458Z",
     "count": 3
+  },
+  "1981910240586248555": {
+    "phase": "backend",
+    "error": "Unknown backend error",
+    "timestamp": "2025-10-25T02:47:28.538Z",
+    "count": 1
+  },
+  "1981911911353795066": {
+    "phase": "backend",
+    "error": "Unknown backend error",
+    "timestamp": "2025-10-25T02:49:04.771Z",
+    "count": 1
   }
 }
