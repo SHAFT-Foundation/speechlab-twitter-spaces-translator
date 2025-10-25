@@ -890,7 +890,12 @@ export async function postReplyWithMedia(
                 logger.info(`[🐦 Reply] 📤 REQUEST DETAILS`);
                 logger.info(`[🐦 Reply] ========================================`);
                 logger.info(`[🐦 Reply] Endpoint: POST /2/tweets`);
-                logger.info(`[🐦 Reply] Payload:`, JSON.stringify(tweetPayload, null, 2));
+                logger.info(`[🐦 Reply] Payload Text: ${tweetPayload.text}`);
+                logger.info(`[🐦 Reply] Reply To Tweet ID: ${tweetPayload.reply?.in_reply_to_tweet_id || 'N/A'}`);
+                if (tweetPayload.media) {
+                    logger.info(`[🐦 Reply] Media IDs: ${JSON.stringify(tweetPayload.media.media_ids)}`);
+                }
+                logger.info(`[🐦 Reply] Full Payload Object:`, tweetPayload);
                 logger.info(`[🐦 Reply] ========================================`);
 
                 const result = await rwClient.v2.tweet(tweetPayload);
@@ -898,7 +903,9 @@ export async function postReplyWithMedia(
                 logger.info(`[🐦 Reply] ========================================`);
                 logger.info(`[🐦 Reply] 📥 RESPONSE DETAILS`);
                 logger.info(`[🐦 Reply] ========================================`);
-                logger.info(`[🐦 Reply] Full response:`, JSON.stringify(result, null, 2));
+                logger.info(`[🐦 Reply] Response Data:`, result.data);
+                logger.info(`[🐦 Reply] Response Errors:`, result.errors);
+                logger.info(`[🐦 Reply] Full Response Object:`, result);
                 logger.info(`[🐦 Reply] ========================================`);
 
                 if (result.data?.id) {
@@ -918,17 +925,26 @@ export async function postReplyWithMedia(
                 logger.error(`[🐦 Reply] Error Code: ${error.code || 'N/A'}`);
                 logger.error(`[🐦 Reply] Error Message: ${error.message || 'No message'}`);
                 logger.error(`[🐦 Reply] Error Type: ${error.type || 'unknown'}`);
-                logger.error(`[🐦 Reply] ========================================`);
-                logger.error(`[🐦 Reply] Full Error Object:`, JSON.stringify(error, null, 2));
+                logger.error(`[🐦 Reply] Error Name: ${error.name || 'unknown'}`);
                 logger.error(`[🐦 Reply] ========================================`);
 
+                // Log error data object
                 if (error.data) {
-                    logger.error(`[🐦 Reply] Error Data:`, JSON.stringify(error.data, null, 2));
+                    logger.error(`[🐦 Reply] Error Data Object:`, error.data);
+                    logger.error(`[🐦 Reply] Error Data Title: ${error.data.title || 'N/A'}`);
+                    logger.error(`[🐦 Reply] Error Data Detail: ${error.data.detail || 'N/A'}`);
+                    logger.error(`[🐦 Reply] Error Data Type: ${error.data.type || 'N/A'}`);
                 }
 
+                // Log error array
                 if (error.errors) {
-                    logger.error(`[🐦 Reply] Error Array:`, JSON.stringify(error.errors, null, 2));
+                    logger.error(`[🐦 Reply] Error Array:`, error.errors);
                 }
+
+                // Log the complete error object properties
+                logger.error(`[🐦 Reply] Error Keys:`, Object.keys(error));
+                logger.error(`[🐦 Reply] Full Error Object:`, error);
+                logger.error(`[🐦 Reply] ========================================`);
 
                 // Handle rate limiting with exponential backoff
                 if (error.code === 429) {
