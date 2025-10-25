@@ -713,12 +713,23 @@ export async function uploadMedia(mediaPath: string): Promise<string | null> {
     try {
         for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
             try {
-                logger.debug(`[🐦 Upload] Uploading with mime type: ${mimeType} (attempt ${attempt + 1}/${MAX_RETRIES + 1})`);
+                logger.info(`[🐦 Upload] ========================================`);
+                logger.info(`[🐦 Upload] 📤 UPLOAD REQUEST (Attempt ${attempt + 1}/${MAX_RETRIES + 1})`);
+                logger.info(`[🐦 Upload] ========================================`);
+                logger.info(`[🐦 Upload] Endpoint: POST /1.1/media/upload.json`);
+                logger.info(`[🐦 Upload] File path: ${mediaPath}`);
+                logger.info(`[🐦 Upload] MIME type: ${mimeType}`);
+                logger.info(`[🐦 Upload] ========================================`);
 
                 // Upload using v1.1 API
                 const mediaId = await twitterClient.v1.uploadMedia(mediaPath, { mimeType });
 
-                logger.info(`[🐦 Upload] ✅ Media uploaded successfully. Media ID: ${mediaId}`);
+                logger.info(`[🐦 Upload] ========================================`);
+                logger.info(`[🐦 Upload] 📥 UPLOAD RESPONSE - SUCCESS`);
+                logger.info(`[🐦 Upload] ========================================`);
+                logger.info(`[🐦 Upload] ✅ Media uploaded successfully`);
+                logger.info(`[🐦 Upload] Media ID: ${mediaId}`);
+                logger.info(`[🐦 Upload] ========================================`);
                 return mediaId;
 
             } catch (error: any) {
@@ -727,18 +738,22 @@ export async function uploadMedia(mediaPath: string): Promise<string | null> {
 
                 // Log comprehensive error details
                 logger.error(`[🐦 Upload] ========================================`);
-                logger.error(`[🐦 Upload] ❌ Upload Error (Attempt ${attempt + 1}/${MAX_RETRIES + 1})`);
+                logger.error(`[🐦 Upload] ❌ TWITTER API UPLOAD ERROR`);
                 logger.error(`[🐦 Upload] ========================================`);
+                logger.error(`[🐦 Upload] Attempt: ${attempt + 1}/${MAX_RETRIES + 1}`);
                 logger.error(`[🐦 Upload] Error type: ${error.type || 'unknown'}`);
                 logger.error(`[🐦 Upload] Error code: ${error.code || 'N/A'}`);
                 logger.error(`[🐦 Upload] Error message: ${error.message || 'No message'}`);
+                logger.error(`[🐦 Upload] ========================================`);
+                logger.error(`[🐦 Upload] Full Error Object:`, JSON.stringify(error, null, 2));
+                logger.error(`[🐦 Upload] ========================================`);
 
                 if (error.errors) {
-                    logger.error(`[🐦 Upload] API Errors:`, JSON.stringify(error.errors, null, 2));
+                    logger.error(`[🐦 Upload] Error Array:`, JSON.stringify(error.errors, null, 2));
                 }
 
                 if (error.data) {
-                    logger.error(`[🐦 Upload] Error data:`, JSON.stringify(error.data, null, 2));
+                    logger.error(`[🐦 Upload] Error Data:`, JSON.stringify(error.data, null, 2));
                 }
 
                 // Log network-specific details
@@ -871,7 +886,20 @@ export async function postReplyWithMedia(
             try {
                 // Post tweet
                 logger.info(`[🐦 Reply] Posting tweet (attempt ${attempt + 1}/${MAX_RETRIES + 1})...`);
+                logger.info(`[🐦 Reply] ========================================`);
+                logger.info(`[🐦 Reply] 📤 REQUEST DETAILS`);
+                logger.info(`[🐦 Reply] ========================================`);
+                logger.info(`[🐦 Reply] Endpoint: POST /2/tweets`);
+                logger.info(`[🐦 Reply] Payload:`, JSON.stringify(tweetPayload, null, 2));
+                logger.info(`[🐦 Reply] ========================================`);
+
                 const result = await rwClient.v2.tweet(tweetPayload);
+
+                logger.info(`[🐦 Reply] ========================================`);
+                logger.info(`[🐦 Reply] 📥 RESPONSE DETAILS`);
+                logger.info(`[🐦 Reply] ========================================`);
+                logger.info(`[🐦 Reply] Full response:`, JSON.stringify(result, null, 2));
+                logger.info(`[🐦 Reply] ========================================`);
 
                 if (result.data?.id) {
                     logger.info(`[🐦 Reply] ✅ Reply posted successfully! Tweet ID: ${result.data.id}`);
@@ -883,6 +911,24 @@ export async function postReplyWithMedia(
 
             } catch (error: any) {
                 const isLastAttempt = attempt === MAX_RETRIES;
+
+                logger.error(`[🐦 Reply] ========================================`);
+                logger.error(`[🐦 Reply] ❌ TWITTER API ERROR`);
+                logger.error(`[🐦 Reply] ========================================`);
+                logger.error(`[🐦 Reply] Error Code: ${error.code || 'N/A'}`);
+                logger.error(`[🐦 Reply] Error Message: ${error.message || 'No message'}`);
+                logger.error(`[🐦 Reply] Error Type: ${error.type || 'unknown'}`);
+                logger.error(`[🐦 Reply] ========================================`);
+                logger.error(`[🐦 Reply] Full Error Object:`, JSON.stringify(error, null, 2));
+                logger.error(`[🐦 Reply] ========================================`);
+
+                if (error.data) {
+                    logger.error(`[🐦 Reply] Error Data:`, JSON.stringify(error.data, null, 2));
+                }
+
+                if (error.errors) {
+                    logger.error(`[🐦 Reply] Error Array:`, JSON.stringify(error.errors, null, 2));
+                }
 
                 // Handle rate limiting with exponential backoff
                 if (error.code === 429) {
