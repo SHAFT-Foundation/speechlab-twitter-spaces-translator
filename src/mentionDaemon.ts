@@ -1329,8 +1329,10 @@ async function runInitiationQueue(): Promise<void> {
                 logger.error(`${'❌'.repeat(80)}\n`);
 
                 logger.info(`[🐦 TWITTER] Posting error reply to @${mentionToProcess.username}...`);
+                // Add timestamp to make error message unique and avoid Twitter's duplicate content filter
+                const timestamp = new Date().toISOString().slice(11, 19); // HH:MM:SS format
                 await postReplyWithMedia(
-                    `${ensureAtSymbol(mentionToProcess.username)} Please mention me with a Space URL or video attachment!`,
+                    `${ensureAtSymbol(mentionToProcess.username)} Please mention me with a Space URL or video attachment! [${timestamp}]`,
                     mentionToProcess.tweetId
                 );
                 logger.info(`[🐦 TWITTER] ✅ Error reply posted`);

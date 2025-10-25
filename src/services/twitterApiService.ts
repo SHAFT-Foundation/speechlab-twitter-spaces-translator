@@ -21,7 +21,7 @@ const MIN_TWEET_INTERVAL_MS = 300000; // 5 minutes (300 seconds) between tweets 
 let rateLimitResetTime: number | null = null; // Track Twitter's rate limit reset time globally
 
 // Exponential backoff configuration
-const MAX_RETRIES = 10;
+const MAX_RETRIES = 5; // Reduced from 10 to avoid excessive delays
 const BASE_DELAY_MS = 60000; // Start with 1 minute for 429 errors
 const MAX_DELAY_MS = 900000; // Max 15 minutes
 

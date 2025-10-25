@@ -5,10 +5,6 @@ import path from 'path';
 // Using path.resolve ensures it finds .env in the project root
 dotenv.config({ path: path.resolve(process.cwd(), '.env') });
 
-// --- TEMPORARY DEBUG LOG ---
-console.log(`[DEBUG] Value of process.env.TWITTER_USERNAME after dotenv.config: '${process.env.TWITTER_USERNAME}'`);
-// --- END DEBUG LOG ---
-
 interface EnvConfig {
     SPEECHLAB_EMAIL: string;
     SPEECHLAB_PASSWORD: string;

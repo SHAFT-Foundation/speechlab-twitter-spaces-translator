@@ -34,7 +34,7 @@ const MIN_POLL_INTERVAL_MS = 2 * 60 * 1000; // 2 minutes between polls (allows ~
 let rateLimitResetTime: number | null = null; // Track rate limit reset time
 
 // Retry configuration
-const MAX_RETRIES = 10;
+const MAX_RETRIES = 5; // Reduced from 10 to avoid excessive delays
 const BASE_RETRY_DELAY_MS = 60000; // 1 minute base delay
 const MAX_RETRY_DELAY_MS = 900000; // 15 minutes max delay
 
@@ -737,6 +737,7 @@ export async function uploadMedia(mediaPath: string): Promise<string | null> {
             } catch (error: any) {
                 const isLastAttempt = attempt === MAX_RETRIES;
                 const isNetworkError = !error.code || error.type === 'request';
+                const isInvalidMediaError = error.message && error.message.includes('InvalidMedia');
 
                 // Log comprehensive error details
                 logger.error(`[🐦 Upload] ========================================`);
@@ -772,10 +773,14 @@ export async function uploadMedia(mediaPath: string): Promise<string | null> {
                 logger.error(`[🐦 Upload] Full error stack:`, error.stack);
                 logger.error(`[🐦 Upload] ========================================`);
 
-                // Retry on network errors
-                if (isNetworkError && !isLastAttempt) {
-                    const retryDelay = 5000; // 5 seconds for network errors
-                    logger.warn(`[🐦 Upload] ⚠️ Network error detected. Retrying in ${retryDelay/1000}s...`);
+                // Retry on network errors OR InvalidMedia (which is often a network/upload timeout issue)
+                if ((isNetworkError || isInvalidMediaError) && !isLastAttempt) {
+                    const retryDelay = 10000; // 10 seconds for upload errors (longer than standard network errors)
+                    if (isInvalidMediaError) {
+                        logger.warn(`[🐦 Upload] ⚠️ InvalidMedia error - likely network timeout during upload. Retrying in ${retryDelay/1000}s...`);
+                    } else {
+                        logger.warn(`[🐦 Upload] ⚠️ Network error detected. Retrying in ${retryDelay/1000}s...`);
+                    }
                     await sleep(retryDelay);
                     continue;
                 }
@@ -1079,12 +1084,30 @@ export async function getLatestTweetId(userId: string): Promise<string | null> {
  */
 export async function fetchVideoForMention(mentionId: string): Promise<{ videoUrl?: string; parentTweetId?: string }> {
     try {
-        // Get the mention tweet with media fields AND referenced tweets
-        const mentionTweet = await rwClient.v2.singleTweet(mentionId, {
-            'tweet.fields': 'referenced_tweets,attachments',
-            expansions: 'referenced_tweets.id,attachments.media_keys',
-            'media.fields': 'type,url,variants,duration_ms'
-        });
+        // Retry logic for the initial mention fetch
+        let mentionTweet: any;
+        for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+            try {
+                // Get the mention tweet with media fields AND referenced tweets
+                mentionTweet = await rwClient.v2.singleTweet(mentionId, {
+                    'tweet.fields': 'referenced_tweets,attachments',
+                    expansions: 'referenced_tweets.id,attachments.media_keys',
+                    'media.fields': 'type,url,variants,duration_ms'
+                });
+                break; // Success - exit retry loop
+            } catch (error: any) {
+                if (error.code === 429 && attempt < MAX_RETRIES) {
+                    const backoffDelay = getExponentialBackoffDelay(attempt);
+                    const backoffMinutes = Math.floor(backoffDelay / 60000);
+                    const backoffSeconds = Math.round((backoffDelay % 60000) / 1000);
+                    logger.error(`[🐦 Video Fetch] 🚨 RATE LIMIT (429) fetching mention ${mentionId} - Attempt ${attempt + 1}/${MAX_RETRIES + 1}`);
+                    logger.info(`[🐦 Video Fetch] ⏳ Retrying in ${backoffMinutes}m ${backoffSeconds}s...`);
+                    await sleep(backoffDelay);
+                    continue;
+                }
+                throw error; // Re-throw if not 429 or last attempt
+            }
+        }
 
         // FIRST: Check if the mention itself has a video attached
         if (mentionTweet.includes?.media && mentionTweet.includes.media.length > 0) {
@@ -1125,13 +1148,30 @@ export async function fetchVideoForMention(mentionId: string): Promise<{ videoUr
             return { videoUrl: cached.videoUrl, parentTweetId };
         }
 
-        // Fetch parent tweet with media
+        // Fetch parent tweet with media - with retry logic
         logger.info(`[🐦 Video Fetch] Fetching video from parent tweet ${parentTweetId}...`);
-        const parentTweetData = await rwClient.v2.singleTweet(parentTweetId, {
-            'tweet.fields': 'attachments',
-            expansions: 'attachments.media_keys',
-            'media.fields': 'type,url,variants,duration_ms'
-        });
+        let parentTweetData: any;
+        for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+            try {
+                parentTweetData = await rwClient.v2.singleTweet(parentTweetId, {
+                    'tweet.fields': 'attachments',
+                    expansions: 'attachments.media_keys',
+                    'media.fields': 'type,url,variants,duration_ms'
+                });
+                break; // Success - exit retry loop
+            } catch (error: any) {
+                if (error.code === 429 && attempt < MAX_RETRIES) {
+                    const backoffDelay = getExponentialBackoffDelay(attempt);
+                    const backoffMinutes = Math.floor(backoffDelay / 60000);
+                    const backoffSeconds = Math.round((backoffDelay % 60000) / 1000);
+                    logger.error(`[🐦 Video Fetch] 🚨 RATE LIMIT (429) fetching parent tweet ${parentTweetId} - Attempt ${attempt + 1}/${MAX_RETRIES + 1}`);
+                    logger.info(`[🐦 Video Fetch] ⏳ Retrying in ${backoffMinutes}m ${backoffSeconds}s...`);
+                    await sleep(backoffDelay);
+                    continue;
+                }
+                throw error; // Re-throw if not 429 or last attempt
+            }
+        }
 
         logger.debug(`[🐦 Video Fetch] Parent tweet response: ${JSON.stringify(parentTweetData, null, 2)}`);
 
