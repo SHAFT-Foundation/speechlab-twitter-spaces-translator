@@ -779,12 +779,29 @@ export async function uploadMedia(mediaPath: string): Promise<string | null> {
                         if (resetTime) {
                             logger.error(`[🐦 Upload] Reset time: ${resetTime.toISOString()} (in ${waitMinutes} minutes)`);
                         }
+
+                        // Warn about false rate limits
+                        if (error.rateLimit.remaining > 0) {
+                            logger.warn(`[🐦 Upload] ⚠️ FALSE RATE LIMIT? Remaining: ${error.rateLimit.remaining} (should be 0)`);
+                        }
                     }
 
-                    const backoffDelay = getExponentialBackoffDelay(attempt);
+                    // Use short delay for false 429s (remaining > 0), otherwise use exponential backoff
+                    let backoffDelay: number;
+                    let delaySource: string;
+
+                    if (error.rateLimit && error.rateLimit.remaining > 0) {
+                        backoffDelay = 5000; // 5 seconds for false 429s
+                        delaySource = "short retry (false 429)";
+                        logger.info(`[🐦 Upload] 🔄 Using SHORT DELAY for false rate limit (remaining: ${error.rateLimit.remaining})`);
+                    } else {
+                        backoffDelay = getExponentialBackoffDelay(attempt);
+                        delaySource = "exponential backoff";
+                    }
+
                     const backoffMinutes = Math.floor(backoffDelay / 60000);
                     const backoffSeconds = Math.round((backoffDelay % 60000) / 1000);
-                    logger.info(`[🐦 Upload] ⏳ Retrying in ${backoffMinutes}m ${backoffSeconds}s...`);
+                    logger.info(`[🐦 Upload] ⏳ Retrying in ${backoffMinutes}m ${backoffSeconds}s (${delaySource})...`);
                     await sleep(backoffDelay);
                     continue;
                 }
@@ -902,10 +919,22 @@ export async function postReplyWithMedia(
                         return false;
                     }
 
-                    const backoffDelay = getExponentialBackoffDelay(attempt);
+                    // Use short delay for false 429s (remaining > 0), otherwise use exponential backoff
+                    let backoffDelay: number;
+                    let delaySource: string;
+
+                    if (error.rateLimit && error.rateLimit.remaining > 0) {
+                        backoffDelay = 5000; // 5 seconds for false 429s
+                        delaySource = "short retry (false 429)";
+                        logger.info(`[🐦 Reply] 🔄 Using SHORT DELAY for false rate limit (remaining: ${error.rateLimit.remaining})`);
+                    } else {
+                        backoffDelay = getExponentialBackoffDelay(attempt);
+                        delaySource = "exponential backoff";
+                    }
+
                     const backoffMinutes = Math.floor(backoffDelay / 60000);
                     const backoffSeconds = Math.round((backoffDelay % 60000) / 1000);
-                    logger.info(`[🐦 Reply] ⏳ Retrying in ${backoffMinutes}m ${backoffSeconds}s...`);
+                    logger.info(`[🐦 Reply] ⏳ Retrying in ${backoffMinutes}m ${backoffSeconds}s (${delaySource})...`);
                     await sleep(backoffDelay);
                     continue;
 
