@@ -33,7 +33,7 @@ export interface MentionRecord {
     parent_username?: string;
     tweet_url: string;
     tweet_text: string;
-    status: 'pending' | 'initiating' | 'processing' | 'complete' | 'failed' | 'final_failure';
+    status: 'pending' | 'initiating' | 'processing' | 'complete' | 'failed' | 'final_failure' | 'skipped_no_video';
     retry_count?: number;
     third_party_id?: string;
     project_id?: string;

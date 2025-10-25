@@ -1323,33 +1323,28 @@ async function runInitiationQueue(): Promise<void> {
                 mentionToProcess.hasVideo = true;
                 mentionToProcess.videoM3u8Url = videoUrl;
             } else {
-                logger.error(`\n${'❌'.repeat(80)}`);
-                logger.error(`[🎥 VIDEO] FAILURE - No video found even after fetching parent tweet`);
-                logger.error(`[🎥 VIDEO] This mention cannot be processed - posting error reply to user`);
-                logger.error(`${'❌'.repeat(80)}\n`);
+                logger.warn(`\n${'⚠️'.repeat(80)}`);
+                logger.warn(`[🎥 VIDEO] No video found in mention or parent tweet`);
+                logger.warn(`[🎥 VIDEO] Silently skipping mention ${mentionToProcess.tweetId} - no error reply will be posted`);
+                logger.warn(`${'⚠️'.repeat(80)}\n`);
 
-                logger.info(`[🐦 TWITTER] Posting error reply to @${mentionToProcess.username}...`);
-                // Add timestamp to make error message unique and avoid Twitter's duplicate content filter
-                const timestamp = new Date().toISOString().slice(11, 19); // HH:MM:SS format
-                await postReplyWithMedia(
-                    `${ensureAtSymbol(mentionToProcess.username)} Please mention me with a Space URL or video attachment! [${timestamp}]`,
-                    mentionToProcess.tweetId
-                );
-                logger.info(`[🐦 TWITTER] ✅ Error reply posted`);
-
-                logger.info(`[💾 DATABASE] Updating mention status to 'failed' in database...`);
-                await updateMentionStatus(mentionToProcess.tweetId, 'failed', {
-                    error_message: 'No video found in mention or parent tweet'
+                // Don't post error reply - just mark as skipped and move on
+                logger.info(`[💾 DATABASE] Updating mention status to 'skipped_no_video' in database...`);
+                await updateMentionStatus(mentionToProcess.tweetId, 'skipped_no_video', {
+                    error_message: 'No video found in mention or parent tweet - skipped without reply'
                 });
-                logger.info(`[💾 DATABASE] ✅ Status updated to 'failed'`);
+                logger.info(`[💾 DATABASE] ✅ Status updated to 'skipped_no_video'`);
+
+                // Add to skipped set to prevent retry
+                skippedInvalidMentions.add(mentionToProcess.tweetId);
 
                 logger.info(`[🔒 STATE] Removing ${mentionToProcess.tweetId} from inProgressMentions Set`);
                 inProgressMentions.delete(mentionToProcess.tweetId);
 
-                logger.error(`\n${'🔓'.repeat(80)}`);
-                logger.error(`[WORKER EXIT] Mention processing failed - unlocking worker`);
-                logger.error(`[WORKER EXIT] 🔴 Setting worker flag to FALSE`);
-                logger.error(`${'🔓'.repeat(80)}\n`);
+                logger.info(`\n${'🔓'.repeat(80)}`);
+                logger.info(`[WORKER EXIT] Mention skipped - unlocking worker`);
+                logger.info(`[WORKER EXIT] 🔴 Setting worker flag to FALSE`);
+                logger.info(`${'🔓'.repeat(80)}\n`);
 
                 isInitiatingProcessing = false;
                 lastWorkerStartTime = null;
