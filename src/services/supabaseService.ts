@@ -212,3 +212,29 @@ export async function getStuckMentions(): Promise<MentionRecord[]> {
         return [];
     }
 }
+
+/**
+ * Get all unprocessed mentions (pending, failed, initiating, processing) with retry_count < 3
+ */
+export async function getUnprocessedMentions(): Promise<MentionRecord[]> {
+    try {
+        const supabase = getSupabase();
+
+        const { data, error} = await supabase
+            .from('mentions')
+            .select('*')
+            .in('status', ['pending', 'failed', 'initiating', 'processing'])
+            .lt('retry_count', 3)
+            .order('created_at', { ascending: true });
+
+        if (error) {
+            logger.error(`[📊 Supabase] Error fetching unprocessed mentions:`, error);
+            return [];
+        }
+
+        return data || [];
+    } catch (error) {
+        logger.error(`[📊 Supabase] Exception fetching unprocessed mentions:`, error);
+        return [];
+    }
+}

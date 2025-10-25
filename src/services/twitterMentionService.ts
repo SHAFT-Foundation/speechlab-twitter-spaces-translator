@@ -28,6 +28,8 @@ export { rateLimitPlugin };
 
 // Rate limiting state
 let lastPollTime = 0;
+let lastTweetPostTime = 0;
+const MIN_TWEET_POST_INTERVAL_MS = 10000; // 10 seconds between tweets to avoid rate limits
 const MIN_POLL_INTERVAL_MS = 2 * 60 * 1000; // 2 minutes between polls (allows ~7 polls per 15min window)
 let rateLimitResetTime: number | null = null; // Track rate limit reset time
 
@@ -881,6 +883,14 @@ export async function postReplyWithMedia(
             tweetPayload.media = { media_ids: [mediaId] };
         }
 
+        // Wait if we posted a tweet recently to avoid rate limits
+        const timeSinceLastPost = Date.now() - lastTweetPostTime;
+        if (timeSinceLastPost < MIN_TWEET_POST_INTERVAL_MS) {
+            const waitTime = MIN_TWEET_POST_INTERVAL_MS - timeSinceLastPost;
+            logger.info(`[🐦 Reply] ⏳ Waiting ${(waitTime / 1000).toFixed(1)}s before posting (rate limit protection)...`);
+            await sleep(waitTime);
+        }
+
         // Retry loop for posting tweet
         for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
             try {
@@ -910,6 +920,7 @@ export async function postReplyWithMedia(
 
                 if (result.data?.id) {
                     logger.info(`[🐦 Reply] ✅ Reply posted successfully! Tweet ID: ${result.data.id}`);
+                    lastTweetPostTime = Date.now(); // Update last post time
                     return true;
                 } else {
                     logger.error('[🐦 Reply] ❌ No tweet ID in response', result.errors);

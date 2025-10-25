@@ -23,7 +23,7 @@ import util from 'util';
 import { postTweetReplyWithMediaApi } from './services/twitterApiService';
 import { uploadLocalFileToS3 } from './services/audioService';
 import * as fsExtra from 'fs-extra';
-import { initSupabase, upsertMention, updateMentionStatus, getAllProcessedMentions, getMention, getStuckMentions } from './services/supabaseService';
+import { initSupabase, upsertMention, updateMentionStatus, getAllProcessedMentions, getMention, getStuckMentions, getUnprocessedMentions } from './services/supabaseService';
 
 const execPromise = util.promisify(exec);
 
@@ -1927,6 +1927,47 @@ async function main() {
     }
     logger.info(`[😈 Daemon] Loaded ${supabaseProcessedMentions.size} completed/failed mentions from Supabase`);
     logger.info('[😈 Daemon] ♻️ Mentions in processing/initiating state will be retried (crash recovery)');
+
+    // Load unprocessed mentions from database and add to queue
+    logger.info('[😈 Daemon] Loading unprocessed mentions from Supabase to queue...');
+    const unprocessedMentions = await getUnprocessedMentions();
+
+    if (unprocessedMentions.length > 0) {
+        logger.info(`[😈 Daemon] Found ${unprocessedMentions.length} unprocessed mentions in database`);
+
+        for (const dbMention of unprocessedMentions) {
+            // Skip if already in queue or in-progress
+            if (inProgressMentions.has(dbMention.tweet_id) ||
+                mentionQueue.some(m => m.tweetId === dbMention.tweet_id)) {
+                continue;
+            }
+
+            // Validate if it's a valid dubbing request
+            if (!isValidDubbingRequest(dbMention.tweet_text)) {
+                logger.info(`[😈 Daemon] Skipping invalid mention ${dbMention.tweet_id} from database`);
+                skippedInvalidMentions.add(dbMention.tweet_id);
+                continue;
+            }
+
+            // Add to queue
+            const mentionInfo: MentionInfo = {
+                tweetId: dbMention.tweet_id,
+                tweetUrl: dbMention.tweet_url || `https://twitter.com/${dbMention.username}/status/${dbMention.tweet_id}`,
+                username: dbMention.username,
+                parentUsername: dbMention.parent_username || undefined,
+                text: dbMention.tweet_text,
+                hasVideo: false, // Will be fetched on-demand
+                videoM3u8Url: undefined
+            };
+
+            mentionQueue.push(mentionInfo);
+            logger.info(`[😈 Daemon] Loaded mention ${dbMention.tweet_id} (@${dbMention.username}) from database - status: ${dbMention.status}, retry: ${dbMention.retry_count || 0}/3`);
+        }
+
+        logger.info(`[😈 Daemon] ✅ Added ${mentionQueue.length} unprocessed mentions to queue from database`);
+    } else {
+        logger.info('[😈 Daemon] No unprocessed mentions found in database');
+    }
 
     // Test Twitter API connection
     logger.info('[😈 Daemon] Testing Twitter API connection...');
