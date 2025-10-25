@@ -1204,80 +1204,186 @@ function addToFinalReplyQueue(mentionInfo: MentionInfo, backendResult: BackendRe
  * Processes the browser initiation steps for mentions (runs one at a time).
  * TODO: Refactor to use Twitter API for video/space detection instead of Playwright
  */
+// Track when worker last started to detect stuck state
+let lastWorkerStartTime: number | null = null;
+const WORKER_TIMEOUT_MS = 60000; // 60 seconds - if worker has been "running" for this long, force reset
+
 async function runInitiationQueue(): Promise<void> {
-    if (isInitiatingProcessing || mentionQueue.length === 0) {
-        return; // Already running or queue empty
+    logger.info(`\n${'='.repeat(80)}`);
+    logger.info(`[🚀 WORKER CHECK] Initiation Queue Worker Triggered`);
+    logger.info(`${'='.repeat(80)}`);
+
+    // Safety check: if worker has been "running" for more than 60s, force reset the flag
+    if (isInitiatingProcessing && lastWorkerStartTime) {
+        const timeSinceStart = Date.now() - lastWorkerStartTime;
+        logger.info(`[🚀 WORKER CHECK] Worker flag is TRUE. Running time: ${(timeSinceStart / 1000).toFixed(0)}s`);
+
+        if (timeSinceStart > WORKER_TIMEOUT_MS) {
+            logger.error(`\n${'!'.repeat(80)}`);
+            logger.error(`[🚀 WORKER CHECK] ⚠️ WORKER STUCK DETECTED!`);
+            logger.error(`[🚀 WORKER CHECK] Worker has been running for ${(timeSinceStart / 1000).toFixed(0)}s (timeout: ${WORKER_TIMEOUT_MS / 1000}s)`);
+            logger.error(`[🚀 WORKER CHECK] Queue size: ${mentionQueue.length}`);
+            logger.error(`[🚀 WORKER CHECK] Force resetting worker flag...`);
+            logger.error(`${'!'.repeat(80)}\n`);
+            isInitiatingProcessing = false;
+            lastWorkerStartTime = null;
+        }
     }
 
+    if (isInitiatingProcessing) {
+        logger.info(`[🚀 WORKER CHECK] ⏸️  Worker is BUSY - another mention is being processed`);
+        logger.info(`[🚀 WORKER CHECK] Queue size: ${mentionQueue.length}`);
+        logger.info(`[🚀 WORKER CHECK] Skipping this cycle. Will check again in 5 seconds.`);
+        logger.info(`${'='.repeat(80)}\n`);
+        return;
+    }
+
+    if (mentionQueue.length === 0) {
+        logger.info(`[🚀 WORKER CHECK] ✅ Worker is FREE but queue is EMPTY - nothing to do`);
+        logger.info(`${'='.repeat(80)}\n`);
+        return;
+    }
+
+    logger.info(`[🚀 WORKER CHECK] ✅ Worker is FREE and queue has ${mentionQueue.length} mention(s) to process`);
+    logger.info(`[🚀 WORKER CHECK] 🟢 LOCKING worker (setting flag to TRUE)...`);
     isInitiatingProcessing = true;
+    lastWorkerStartTime = Date.now();
+    logger.info(`[🚀 WORKER CHECK] Worker is now LOCKED at ${new Date().toISOString()}`);
+    logger.info(`${'='.repeat(80)}\n`);
 
     const queuePreview = mentionQueue.slice(0, 5).map(m => `${m.tweetId} (${m.username})`).join(', ');
     const remainingCount = Math.max(0, mentionQueue.length - 5);
-    logger.info(`[🚀 Initiate Queue] Starting API-based worker. Queue size: ${mentionQueue.length}. Next 5 mentions: [${queuePreview}]${remainingCount > 0 ? ` and ${remainingCount} more...` : ''}`);
+
+    logger.info(`\n${'▶'.repeat(80)}`);
+    logger.info(`[📋 QUEUE STATUS] Current Queue Size: ${mentionQueue.length}`);
+    logger.info(`[📋 QUEUE STATUS] Next mentions: ${queuePreview}${remainingCount > 0 ? ` + ${remainingCount} more` : ''}`);
+    logger.info(`${'▶'.repeat(80)}\n`);
 
     const mentionToProcess = mentionQueue.shift();
     if (!mentionToProcess) {
+        logger.error(`\n${'!'.repeat(80)}`);
+        logger.error(`[🚀 ERROR] Queue shift returned null/undefined (race condition?)`);
+        logger.error(`[🚀 ERROR] 🔴 UNLOCKING worker (setting flag to FALSE)...`);
+        logger.error(`${'!'.repeat(80)}\n`);
         isInitiatingProcessing = false;
-        logger.warn('[🚀 Initiate Queue] Worker started but queue was empty.');
+        lastWorkerStartTime = null;
         return;
     }
 
     processedCount++;
-    logger.info(`[🚀 Initiate Queue] Processing mention ${mentionToProcess.tweetId} (${mentionToProcess.username}). Remaining: ${mentionQueue.length}. This is mention #${processedCount} processed since startup.`);
+
+    logger.info(`\n${'█'.repeat(80)}`);
+    logger.info(`[🎯 PROCESSING] Starting Mention #${processedCount}`);
+    logger.info(`[🎯 PROCESSING] Tweet ID: ${mentionToProcess.tweetId}`);
+    logger.info(`[🎯 PROCESSING] Username: @${mentionToProcess.username}`);
+    logger.info(`[🎯 PROCESSING] Text: "${mentionToProcess.text}"`);
+    logger.info(`[🎯 PROCESSING] Has Video: ${mentionToProcess.hasVideo ? 'YES' : 'NO'}`);
+    if (mentionToProcess.videoM3u8Url) {
+        logger.info(`[🎯 PROCESSING] Video URL: ${mentionToProcess.videoM3u8Url}`);
+    }
+    logger.info(`[🎯 PROCESSING] Remaining in queue: ${mentionQueue.length}`);
+    logger.info(`${'█'.repeat(80)}\n`);
 
     // CRITICAL: Mark as in-progress IMMEDIATELY to prevent re-queuing while backend runs
-    logger.info(`[🚀 Initiate Queue] Marking ${mentionToProcess.tweetId} as in-progress to prevent duplicates.`);
+    logger.info(`[🔒 STATE] Adding ${mentionToProcess.tweetId} to inProgressMentions Set to prevent duplicates`);
     inProgressMentions.add(mentionToProcess.tweetId);
+    logger.info(`[🔒 STATE] inProgressMentions Set size: ${inProgressMentions.size}`);
 
     // Update status to 'initiating'
+    logger.info(`[💾 DATABASE] Updating mention status to 'initiating' in database...`);
     await updateMentionStatus(mentionToProcess.tweetId, 'initiating');
+    logger.info(`[💾 DATABASE] ✅ Status updated to 'initiating'\n`);
 
     try {
+        logger.info(`\n${'🌐'.repeat(80)}`);
+        logger.info(`[STEP 1] LANGUAGE DETECTION`);
+        logger.info(`${'🌐'.repeat(80)}`);
+
         // Detect languages
         const { sourceLanguageCode, sourceLanguageName, targetLanguageCode, targetLanguageName } = detectLanguages(mentionToProcess.text);
-        logger.info(`[🚀 Initiate] Detected languages: Source: ${sourceLanguageName} (${sourceLanguageCode}), Target: ${targetLanguageName} (${targetLanguageCode})`);
+        logger.info(`[🌐 LANGUAGE] Source: ${sourceLanguageName} (${sourceLanguageCode})`);
+        logger.info(`[🌐 LANGUAGE] Target: ${targetLanguageName} (${targetLanguageCode})`);
+        logger.info(`${'🌐'.repeat(80)}\n`);
 
         // Check if video was found during initial fetch
         // If not, make a direct API call to fetch parent tweet video
+        logger.info(`\n${'🎥'.repeat(80)}`);
+        logger.info(`[STEP 2] VIDEO DETECTION`);
+        logger.info(`${'🎥'.repeat(80)}`);
+
         if (!mentionToProcess.hasVideo || !mentionToProcess.videoM3u8Url) {
-            logger.info(`[🚀 Initiate] No video in initial fetch. Attempting to fetch parent tweet video...`);
+            logger.warn(`[🎥 VIDEO] ⚠️ No video found in initial fetch from mention polling`);
+            logger.info(`[🎥 VIDEO] Making direct Twitter API call to fetch parent tweet...`);
 
             const { videoUrl, parentTweetId } = await fetchVideoForMention(mentionToProcess.tweetId);
 
             if (videoUrl) {
-                logger.info(`[🚀 Initiate] ✅ Found video in parent tweet ${parentTweetId}: ${videoUrl}`);
+                logger.info(`[🎥 VIDEO] ✅ SUCCESS! Found video in parent tweet ${parentTweetId}`);
+                logger.info(`[🎥 VIDEO] Video URL: ${videoUrl}`);
                 mentionToProcess.hasVideo = true;
                 mentionToProcess.videoM3u8Url = videoUrl;
             } else {
-                logger.warn(`[🚀 Initiate] ❌ No video found for mention ${mentionToProcess.tweetId} even after fetching parent tweet.`);
-                logger.info(`[🚀 Initiate] Posting error reply for missing video...`);
+                logger.error(`\n${'❌'.repeat(80)}`);
+                logger.error(`[🎥 VIDEO] FAILURE - No video found even after fetching parent tweet`);
+                logger.error(`[🎥 VIDEO] This mention cannot be processed - posting error reply to user`);
+                logger.error(`${'❌'.repeat(80)}\n`);
+
+                logger.info(`[🐦 TWITTER] Posting error reply to @${mentionToProcess.username}...`);
                 await postReplyWithMedia(
                     `${ensureAtSymbol(mentionToProcess.username)} Please mention me with a Space URL or video attachment!`,
                     mentionToProcess.tweetId
                 );
+                logger.info(`[🐦 TWITTER] ✅ Error reply posted`);
+
+                logger.info(`[💾 DATABASE] Updating mention status to 'failed' in database...`);
                 await updateMentionStatus(mentionToProcess.tweetId, 'failed', {
                     error_message: 'No video found in mention or parent tweet'
                 });
+                logger.info(`[💾 DATABASE] ✅ Status updated to 'failed'`);
+
+                logger.info(`[🔒 STATE] Removing ${mentionToProcess.tweetId} from inProgressMentions Set`);
                 inProgressMentions.delete(mentionToProcess.tweetId);
+
+                logger.error(`\n${'🔓'.repeat(80)}`);
+                logger.error(`[WORKER EXIT] Mention processing failed - unlocking worker`);
+                logger.error(`[WORKER EXIT] 🔴 Setting worker flag to FALSE`);
+                logger.error(`${'🔓'.repeat(80)}\n`);
+
                 isInitiatingProcessing = false;
+                lastWorkerStartTime = null;
                 return;
             }
+        } else {
+            logger.info(`[🎥 VIDEO] ✅ Video found during initial mention polling`);
         }
 
-        logger.info(`[🚀 Initiate] Found video URL: ${mentionToProcess.videoM3u8Url}`);
+        logger.info(`[🎥 VIDEO] Final video URL: ${mentionToProcess.videoM3u8Url}`);
+        logger.info(`${'🎥'.repeat(80)}\n`);
 
         // Post acknowledgement reply
-        logger.info(`[🚀 Initiate] Posting acknowledgement reply...`);
+        logger.info(`\n${'🐦'.repeat(80)}`);
+        logger.info(`[STEP 3] POST ACKNOWLEDGEMENT TO USER`);
+        logger.info(`${'🐦'.repeat(80)}`);
+        logger.info(`[🐦 TWITTER] Posting acknowledgement reply to @${mentionToProcess.username}...`);
+        logger.info(`[🐦 TWITTER] Message: "Got it! Dubbing from ${sourceLanguageName} to ${targetLanguageName}"`);
+
         const ackSuccess = await postReplyWithMedia(
             `${ensureAtSymbol(mentionToProcess.username)} Got it! Dubbing your video from ${sourceLanguageName} to ${targetLanguageName}. I'll reply when ready! 🎬`,
             mentionToProcess.tweetId
         );
 
         if (!ackSuccess) {
-            logger.warn(`[🚀 Initiate] Failed to post acknowledgement reply, but continuing with processing`);
+            logger.warn(`[🐦 TWITTER] ⚠️ Failed to post acknowledgement reply (continuing anyway)`);
+        } else {
+            logger.info(`[🐦 TWITTER] ✅ Acknowledgement reply posted successfully`);
         }
+        logger.info(`${'🐦'.repeat(80)}\n`);
 
         // Prepare initiation result
+        logger.info(`\n${'📦'.repeat(80)}`);
+        logger.info(`[STEP 4] PREPARE DATA FOR BACKEND PROCESSING`);
+        logger.info(`${'📦'.repeat(80)}`);
+
         const spaceId = `video_${mentionToProcess.tweetId}`;
         const spaceTitle = `Video from ${ensureAtSymbol(mentionToProcess.username)}`;
 
@@ -1292,88 +1398,169 @@ async function runInitiationQueue(): Promise<void> {
             targetLanguageName
         };
 
-        logger.info(`[🚀 Initiate] ✅ Initiation successful for ${mentionToProcess.tweetId}. Starting backend processing...`);
+        logger.info(`[📦 DATA] Space ID: ${spaceId}`);
+        logger.info(`[📦 DATA] Space Title: ${spaceTitle}`);
+        logger.info(`[📦 DATA] M3U8 URL: ${initResult.m3u8Url}`);
+        logger.info(`[📦 DATA] Languages: ${sourceLanguageName} → ${targetLanguageName}`);
+        logger.info(`${'📦'.repeat(80)}\n`);
 
-        // Start backend processing
+        logger.info(`\n${'⚙️'.repeat(80)}`);
+        logger.info(`[STEP 5] START BACKEND PROCESSING (SPEECHLAB)`);
+        logger.info(`${'⚙️'.repeat(80)}`);
+        logger.info(`[⚙️ BACKEND] Updating database status to 'processing'...`);
         await updateMentionStatus(mentionToProcess.tweetId, 'processing');
+        logger.info(`[⚙️ BACKEND] ✅ Database status updated`);
+        logger.info(`[⚙️ BACKEND] Calling performBackendProcessing()...`);
+        logger.info(`[⚙️ BACKEND] This will: download video → upload to Speechlab → wait for dubbing → download result`);
+
         const backendResult = await performBackendProcessing(initResult);
 
+        logger.info(`[⚙️ BACKEND] performBackendProcessing() returned`);
+        logger.info(`${'⚙️'.repeat(80)}\n`);
+
         // Queue for final reply
+        logger.info(`\n${'🎯'.repeat(80)}`);
+        logger.info(`[STEP 6] HANDLE BACKEND RESULT`);
+        logger.info(`${'🎯'.repeat(80)}`);
+
         if (backendResult.success) {
-            logger.info(`[🚀 Initiate] ✅ Backend processing succeeded for ${mentionToProcess.tweetId}. Adding to reply queue.`);
+            logger.info(`[✅ SUCCESS] Backend processing completed successfully!`);
+            logger.info(`[✅ SUCCESS] Tweet ID: ${mentionToProcess.tweetId}`);
+            logger.info(`[✅ SUCCESS] Adding to finalReplyQueue for posting dubbed video to Twitter...`);
             finalReplyQueue.push({ mentionInfo: mentionToProcess, backendResult });
+            logger.info(`[✅ SUCCESS] Final reply queue size: ${finalReplyQueue.length}`);
+            logger.info(`${'🎯'.repeat(80)}\n`);
         } else {
-            logger.error(`[🚀 Initiate] ❌ Backend processing failed for ${mentionToProcess.tweetId}: ${backendResult.error}`);
+            logger.error(`\n${'❌'.repeat(80)}`);
+            logger.error(`[❌ FAILURE] Backend processing failed!`);
+            logger.error(`[❌ FAILURE] Tweet ID: ${mentionToProcess.tweetId}`);
+            logger.error(`[❌ FAILURE] Error: ${backendResult.error}`);
+            logger.error(`${'❌'.repeat(80)}\n`);
 
             // Get current retry count and increment
+            logger.info(`[🔄 RETRY] Fetching current retry count from database...`);
             const existingMention = await getMention(mentionToProcess.tweetId);
             const currentRetryCount = existingMention?.retry_count || 0;
             const newRetryCount = currentRetryCount + 1;
 
-            logger.info(`[🚀 Initiate] Retry count for ${mentionToProcess.tweetId}: ${newRetryCount}/3`);
+            logger.info(`[🔄 RETRY] Current retry count: ${currentRetryCount}`);
+            logger.info(`[🔄 RETRY] New retry count: ${newRetryCount}/3`);
 
             // If we've reached the retry limit, mark as final_failure
             if (newRetryCount >= 3) {
-                logger.warn(`[🚀 Initiate] ❌ Mention ${mentionToProcess.tweetId} has failed ${newRetryCount} times - marking as final_failure`);
+                logger.error(`\n${'🚫'.repeat(80)}`);
+                logger.error(`[🚫 FINAL FAILURE] Mention has failed ${newRetryCount} times`);
+                logger.error(`[🚫 FINAL FAILURE] Maximum retries reached - marking as final_failure`);
+                logger.error(`[🚫 FINAL FAILURE] This mention will NOT be retried again`);
+                logger.error(`${'🚫'.repeat(80)}\n`);
+
                 await updateMentionStatus(mentionToProcess.tweetId, 'final_failure', {
                     error_message: backendResult.error || 'Backend processing failed after 3 attempts',
                     retry_count: newRetryCount
                 });
+                logger.info(`[💾 DATABASE] ✅ Status updated to 'final_failure' with retry_count=${newRetryCount}`);
             } else {
+                logger.warn(`\n${'🔄'.repeat(80)}`);
+                logger.warn(`[🔄 RETRY] Marking as 'failed' - will be retried later`);
+                logger.warn(`[🔄 RETRY] Retry ${newRetryCount}/3`);
+                logger.warn(`${'🔄'.repeat(80)}\n`);
+
                 // Mark as failed with incremented retry count (will be retried)
                 await updateMentionStatus(mentionToProcess.tweetId, 'failed', {
                     error_message: backendResult.error || 'Backend processing failed',
                     retry_count: newRetryCount
                 });
+                logger.info(`[💾 DATABASE] ✅ Status updated to 'failed' with retry_count=${newRetryCount}`);
             }
 
             // Post error reply
+            logger.info(`[🐦 TWITTER] Posting error reply to user...`);
             await postReplyWithMedia(
                 `${ensureAtSymbol(mentionToProcess.username)} Sorry, I encountered an error processing your video. Please try again later.`,
                 mentionToProcess.tweetId
             );
+            logger.info(`[🐦 TWITTER] ✅ Error reply posted to user`);
         }
 
     } catch (error: any) {
-        logger.error(`[🚀 Initiate Queue] Error processing mention ${mentionToProcess.tweetId}:`, error);
+        logger.error(`\n${'💥'.repeat(80)}`);
+        logger.error(`[💥 EXCEPTION] Uncaught error during mention processing!`);
+        logger.error(`[💥 EXCEPTION] Tweet ID: ${mentionToProcess.tweetId}`);
+        logger.error(`[💥 EXCEPTION] Error type: ${error?.constructor?.name || 'Unknown'}`);
+        logger.error(`[💥 EXCEPTION] Error message: ${error?.message || 'No message'}`);
+        logger.error(`[💥 EXCEPTION] Stack trace:`);
+        if (error?.stack) {
+            logger.error(error.stack);
+        }
+        logger.error(`${'💥'.repeat(80)}\n`);
+
         await logMentionError(mentionToProcess.tweetId, error, 'initiation');
 
         // Get current retry count and increment
+        logger.info(`[🔄 RETRY] Fetching current retry count from database...`);
         const existingMention = await getMention(mentionToProcess.tweetId);
         const currentRetryCount = existingMention?.retry_count || 0;
         const newRetryCount = currentRetryCount + 1;
 
-        logger.info(`[🚀 Initiate Queue] Retry count for ${mentionToProcess.tweetId}: ${newRetryCount}/3`);
+        logger.info(`[🔄 RETRY] Current retry count: ${currentRetryCount}`);
+        logger.info(`[🔄 RETRY] New retry count: ${newRetryCount}/3`);
 
         // If we've reached the retry limit, mark as final_failure
         if (newRetryCount >= 3) {
-            logger.warn(`[🚀 Initiate Queue] ❌ Mention ${mentionToProcess.tweetId} has failed ${newRetryCount} times - marking as final_failure`);
+            logger.error(`\n${'🚫'.repeat(80)}`);
+            logger.error(`[🚫 FINAL FAILURE] Mention has failed ${newRetryCount} times (uncaught exception)`);
+            logger.error(`[🚫 FINAL FAILURE] Maximum retries reached - marking as final_failure`);
+            logger.error(`[🚫 FINAL FAILURE] This mention will NOT be retried again`);
+            logger.error(`${'🚫'.repeat(80)}\n`);
+
             await updateMentionStatus(mentionToProcess.tweetId, 'final_failure', {
                 error_message: error.message || 'Unknown error during initiation after 3 attempts',
                 retry_count: newRetryCount
             });
+            logger.info(`[💾 DATABASE] ✅ Status updated to 'final_failure' with retry_count=${newRetryCount}`);
         } else {
+            logger.warn(`\n${'🔄'.repeat(80)}`);
+            logger.warn(`[🔄 RETRY] Marking as 'failed' - will be retried later (after exception)`);
+            logger.warn(`[🔄 RETRY] Retry ${newRetryCount}/3`);
+            logger.warn(`${'🔄'.repeat(80)}\n`);
+
             // Mark as failed with incremented retry count (will be retried)
             await updateMentionStatus(mentionToProcess.tweetId, 'failed', {
                 error_message: error.message || 'Unknown error during initiation',
                 retry_count: newRetryCount
             });
+            logger.info(`[💾 DATABASE] ✅ Status updated to 'failed' with retry_count=${newRetryCount}`);
         }
 
         // Post error reply
         try {
+            logger.info(`[🐦 TWITTER] Posting error reply to user (after exception)...`);
             await postReplyWithMedia(
                 `${ensureAtSymbol(mentionToProcess.username)} Sorry, I encountered an error processing your request. Please try again later.`,
                 mentionToProcess.tweetId
             );
+            logger.info(`[🐦 TWITTER] ✅ Error reply posted to user`);
         } catch (replyError) {
-            logger.error(`[🚀 Initiate Queue] Failed to post error reply:`, replyError);
+            logger.error(`[🐦 TWITTER] ❌ Failed to post error reply:`, replyError);
         }
     } finally {
+        logger.info(`\n${'🔓'.repeat(80)}`);
+        logger.info(`[WORKER CLEANUP] Finalizing mention processing`);
+        logger.info(`[WORKER CLEANUP] Tweet ID: ${mentionToProcess.tweetId}`);
+
         // Remove from in-progress
+        logger.info(`[🔒 STATE] Removing ${mentionToProcess.tweetId} from inProgressMentions Set`);
         inProgressMentions.delete(mentionToProcess.tweetId);
-        logger.info(`[🚀 Initiate Queue] Finished initiation work for ${mentionToProcess.tweetId}. Queue status: ${mentionQueue.length} remaining.`);
+        logger.info(`[🔒 STATE] inProgressMentions Set size: ${inProgressMentions.size}`);
+
+        logger.info(`[📊 QUEUE] Mentions remaining in queue: ${mentionQueue.length}`);
+        logger.info(`[📊 STATS] Total mentions processed since startup: ${processedCount}`);
+
+        logger.info(`[WORKER CLEANUP] 🔴 UNLOCKING worker (setting flag to FALSE)`);
         isInitiatingProcessing = false;
+        lastWorkerStartTime = null;
+        logger.info(`[WORKER CLEANUP] Worker is now available for next mention`);
+        logger.info(`${'🔓'.repeat(80)}\n`);
     }
 }
 
