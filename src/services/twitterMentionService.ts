@@ -11,8 +11,28 @@ import * as fs from 'fs';
 // Initialize rate limit plugin for automatic tracking
 const rateLimitPlugin = new TwitterApiRateLimitPlugin();
 
-// Initialize Twitter API client with rate limit plugin
-const twitterClient = new TwitterApi({
+// Validate credentials before initializing client
+if (!config.TWITTER_API_KEY || !config.TWITTER_API_SECRET || !config.TWITTER_ACCESS_TOKEN || !config.TWITTER_ACCESS_SECRET) {
+    logger.error('[🐦 API] ❌ CRITICAL: Missing Twitter OAuth 1.0a credentials!');
+    logger.error('[🐦 API] Required environment variables:');
+    logger.error(`[🐦 API] - TWITTER_API_KEY: ${config.TWITTER_API_KEY ? '✅ Set' : '❌ Missing'}`);
+    logger.error(`[🐦 API] - TWITTER_API_SECRET: ${config.TWITTER_API_SECRET ? '✅ Set' : '❌ Missing'}`);
+    logger.error(`[🐦 API] - TWITTER_ACCESS_TOKEN: ${config.TWITTER_ACCESS_TOKEN ? '✅ Set' : '❌ Missing'}`);
+    logger.error(`[🐦 API] - TWITTER_ACCESS_SECRET: ${config.TWITTER_ACCESS_SECRET ? '✅ Set' : '❌ Missing'}`);
+    throw new Error('Missing required Twitter OAuth 1.0a credentials');
+}
+
+logger.info('[🐦 API] Initializing HYBRID Twitter API authentication');
+logger.info('[🐦 API] 📖 Reads (GET): Using Bearer Token → App-level limits (1,667 requests/24h)');
+logger.info('[🐦 API] ✍️  Writes (POST): Using OAuth 1.0a User Context → User-level limits (100 posts/24h)');
+
+// Initialize READ-ONLY client with Bearer Token (app-level limits: 1,667/day)
+const appOnlyClient = new TwitterApi(config.TWITTER_BEARER_TOKEN || '', {
+    plugins: [rateLimitPlugin]
+});
+
+// Initialize READ-WRITE client with OAuth 1.0a (user-level limits: 100 posts/day)
+const userContextClient = new TwitterApi({
     appKey: config.TWITTER_API_KEY,
     appSecret: config.TWITTER_API_SECRET,
     accessToken: config.TWITTER_ACCESS_TOKEN,
@@ -21,7 +41,13 @@ const twitterClient = new TwitterApi({
     plugins: [rateLimitPlugin]
 });
 
-const rwClient = twitterClient.readWrite;
+// Use app-only client for reads (mentions, tweets), user context for writes (posting)
+const readOnlyClient = appOnlyClient.readOnly;
+const rwClient = userContextClient.readWrite;
+
+logger.info('[🐦 API] ✅ Hybrid authentication initialized');
+logger.info(`[🐦 API] 📊 Read capacity: 1,667 requests/24h (app-level)`);
+logger.info(`[🐦 API] 📊 Write capacity: 100 posts/24h (user-level)`);
 
 // Export rate limit plugin for external access
 export { rateLimitPlugin };
@@ -29,8 +55,13 @@ export { rateLimitPlugin };
 // Rate limiting state
 let lastPollTime = 0;
 let lastTweetPostTime = 0;
-const MIN_TWEET_POST_INTERVAL_MS = 10000; // 10 seconds between tweets to avoid rate limits
-const MIN_POLL_INTERVAL_MS = 2 * 60 * 1000; // 2 minutes between polls (allows ~7 polls per 15min window)
+// Basic tier: 250 actions/day user limit (bursts), 3,000 posts/month average
+// Target: 200-300 replies/day
+// 250 posts/day = 1 post every ~5.76 minutes
+// Using 1 minute (60000ms) to allow up to 1440 posts/day burst capacity
+// Monthly average will be controlled by removing acknowledgment tweets
+const MIN_TWEET_POST_INTERVAL_MS = 60000; // 1 minute between tweets (allows bursts up to 250/day)
+const MIN_POLL_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes between polls (288 polls/day = 8,640 reads/month)
 let rateLimitResetTime: number | null = null; // Track rate limit reset time
 
 // Retry configuration
@@ -112,11 +143,11 @@ export async function testTwitterApiConnection(): Promise<boolean> {
 
         // Test 1: Get authenticated user info
         logger.info('[🐦 API Test] Test 1: Fetching authenticated user info...');
-        logger.info('[🐦 API Call] 🔵 Calling Twitter API: GET /2/users/me');
+        logger.info('[🐦 API Call] 🔵 Calling Twitter API: GET /2/users/me (using Bearer Token - app limits)');
         const startTime = Date.now();
-        const me = await rwClient.v2.me();
+        const me = await readOnlyClient.v2.me();
         const elapsed = Date.now() - startTime;
-        logger.info(`[🐦 API Call] ✅ Response received from /2/users/me (${elapsed}ms)`);
+        logger.info(`[🐦 API Call] ✅ Response received from /2/users/me (${elapsed}ms) [app-level quota]`);
 
         logger.info('[🐦 API Test] ✅ Successfully authenticated!');
         logger.info('[🐦 API Test] Response time: ' + elapsed + 'ms');
@@ -131,12 +162,12 @@ export async function testTwitterApiConnection(): Promise<boolean> {
         logger.info(`[🐦 API Call] 🔵 Calling Twitter API: GET /2/users/${me.data.id}/mentions?max_results=5`);
         const testStart = Date.now();
         try {
-            const testMentions = await rwClient.v2.userMentionTimeline(me.data.id, {
+            const testMentions = await readOnlyClient.v2.userMentionTimeline(me.data.id, {
                 max_results: 5,
                 'tweet.fields': 'created_at'
             });
             const testElapsed = Date.now() - testStart;
-            logger.info(`[🐦 API Call] ✅ Response received from /2/users/${me.data.id}/mentions (${testElapsed}ms)`);
+            logger.info(`[🐦 API Call] ✅ Response received from /2/users/${me.data.id}/mentions (${testElapsed}ms) [app-level quota]`);
 
             logger.info('[🐦 API Test] ✅ Mentions endpoint accessible!');
             logger.info('[🐦 API Test] Response time: ' + testElapsed + 'ms');
@@ -316,10 +347,10 @@ export async function fetchMentions(sinceId?: string, maxResults: number = 100):
                 await sleep(waitTime);
             }
 
-            // Get authenticated user info to fetch their mentions
-            logger.info(`[🐦 API Call] 🔵 Calling Twitter API: GET /2/users/me`);
-            const me = await rwClient.v2.me();
-            logger.info(`[🐦 API Call] ✅ Response received from /2/users/me`);
+            // Get authenticated user info to fetch their mentions (using Bearer Token for app-level limits)
+            logger.info(`[🐦 API Call] 🔵 Calling Twitter API: GET /2/users/me (Bearer Token - app limits)`);
+            const me = await readOnlyClient.v2.me();
+            logger.info(`[🐦 API Call] ✅ Response received from /2/users/me [app-level quota]`);
             logger.info(`[🐦 Mentions] Fetching mentions for @${me.data.username} (ID: ${me.data.id})`);
 
             // Build query parameters - include media fields and referenced tweets
@@ -346,10 +377,38 @@ export async function fetchMentions(sinceId?: string, maxResults: number = 100):
             logger.info(`[🐦 Mentions] Requesting mentions (attempt ${attempt + 1}/${MAX_RETRIES + 1})...`);
             logger.info(`[🐦 API Call] 🔵 Calling Twitter API: GET /2/users/${me.data.id}/mentions`);
             logger.info(`[🐦 API Call] Parameters: ${JSON.stringify(params)}`);
+
+            // Log auth headers for debugging (REDACTED for security)
+            logger.debug(`[🐦 API Call] ========================================`);
+            logger.debug(`[🐦 API Call] 🔐 AUTHENTICATION CREDENTIALS`);
+            logger.debug(`[🐦 API Call] ========================================`);
+            logger.debug(`[🐦 API Call] OAuth 1.0a Consumer Key: ${config.TWITTER_API_KEY.substring(0, 8)}...`);
+            logger.debug(`[🐦 API Call] OAuth 1.0a Consumer Secret: ${config.TWITTER_API_SECRET.substring(0, 8)}...`);
+            logger.debug(`[🐦 API Call] OAuth 1.0a Access Token: ${config.TWITTER_ACCESS_TOKEN.substring(0, 8)}...`);
+            logger.debug(`[🐦 API Call] OAuth 1.0a Access Secret: ${config.TWITTER_ACCESS_SECRET.substring(0, 8)}...`);
+            logger.debug(`[🐦 API Call] ========================================`);
+
+            // Generate equivalent curl command for debugging
+            const queryParams = new URLSearchParams();
+            if (params.since_id) queryParams.append('since_id', params.since_id);
+            if (params.max_results) queryParams.append('max_results', params.max_results.toString());
+            if (params['tweet.fields']) queryParams.append('tweet.fields', params['tweet.fields']);
+            if (params['user.fields']) queryParams.append('user.fields', params['user.fields']);
+            if (params.expansions) queryParams.append('expansions', params.expansions);
+            if (params['media.fields']) queryParams.append('media.fields', params['media.fields']);
+
+            const curlCmd = `curl -X GET 'https://api.twitter.com/2/users/${me.data.id}/mentions?${queryParams.toString()}' \\
+  -H 'Authorization: OAuth oauth_consumer_key="${config.TWITTER_API_KEY}", oauth_token="${config.TWITTER_ACCESS_TOKEN}", ...' \\
+  -H 'Content-Type: application/json'`;
+
+            logger.debug(`[🐦 API Call] 📋 Equivalent curl command:`);
+            logger.debug(`[🐦 API Call] ${curlCmd}`);
+            logger.debug(`[🐦 API Call] ========================================`);
+
             const fetchStartTime = Date.now();
-            const mentionsTimeline = await rwClient.v2.userMentionTimeline(me.data.id, params);
+            const mentionsTimeline = await readOnlyClient.v2.userMentionTimeline(me.data.id, params);
             const fetchDuration = Date.now() - fetchStartTime;
-            logger.info(`[🐦 API Call] ✅ Response received from /2/users/${me.data.id}/mentions (${fetchDuration}ms)`);
+            logger.info(`[🐦 API Call] ✅ Response received from /2/users/${me.data.id}/mentions (${fetchDuration}ms) [app-level quota]`);
 
             lastPollTime = Date.now();
 
@@ -527,10 +586,57 @@ export async function fetchMentions(sinceId?: string, maxResults: number = 100):
                 logger.error(`[🐦 Mentions] Attempt: ${attempt + 1}/${MAX_RETRIES + 1}`);
                 logger.error(`[🐦 Mentions] ========================================`);
 
+                // Log auth context for debugging (REDACTED for security)
+                logger.error(`[🐦 Mentions] 🔐 AUTH CREDENTIALS (redacted):`);
+                logger.error(`[🐦 Mentions] OAuth Consumer Key: ${config.TWITTER_API_KEY.substring(0, 8)}...`);
+                logger.error(`[🐦 Mentions] OAuth Consumer Secret: ${config.TWITTER_API_SECRET.substring(0, 8)}...`);
+                logger.error(`[🐦 Mentions] OAuth Access Token: ${config.TWITTER_ACCESS_TOKEN.substring(0, 8)}...`);
+                logger.error(`[🐦 Mentions] OAuth Access Secret: ${config.TWITTER_ACCESS_SECRET.substring(0, 8)}...`);
+                logger.error(`[🐦 Mentions] ========================================`);
+
                 // Log full error details for debugging
                 logger.error(`[🐦 Mentions] Full error object:`, JSON.stringify(error, null, 2));
                 logger.error(`[🐦 Mentions] Error data:`, JSON.stringify(error.data, null, 2));
                 logger.error(`[🐦 Mentions] Error response body:`, error.data?.detail || error.data?.title || 'No detail available');
+
+                // Check for user-level 24-hour limit (separate from app-level limits)
+                if (error.headers && error.headers['x-user-limit-24hour-remaining'] !== undefined) {
+                    const userLimit = error.headers['x-user-limit-24hour-limit'];
+                    const userRemaining = error.headers['x-user-limit-24hour-remaining'];
+                    const userReset = error.headers['x-user-limit-24hour-reset'];
+
+                    if (userRemaining === '0' || userRemaining === 0) {
+                        const resetTime = new Date(userReset * 1000);
+                        const hoursUntilReset = Math.ceil((resetTime.getTime() - Date.now()) / 3600000);
+
+                        logger.error(`[🐦 Mentions] ⚠️⚠️⚠️ USER-LEVEL 24-HOUR LIMIT EXCEEDED ⚠️⚠️⚠️`);
+                        logger.error(`[🐦 Mentions] The @DubbingAgent account has hit its daily action limit!`);
+                        logger.error(`[🐦 Mentions] User Limit: ${userLimit} actions per 24 hours`);
+                        logger.error(`[🐦 Mentions] User Remaining: ${userRemaining}`);
+                        logger.error(`[🐦 Mentions] Resets at: ${resetTime.toISOString()} (in ${hoursUntilReset} hours)`);
+                        logger.error(`[🐦 Mentions] ========================================`);
+                        logger.error(`[🐦 Mentions] This is SEPARATE from your Basic tier app limits.`);
+                        logger.error(`[🐦 Mentions] Basic tier allows:`);
+                        logger.error(`[🐦 Mentions]   - 10,000 reads/month (GET requests)`);
+                        logger.error(`[🐦 Mentions]   - 50,000 posts/month at app level`);
+                        logger.error(`[🐦 Mentions]   - 3,000 posts/month per user`);
+                        logger.error(`[🐦 Mentions] The bot will sleep until the limit resets.`);
+
+                        // Don't retry - wait for the full reset time
+                        throw new Error(`User 24-hour limit exceeded. Resets at ${resetTime.toISOString()}`);
+                    }
+                }
+
+                // Check for authentication errors
+                if (error.data?.detail && error.data.detail.includes('authentication')) {
+                    logger.error(`[🐦 Mentions] ⚠️⚠️⚠️ AUTHENTICATION ERROR DETECTED ⚠️⚠️⚠️`);
+                    logger.error(`[🐦 Mentions] This is NOT a rate limit - Twitter rejected your credentials!`);
+                    logger.error(`[🐦 Mentions] Error detail: ${error.data.detail}`);
+                    logger.error(`[🐦 Mentions] Please verify:`);
+                    logger.error(`[🐦 Mentions] 1. Your OAuth 1.0a credentials are correct`);
+                    logger.error(`[🐦 Mentions] 2. Your app has "Read and Write" permissions`);
+                    logger.error(`[🐦 Mentions] 3. Your access tokens match the app key/secret`);
+                }
 
                 // Try to get reset time from headers
                 let resetWaitTime: number | null = null;
@@ -723,8 +829,8 @@ export async function uploadMedia(mediaPath: string): Promise<string | null> {
                 logger.info(`[🐦 Upload] MIME type: ${mimeType}`);
                 logger.info(`[🐦 Upload] ========================================`);
 
-                // Upload using v1.1 API
-                const mediaId = await twitterClient.v1.uploadMedia(mediaPath, { mimeType });
+                // Upload using v1.1 API (use user context client for uploads - counts toward user quota)
+                const mediaId = await userContextClient.v1.uploadMedia(mediaPath, { mimeType });
 
                 logger.info(`[🐦 Upload] ========================================`);
                 logger.info(`[🐦 Upload] 📥 UPLOAD RESPONSE - SUCCESS`);
@@ -891,10 +997,13 @@ export async function postReplyWithMedia(
         }
 
         // Wait if we posted a tweet recently to avoid rate limits
+        // Basic tier: 250 posts/day user limit, 3,000 posts/month app limit
+        // 1 minute spacing allows bursts up to 1440/day, actual rate limited by processing speed
         const timeSinceLastPost = Date.now() - lastTweetPostTime;
         if (timeSinceLastPost < MIN_TWEET_POST_INTERVAL_MS) {
             const waitTime = MIN_TWEET_POST_INTERVAL_MS - timeSinceLastPost;
-            logger.info(`[🐦 Reply] ⏳ Waiting ${(waitTime / 1000).toFixed(1)}s before posting (rate limit protection)...`);
+            const waitSeconds = Math.round(waitTime / 1000);
+            logger.info(`[🐦 Reply] ⏳ Rate limit protection: waiting ${waitSeconds}s before posting...`);
             await sleep(waitTime);
         }
 
@@ -1090,8 +1199,8 @@ export async function fetchVideoForMention(mentionId: string): Promise<{ videoUr
         let mentionTweet: any;
         for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
             try {
-                // Get the mention tweet with media fields AND referenced tweets
-                mentionTweet = await rwClient.v2.singleTweet(mentionId, {
+                // Get the mention tweet with media fields AND referenced tweets (using Bearer Token for app limits)
+                mentionTweet = await readOnlyClient.v2.singleTweet(mentionId, {
                     'tweet.fields': 'referenced_tweets,attachments',
                     expansions: 'referenced_tweets.id,attachments.media_keys',
                     'media.fields': 'type,url,variants,duration_ms'
@@ -1156,7 +1265,7 @@ export async function fetchVideoForMention(mentionId: string): Promise<{ videoUr
         let parentTweetData: any;
         for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
             try {
-                parentTweetData = await rwClient.v2.singleTweet(parentTweetId, {
+                parentTweetData = await readOnlyClient.v2.singleTweet(parentTweetId, {
                     'tweet.fields': 'attachments',
                     expansions: 'attachments.media_keys',
                     'media.fields': 'type,url,variants,duration_ms'

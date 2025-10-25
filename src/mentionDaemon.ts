@@ -1357,24 +1357,12 @@ async function runInitiationQueue(): Promise<void> {
         logger.info(`[🎥 VIDEO] Final video URL: ${mentionToProcess.videoM3u8Url}`);
         logger.info(`${'🎥'.repeat(80)}\n`);
 
-        // Post acknowledgement reply
-        logger.info(`\n${'🐦'.repeat(80)}`);
-        logger.info(`[STEP 3] POST ACKNOWLEDGEMENT TO USER`);
-        logger.info(`${'🐦'.repeat(80)}`);
-        logger.info(`[🐦 TWITTER] Posting acknowledgement reply to @${mentionToProcess.username}...`);
-        logger.info(`[🐦 TWITTER] Message: "Got it! Dubbing from ${sourceLanguageName} to ${targetLanguageName}"`);
-
-        const ackSuccess = await postReplyWithMedia(
-            `${ensureAtSymbol(mentionToProcess.username)} Got it! Dubbing your video from ${sourceLanguageName} to ${targetLanguageName}. I'll reply when ready! 🎬`,
-            mentionToProcess.tweetId
-        );
-
-        if (!ackSuccess) {
-            logger.warn(`[🐦 TWITTER] ⚠️ Failed to post acknowledgement reply (continuing anyway)`);
-        } else {
-            logger.info(`[🐦 TWITTER] ✅ Acknowledgement reply posted successfully`);
-        }
-        logger.info(`${'🐦'.repeat(80)}\n`);
+        // Skip acknowledgement reply to save on API write limits (Basic tier: 3,000 posts/month per user)
+        logger.info(`\n${'📦'.repeat(80)}`);
+        logger.info(`[STEP 3] SKIPPING ACKNOWLEDGEMENT (saving API write quota)`);
+        logger.info(`[🐦 TWITTER] Not posting acknowledgement to stay under rate limits`);
+        logger.info(`[🐦 TWITTER] User will receive final reply when video is ready`);
+        logger.info(`${'📦'.repeat(80)}\n`);
 
         // Prepare initiation result
         logger.info(`\n${'📦'.repeat(80)}`);

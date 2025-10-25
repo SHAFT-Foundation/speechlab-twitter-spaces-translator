@@ -268,5 +268,239 @@
     "error": "Failed to post reply",
     "timestamp": "2025-10-25T03:13:04.701Z",
     "count": 4
+  },
+  "1981995376300179639": {
+    "phase": "reply",
+    "error": "Failed to post reply",
+    "timestamp": "2025-10-25T11:35:49.464Z",
+    "count": 3
+  },
+  "1981995213347324006": {
+    "phase": "reply",
+    "error": "Failed to post reply",
+    "timestamp": "2025-10-25T12:10:00.436Z",
+    "count": 3
+  },
+  "1981996024081064066": {
+    "phase": "reply",
+    "error": "Failed to post reply",
+    "timestamp": "2025-10-25T12:23:05.734Z",
+    "count": 3
+  },
+  "1981996614068896221": {
+    "phase": "reply",
+    "error": "Failed to post reply",
+    "timestamp": "2025-10-25T12:20:19.475Z",
+    "count": 3
+  },
+  "1981996463174410420": {
+    "phase": "reply",
+    "error": "Failed to post reply",
+    "timestamp": "2025-10-25T12:20:49.957Z",
+    "count": 3
+  },
+  "1981996926338748888": {
+    "phase": "reply",
+    "error": "Failed to post reply",
+    "timestamp": "2025-10-25T12:22:34.636Z",
+    "count": 3
+  },
+  "1981998729260306607": {
+    "phase": "reply",
+    "error": "Failed to post reply",
+    "timestamp": "2025-10-25T12:21:41.633Z",
+    "count": 3
+  },
+  "1981998432093913375": {
+    "phase": "reply",
+    "error": "Failed to post reply",
+    "timestamp": "2025-10-25T12:53:44.766Z",
+    "count": 3
+  },
+  "1981998350262997313": {
+    "phase": "reply",
+    "error": "Failed to post reply",
+    "timestamp": "2025-10-25T12:52:36.437Z",
+    "count": 3
+  },
+  "1981999091350642869": {
+    "phase": "reply",
+    "error": "Failed to post reply",
+    "timestamp": "2025-10-25T12:56:57.273Z",
+    "count": 3
+  },
+  "1981998866720252263": {
+    "phase": "reply",
+    "error": "Failed to post reply",
+    "timestamp": "2025-10-25T12:57:30.425Z",
+    "count": 3
+  },
+  "1981999744302919712": {
+    "phase": "reply",
+    "error": "Failed to post reply",
+    "timestamp": "2025-10-25T13:02:05.412Z",
+    "count": 3
+  },
+  "1981999598835999132": {
+    "phase": "reply",
+    "error": "Failed to post reply",
+    "timestamp": "2025-10-25T13:02:58.588Z",
+    "count": 3
+  },
+  "1981999374604386486": {
+    "phase": "reply",
+    "error": "Failed to post reply",
+    "timestamp": "2025-10-25T13:03:27.307Z",
+    "count": 3
+  },
+  "1981999267171455229": {
+    "phase": "reply",
+    "error": "Failed to post reply",
+    "timestamp": "2025-10-25T13:03:53.832Z",
+    "count": 3
+  },
+  "1982002122427117581": {
+    "phase": "reply",
+    "error": "Failed to post reply",
+    "timestamp": "2025-10-25T13:05:02.210Z",
+    "count": 3
+  },
+  "1982002410882023431": {
+    "phase": "reply",
+    "error": "Failed to post reply",
+    "timestamp": "2025-10-25T13:05:30.600Z",
+    "count": 3
+  },
+  "1982004427922751491": {
+    "phase": "reply",
+    "error": "Failed to post reply",
+    "timestamp": "2025-10-25T13:07:01.658Z",
+    "count": 3
+  },
+  "1982010594556276861": {
+    "phase": "reply",
+    "error": "Failed to post reply",
+    "timestamp": "2025-10-25T13:09:47.068Z",
+    "count": 3
+  },
+  "1982012359095796212": {
+    "phase": "reply",
+    "error": "Failed to post reply",
+    "timestamp": "2025-10-25T13:34:10.061Z",
+    "count": 3
+  },
+  "1982012629263482880": {
+    "phase": "reply",
+    "error": "Failed to post reply",
+    "timestamp": "2025-10-25T13:13:56.877Z",
+    "count": 3
+  },
+  "1982013247415788002": {
+    "phase": "reply",
+    "error": "Failed to post reply",
+    "timestamp": "2025-10-25T13:14:30.989Z",
+    "count": 3
+  },
+  "1982012969002111027": {
+    "phase": "reply",
+    "error": "Failed to post reply",
+    "timestamp": "2025-10-25T13:15:01.951Z",
+    "count": 3
+  },
+  "1982013740028457061": {
+    "phase": "reply",
+    "error": "Failed to post reply",
+    "timestamp": "2025-10-25T12:50:39.923Z",
+    "count": 2
+  },
+  "1982013876926287976": {
+    "phase": "reply",
+    "error": "Failed to post reply",
+    "timestamp": "2025-10-25T12:52:00.287Z",
+    "count": 2
+  },
+  "1982013482196205942": {
+    "phase": "reply",
+    "error": "Failed to post reply",
+    "timestamp": "2025-10-25T12:53:08.940Z",
+    "count": 2
+  },
+  "1982014269223842251": {
+    "phase": "reply",
+    "error": "Failed to post reply",
+    "timestamp": "2025-10-25T12:54:44.714Z",
+    "count": 2
+  },
+  "1982014925141619030": {
+    "phase": "reply",
+    "error": "Failed to post reply",
+    "timestamp": "2025-10-25T12:54:14.691Z",
+    "count": 2
+  },
+  "1982014539957744089": {
+    "phase": "reply",
+    "error": "Failed to post reply",
+    "timestamp": "2025-10-25T12:55:14.759Z",
+    "count": 2
+  },
+  "1982015162342113680": {
+    "phase": "reply",
+    "error": "Failed to post reply",
+    "timestamp": "2025-10-25T12:56:21.151Z",
+    "count": 2
+  },
+  "1982015125532934415": {
+    "phase": "reply",
+    "error": "Failed to post reply",
+    "timestamp": "2025-10-25T12:58:12.413Z",
+    "count": 2
+  },
+  "1982018308267213200": {
+    "phase": "reply",
+    "error": "Failed to post reply",
+    "timestamp": "2025-10-25T12:58:46.125Z",
+    "count": 2
+  },
+  "1982018700627636559": {
+    "phase": "reply",
+    "error": "Failed to post reply",
+    "timestamp": "2025-10-25T12:59:19.070Z",
+    "count": 2
+  },
+  "1982017912203301149": {
+    "phase": "reply",
+    "error": "Failed to post reply",
+    "timestamp": "2025-10-25T13:09:16.686Z",
+    "count": 2
+  },
+  "1982018548105888154": {
+    "phase": "reply",
+    "error": "Failed to post reply",
+    "timestamp": "2025-10-25T13:04:28.469Z",
+    "count": 2
+  },
+  "1982018087462310254": {
+    "phase": "reply",
+    "error": "Failed to post reply",
+    "timestamp": "2025-10-25T13:05:58.752Z",
+    "count": 2
+  },
+  "1982031670577377303": {
+    "phase": "reply",
+    "error": "Failed to post reply",
+    "timestamp": "2025-10-25T13:10:17.120Z",
+    "count": 2
+  },
+  "1982033212130857384": {
+    "phase": "reply",
+    "error": "Failed to post reply",
+    "timestamp": "2025-10-25T13:25:03.385Z",
+    "count": 2
+  },
+  "1982029633814946025": {
+    "phase": "reply",
+    "error": "Failed to post reply",
+    "timestamp": "2025-10-25T13:49:16.208Z",
+    "count": 2
   }
 }

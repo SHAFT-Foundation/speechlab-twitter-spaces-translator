@@ -80,6 +80,11 @@ web_modules/
 .env.production.local
 .env.local
 
+# Temporary API response files
+temp_responses/
+temp_api_response_summary_*
+error_log.json
+
 # parcel-bundler cache (https://parceljs.org/)
 .cache
 .parcel-cache
