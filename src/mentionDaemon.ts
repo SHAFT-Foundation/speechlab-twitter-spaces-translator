@@ -1625,40 +1625,33 @@ async function runFinalReplyQueue(): Promise<void> {
             
         } else {
             // Neither video nor MP3 is available, even though backendResult.success is true
+            // DON'T POST ERROR MESSAGE - SKIP THIS MENTION TO SAVE API QUOTA
+            logger.warn(`[↩️ Reply Queue] Backend succeeded for ${mentionInfo.tweetId} but no video/MP3 URLs available. SKIPPING reply to save API quota.`);
+            logger.warn(`[↩️ Reply Queue] Error details: ${backendResult.error || 'Unknown error'}`);
+
             // Check if this was supposed to be a VIDEO or AUDIO source
             if (mentionInfo.hasVideo) {
-                // Video source but video URL is missing - don't mention MP3
-                logger.warn(`[↩️ Reply Queue] Backend succeeded for video tweet ${mentionInfo.tweetId} but video link is missing.`);
-                logger.error(`[↩️ Reply Queue] Video processing error details: ${backendResult.error || 'Unknown error'}`);
-
-                let partialFailureMessage = `${ensureAtSymbol(mentionInfo.username)} Processing finished for the ${sourceLanguageName} to ${targetLanguageName} dub, but I couldn't prepare the dubbed video file. 😥`;
-
-                // Include specific error reason if available
-                if (backendResult.error) {
-                    partialFailureMessage += ` Reason: ${backendResult.error}.`;
-                }
-
+                logger.warn(`[↩️ Reply Queue] Video source but video URL missing for tweet ${mentionInfo.tweetId}`);
                 if (hasSharingLink) {
-                    partialFailureMessage += ` You might find project details here: ${backendResult.sharingLink}`;
+                    logger.info(`[↩️ Reply Queue] Sharing link available but skipping: ${backendResult.sharingLink}`);
                 }
                 if (backendResult.projectId) {
-                    partialFailureMessage += ` (Project ID: ${backendResult.projectId})`;
+                    logger.info(`[↩️ Reply Queue] Project ID available but skipping: ${backendResult.projectId}`);
                 }
-                finalMessage = partialFailureMessage;
+                // DON'T construct error message - just skip
+                return; // Exit early, don't post anything
             } else {
-                // Audio source but MP3 is missing
-                logger.warn(`[↩️ Reply Queue] Backend succeeded for ${mentionInfo.tweetId} but MP3 link is missing. Posting alternative message.`);
-                let partialFailureMessage = `${ensureAtSymbol(mentionInfo.username)} Processing finished for the ${sourceLanguageName} to ${targetLanguageName} dub, but I couldn't prepare the MP3 audio file. 😥`;
+                // Audio source but MP3 is missing - also skip to save API quota
+                logger.warn(`[↩️ Reply Queue] Backend succeeded for ${mentionInfo.tweetId} but MP3 link is missing. SKIPPING reply to save API quota.`);
                 if (hasSharingLink) {
-                    partialFailureMessage += ` You might find project details here: ${backendResult.sharingLink}`;
+                    logger.info(`[↩️ Reply Queue] Sharing link available but skipping: ${backendResult.sharingLink}`);
                 }
                 if (backendResult.projectId) {
-                    partialFailureMessage += ` (Project ID: ${backendResult.projectId})`;
+                    logger.info(`[↩️ Reply Queue] Project ID available but skipping: ${backendResult.projectId}`);
                 }
-                finalMessage = partialFailureMessage;
+                // DON'T construct error message - just skip
+                return; // Exit early, don't post anything
             }
-            // Keep mediaPathToAttach as undefined in this case too
-            mediaPathToAttach = undefined;
         }
         // --- END MODIFIED SECTION ---
 

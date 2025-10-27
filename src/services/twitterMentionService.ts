@@ -779,29 +779,45 @@ export async function fetchMentions(sinceId?: string, maxResults: number = 100):
  */
 export async function uploadMedia(mediaPath: string): Promise<string | null> {
     logger.info(`[🐦 Upload] ========================================`);
-    logger.info(`[🐦 Upload] Starting media upload`);
+    logger.info(`[🐦 Upload] 🚀 Starting media upload`);
     logger.info(`[🐦 Upload] File path: ${mediaPath}`);
     logger.info(`[🐦 Upload] ========================================`);
 
     if (!fs.existsSync(mediaPath)) {
         logger.error(`[🐦 Upload] ❌ File not found: ${mediaPath}`);
+        logger.error(`[🐦 Upload] 🔍 Checked path: ${mediaPath}`);
+        logger.error(`[🐦 Upload] 📂 Current working directory: ${process.cwd()}`);
         return null;
     }
 
     // Verify file has actual content and is stable (not currently being written)
+    let fileSize = 0; // Save for later upload speed calculation
     try {
         const stats = fs.statSync(mediaPath);
         const fileSizeMB = (stats.size / (1024 * 1024)).toFixed(2);
         const fileSizeKB = (stats.size / 1024).toFixed(2);
+        fileSize = stats.size; // Save for later
 
         if (stats.size === 0) {
             logger.error(`[🐦 Upload] ❌ File exists but is empty (0 bytes): ${mediaPath}`);
             return null;
         }
 
-        logger.info(`[🐦 Upload] ✅ File exists: ${mediaPath}`);
+        const fileExt = mediaPath.substring(mediaPath.lastIndexOf('.'));
+
+        logger.info(`[🐦 Upload] ✅ File verification passed`);
         logger.info(`[🐦 Upload] 📊 File size: ${fileSizeMB} MB (${fileSizeKB} KB, ${stats.size} bytes)`);
         logger.info(`[🐦 Upload] 🕒 File modified: ${stats.mtime.toISOString()}`);
+        logger.info(`[🐦 Upload] 🎬 File type: ${fileExt}`);
+
+        // Check Twitter's file size limits
+        const MAX_VIDEO_SIZE_MB = 512; // Twitter's max video size
+        const fileSizeNum = parseFloat(fileSizeMB);
+        if (fileSizeNum > MAX_VIDEO_SIZE_MB) {
+            logger.error(`[🐦 Upload] ❌ File too large! Size: ${fileSizeMB} MB, Twitter limit: ${MAX_VIDEO_SIZE_MB} MB`);
+            return null;
+        }
+        logger.info(`[🐦 Upload] ✅ File size within Twitter limits (max ${MAX_VIDEO_SIZE_MB} MB)`);
 
         // Wait a moment and check if file size is still changing (indicating active write)
         await sleep(500); // 500ms delay
@@ -850,11 +866,13 @@ export async function uploadMedia(mediaPath: string): Promise<string | null> {
     }
 
     // Retry loop with exponential backoff
+    // IMPORTANT: Use fewer retries for uploads to conserve API quota (each retry = 1 API call toward 250/day limit)
+    const UPLOAD_MAX_RETRIES = 2; // Only 2 retries for uploads (3 total attempts) to save quota
     try {
-        for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+        for (let attempt = 0; attempt <= UPLOAD_MAX_RETRIES; attempt++) {
             try {
                 logger.info(`[🐦 Upload] ========================================`);
-                logger.info(`[🐦 Upload] 📤 UPLOAD REQUEST (Attempt ${attempt + 1}/${MAX_RETRIES + 1})`);
+                logger.info(`[🐦 Upload] 📤 UPLOAD REQUEST (Attempt ${attempt + 1}/${UPLOAD_MAX_RETRIES + 1})`);
                 logger.info(`[🐦 Upload] ========================================`);
                 logger.info(`[🐦 Upload] Endpoint: POST /1.1/media/upload.json`);
                 logger.info(`[🐦 Upload] File path: ${mediaPath}`);
@@ -862,18 +880,23 @@ export async function uploadMedia(mediaPath: string): Promise<string | null> {
                 logger.info(`[🐦 Upload] ========================================`);
 
                 // Upload using v1.1 API (use user context client for uploads - counts toward user quota)
+                logger.info(`[🐦 Upload] 📤 Starting upload to Twitter API...`);
+                const uploadStartTime = Date.now();
                 const mediaId = await userContextClient.v1.uploadMedia(mediaPath, { mimeType });
+                const uploadDuration = Date.now() - uploadStartTime;
 
                 logger.info(`[🐦 Upload] ========================================`);
                 logger.info(`[🐦 Upload] 📥 UPLOAD RESPONSE - SUCCESS`);
                 logger.info(`[🐦 Upload] ========================================`);
                 logger.info(`[🐦 Upload] ✅ Media uploaded successfully`);
                 logger.info(`[🐦 Upload] Media ID: ${mediaId}`);
+                logger.info(`[🐦 Upload] ⏱️  Upload duration: ${uploadDuration}ms (${(uploadDuration/1000).toFixed(2)}s)`);
+                logger.info(`[🐦 Upload] 📊 Upload speed: ${(fileSize / 1024 / 1024 / (uploadDuration/1000)).toFixed(2)} MB/s`);
                 logger.info(`[🐦 Upload] ========================================`);
                 return mediaId;
 
             } catch (error: any) {
-                const isLastAttempt = attempt === MAX_RETRIES;
+                const isLastAttempt = attempt === UPLOAD_MAX_RETRIES;
                 const isNetworkError = !error.code || error.type === 'request';
                 const isInvalidMediaError = error.message && error.message.includes('InvalidMedia');
 
@@ -881,7 +904,7 @@ export async function uploadMedia(mediaPath: string): Promise<string | null> {
                 logger.error(`[🐦 Upload] ========================================`);
                 logger.error(`[🐦 Upload] ❌ TWITTER API UPLOAD ERROR`);
                 logger.error(`[🐦 Upload] ========================================`);
-                logger.error(`[🐦 Upload] Attempt: ${attempt + 1}/${MAX_RETRIES + 1}`);
+                logger.error(`[🐦 Upload] Attempt: ${attempt + 1}/${UPLOAD_MAX_RETRIES + 1}`);
                 logger.error(`[🐦 Upload] Error type: ${error.type || 'unknown'}`);
                 logger.error(`[🐦 Upload] Error code: ${error.code || 'N/A'}`);
                 logger.error(`[🐦 Upload] Error message: ${error.message || 'No message'}`);
