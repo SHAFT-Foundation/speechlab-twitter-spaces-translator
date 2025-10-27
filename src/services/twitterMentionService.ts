@@ -143,11 +143,11 @@ export async function testTwitterApiConnection(): Promise<boolean> {
 
         // Test 1: Get authenticated user info
         logger.info('[🐦 API Test] Test 1: Fetching authenticated user info...');
-        logger.info('[🐦 API Call] 🔵 Calling Twitter API: GET /2/users/me (using Bearer Token - app limits)');
+        logger.info('[🐦 API Call] 🔵 Calling Twitter API: GET /2/users/me (using OAuth 1.0a - user context required)');
         const startTime = Date.now();
-        const me = await readOnlyClient.v2.me();
+        const me = await rwClient.v2.me();
         const elapsed = Date.now() - startTime;
-        logger.info(`[🐦 API Call] ✅ Response received from /2/users/me (${elapsed}ms) [app-level quota]`);
+        logger.info(`[🐦 API Call] ✅ Response received from /2/users/me (${elapsed}ms) [user context]`);
 
         logger.info('[🐦 API Test] ✅ Successfully authenticated!');
         logger.info('[🐦 API Test] Response time: ' + elapsed + 'ms');
@@ -162,12 +162,29 @@ export async function testTwitterApiConnection(): Promise<boolean> {
         logger.info(`[🐦 API Call] 🔵 Calling Twitter API: GET /2/users/${me.data.id}/mentions?max_results=5`);
         const testStart = Date.now();
         try {
-            const testMentions = await readOnlyClient.v2.userMentionTimeline(me.data.id, {
-                max_results: 5,
-                'tweet.fields': 'created_at'
-            });
-            const testElapsed = Date.now() - testStart;
-            logger.info(`[🐦 API Call] ✅ Response received from /2/users/${me.data.id}/mentions (${testElapsed}ms) [app-level quota]`);
+            // Test mentions endpoint - try Bearer Token first, fall back to OAuth 1.0a
+            let testMentions;
+            let testElapsed;
+            try {
+                testMentions = await readOnlyClient.v2.userMentionTimeline(me.data.id, {
+                    max_results: 5,
+                    'tweet.fields': 'created_at'
+                });
+                testElapsed = Date.now() - testStart;
+                logger.info(`[🐦 API Call] ✅ Response received from /2/users/${me.data.id}/mentions (${testElapsed}ms) [app-level quota]`);
+            } catch (testError: any) {
+                if (testError.code === 403) {
+                    logger.warn(`[🐦 API Test] Bearer Token not supported for mentions, using OAuth 1.0a`);
+                    testMentions = await rwClient.v2.userMentionTimeline(me.data.id, {
+                        max_results: 5,
+                        'tweet.fields': 'created_at'
+                    });
+                    testElapsed = Date.now() - testStart;
+                    logger.info(`[🐦 API Call] ✅ Response received from /2/users/${me.data.id}/mentions (${testElapsed}ms) [user quota]`);
+                } else {
+                    throw testError;
+                }
+            }
 
             logger.info('[🐦 API Test] ✅ Mentions endpoint accessible!');
             logger.info('[🐦 API Test] Response time: ' + testElapsed + 'ms');
@@ -347,10 +364,10 @@ export async function fetchMentions(sinceId?: string, maxResults: number = 100):
                 await sleep(waitTime);
             }
 
-            // Get authenticated user info to fetch their mentions (using Bearer Token for app-level limits)
-            logger.info(`[🐦 API Call] 🔵 Calling Twitter API: GET /2/users/me (Bearer Token - app limits)`);
-            const me = await readOnlyClient.v2.me();
-            logger.info(`[🐦 API Call] ✅ Response received from /2/users/me [app-level quota]`);
+            // Get authenticated user info (requires user context, not app-only)
+            logger.info(`[🐦 API Call] 🔵 Calling Twitter API: GET /2/users/me (OAuth 1.0a - user context)`);
+            const me = await rwClient.v2.me();
+            logger.info(`[🐦 API Call] ✅ Response received from /2/users/me [user context]`);
             logger.info(`[🐦 Mentions] Fetching mentions for @${me.data.username} (ID: ${me.data.id})`);
 
             // Build query parameters - include media fields and referenced tweets
@@ -406,9 +423,24 @@ export async function fetchMentions(sinceId?: string, maxResults: number = 100):
             logger.debug(`[🐦 API Call] ========================================`);
 
             const fetchStartTime = Date.now();
-            const mentionsTimeline = await readOnlyClient.v2.userMentionTimeline(me.data.id, params);
-            const fetchDuration = Date.now() - fetchStartTime;
-            logger.info(`[🐦 API Call] ✅ Response received from /2/users/${me.data.id}/mentions (${fetchDuration}ms) [app-level quota]`);
+            // Try Bearer Token first for app-level limits, fall back to OAuth 1.0a if forbidden
+            let mentionsTimeline;
+            let fetchDuration;
+            try {
+                logger.debug(`[🐦 Mentions] Attempting with Bearer Token (app-level limits)...`);
+                mentionsTimeline = await readOnlyClient.v2.userMentionTimeline(me.data.id, params);
+                fetchDuration = Date.now() - fetchStartTime;
+                logger.info(`[🐦 API Call] ✅ Response received from /2/users/${me.data.id}/mentions (${fetchDuration}ms) [app-level quota]`);
+            } catch (bearerError: any) {
+                if (bearerError.code === 403) {
+                    logger.warn(`[🐦 Mentions] Bearer Token not allowed for mentions, using OAuth 1.0a [user quota]`);
+                    mentionsTimeline = await rwClient.v2.userMentionTimeline(me.data.id, params);
+                    fetchDuration = Date.now() - fetchStartTime;
+                    logger.info(`[🐦 API Call] ✅ Response received from /2/users/${me.data.id}/mentions (${fetchDuration}ms) [user quota]`);
+                } else {
+                    throw bearerError;
+                }
+            }
 
             lastPollTime = Date.now();
 

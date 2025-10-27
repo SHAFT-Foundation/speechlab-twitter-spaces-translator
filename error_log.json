@@ -502,5 +502,23 @@
     "error": "Failed to post reply",
     "timestamp": "2025-10-25T13:49:16.208Z",
     "count": 2
+  },
+  "1982086001528033618": {
+    "phase": "reply",
+    "error": "Failed to post reply",
+    "timestamp": "2025-10-26T21:35:14.546Z",
+    "count": 4
+  },
+  "1982085450300109179": {
+    "phase": "reply",
+    "error": "Failed to post reply",
+    "timestamp": "2025-10-26T21:47:15.374Z",
+    "count": 4
+  },
+  "1982079519893889392": {
+    "phase": "reply",
+    "error": "Failed to post reply",
+    "timestamp": "2025-10-26T22:22:12.729Z",
+    "count": 4
   }
 }
