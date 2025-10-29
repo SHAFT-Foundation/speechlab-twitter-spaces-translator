@@ -520,5 +520,11 @@
     "error": "Failed to post reply",
     "timestamp": "2025-10-26T22:22:12.729Z",
     "count": 4
+  },
+  "1983515917104369753": {
+    "phase": "reply",
+    "error": "Failed to post reply",
+    "timestamp": "2025-10-29T14:54:46.590Z",
+    "count": 1
   }
 }

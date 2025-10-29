@@ -1456,13 +1456,8 @@ async function runInitiationQueue(): Promise<void> {
                 logger.info(`[💾 DATABASE] ✅ Status updated to 'failed' with retry_count=${newRetryCount}`);
             }
 
-            // Post error reply
-            logger.info(`[🐦 TWITTER] Posting error reply to user...`);
-            await postReplyWithMedia(
-                `${ensureAtSymbol(mentionToProcess.username)} Sorry, I encountered an error processing your video. Please try again later.`,
-                mentionToProcess.tweetId
-            );
-            logger.info(`[🐦 TWITTER] ✅ Error reply posted to user`);
+            // Don't post error reply - saves API quota
+            logger.info(`[🐦 TWITTER] ⏭️ Skipping error reply to save API quota - error logged to Supabase`);
         }
 
     } catch (error: any) {
@@ -1515,17 +1510,8 @@ async function runInitiationQueue(): Promise<void> {
             logger.info(`[💾 DATABASE] ✅ Status updated to 'failed' with retry_count=${newRetryCount}`);
         }
 
-        // Post error reply
-        try {
-            logger.info(`[🐦 TWITTER] Posting error reply to user (after exception)...`);
-            await postReplyWithMedia(
-                `${ensureAtSymbol(mentionToProcess.username)} Sorry, I encountered an error processing your request. Please try again later.`,
-                mentionToProcess.tweetId
-            );
-            logger.info(`[🐦 TWITTER] ✅ Error reply posted to user`);
-        } catch (replyError) {
-            logger.error(`[🐦 TWITTER] ❌ Failed to post error reply:`, replyError);
-        }
+        // Don't post error reply - saves API quota
+        logger.info(`[🐦 TWITTER] ⏭️ Skipping error reply to save API quota - error logged to Supabase`);
     } finally {
         logger.info(`\n${'🔓'.repeat(80)}`);
         logger.info(`[WORKER CLEANUP] Finalizing mention processing`);
@@ -1648,13 +1634,34 @@ async function runFinalReplyQueue(): Promise<void> {
         // --- END MODIFIED SECTION ---
 
     } else {
-        // Construct error message for the single reply (original logic)
-        const { sourceLanguageName, targetLanguageName } = detectLanguages(mentionInfo.text);
-        const errorReason = backendResult.error || 'processing failed';
-         finalMessage = `${ensureAtSymbol(mentionInfo.username)} Oops! 😥 Couldn't complete the ${sourceLanguageName} to ${targetLanguageName} dub for this Space (${errorReason}). Maybe try again later?`;
-         mediaPathToAttach = undefined; // Ensure no media attached on failure
+        // Backend failed - don't post error reply to save API quota
+        logger.warn(`[↩️ Reply Queue] Backend failed for ${mentionInfo.tweetId}. Error: ${backendResult.error || 'Unknown'}`);
+        logger.info(`[↩️ Reply Queue] ⏭️ Skipping error reply to save API quota - error logged to Supabase`);
+
+        // Update Supabase with failed status
+        await updateMentionStatus(mentionInfo.tweetId, 'failed', {
+            error_message: backendResult.error || 'Unknown backend error'
+        });
+
+        // If we have a thirdPartyID, update the project status to 'failed'
+        if (backendResult.thirdPartyID) {
+            logger.info(`[↩️ Reply Queue] Updating project status for ${backendResult.thirdPartyID} to 'failed'.`);
+            await updateProjectStatus(
+                backendResult.thirdPartyID,
+                'failed',
+                mentionInfo.tweetId,
+                backendResult.projectId
+            );
+        }
+
+        // Log to error log file
+        logMentionError(mentionInfo.tweetId, backendResult.error || 'Unknown backend error', 'backend');
+
+        // Exit early - don't post anything
+        isPostingFinalReply = false;
+        return;
     }
-    
+
     // --- ADDED: Log the final constructed message before sending ---
     logger.info(`[↩️ Reply Queue] Final constructed reply text: ${finalMessage}`);
     // --- END ADDED SECTION ---
