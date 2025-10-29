@@ -844,9 +844,8 @@ async function performBackendProcessing(initData: InitiationResult): Promise<Bac
         if (mentionInfo.hasVideo) {
             logger.info(`[⚙️ Backend] Source is video, looking for DUBBED VIDEO from SpeechLab...`);
 
-            // Log the full project structure for debugging
-            logger.debug(`[⚙️ Backend] Full completed project structure:`);
-            logger.debug(JSON.stringify(completedProject, null, 2));
+            // Project completed - log summary only
+            logger.debug(`[⚙️ Backend] Project completed: ID=${completedProject.id}, status=${completedProject.job?.status}`);
 
             // Look for dubbed VIDEO file (SpeechLab returns MP4 for video dubbing)
             logger.info(`[⚙️ Backend] ========================================`);
@@ -959,8 +958,7 @@ async function performBackendProcessing(initData: InitiationResult): Promise<Bac
                 });
 
                 logger.error(`[⚙️ Backend] ========================================`);
-                logger.error(`[⚙️ Backend] FULL PROJECT RESPONSE (for debugging):`);
-                logger.error(JSON.stringify(completedProject, null, 2));
+                logger.error(`[⚙️ Backend] Project ID: ${completedProject.id} - No valid video output found`);
                 logger.error(`[⚙️ Backend] ========================================`);
 
                 videoProcessingError = 'SpeechLab did not return dubbed video output after 3 retries - check logs for full response';
@@ -1601,8 +1599,7 @@ async function runFinalReplyQueue(): Promise<void> {
                 if (downloadSuccess) {
                     logger.info(`[↩️ Reply Queue] ✅ Video downloaded for attachment: ${localVideoPath}`);
                     mediaPathToAttach = localVideoPath;
-                    // ALWAYS include URL as fallback in case upload to Twitter fails
-                    finalMessage += `\n\nWatch here: ${backendResult.publicVideoUrl}`;
+                    // Don't include URL yet - will add it only if Twitter upload fails
                 } else {
                     logger.warn(`[↩️ Reply Queue] Failed to download video for attachment. Will include URL in text.`);
                     finalMessage += `\n\nWatch here: ${backendResult.publicVideoUrl}`;
@@ -1613,16 +1610,9 @@ async function runFinalReplyQueue(): Promise<void> {
             }
         } else if (hasMp3Link) {
             // MP3 is available - construct the success message
-            let linkParts = [];
-            // MP3 Link comes first
-            linkParts.push(`CLICK HERE FOR MP3: ${backendResult.publicMp3Url}`);
-            if (hasSharingLink) {
-                 // Sharing Link comes second if available
-                linkParts.push(`Link: ${backendResult.sharingLink}`);
-            }
-            // Construct success message with links in the desired order - ensure username has @ symbol
-            finalMessage = `${ensureAtSymbol(mentionInfo.username)} Your ${sourceLanguageName} to ${targetLanguageName} dub is ready! Provided by @shaftfinance $shaft 🎉 ${linkParts.join(' | ')}`;
-            
+            // Only include S3 link (no SpeechLab sharing link)
+            finalMessage = `${ensureAtSymbol(mentionInfo.username)} Your ${sourceLanguageName} to ${targetLanguageName} dub is ready! Provided by @shaftfinance $shaft 🎉\n\nWatch here: ${backendResult.publicMp3Url}`;
+
         } else {
             // Neither video nor MP3 is available, even though backendResult.success is true
             // DON'T POST ERROR MESSAGE - SKIP THIS MENTION TO SAVE API QUOTA
@@ -1639,6 +1629,7 @@ async function runFinalReplyQueue(): Promise<void> {
                     logger.info(`[↩️ Reply Queue] Project ID available but skipping: ${backendResult.projectId}`);
                 }
                 // DON'T construct error message - just skip
+                isPostingFinalReply = false; // CRITICAL: Reset flag before early return
                 return; // Exit early, don't post anything
             } else {
                 // Audio source but MP3 is missing - also skip to save API quota
@@ -1650,6 +1641,7 @@ async function runFinalReplyQueue(): Promise<void> {
                     logger.info(`[↩️ Reply Queue] Project ID available but skipping: ${backendResult.projectId}`);
                 }
                 // DON'T construct error message - just skip
+                isPostingFinalReply = false; // CRITICAL: Reset flag before early return
                 return; // Exit early, don't post anything
             }
         }
@@ -1667,18 +1659,45 @@ async function runFinalReplyQueue(): Promise<void> {
     logger.info(`[↩️ Reply Queue] Final constructed reply text: ${finalMessage}`);
     // --- END ADDED SECTION ---
 
-    // --- Posting Logic (Single Reply) --- 
+    // --- Posting Logic (Single Reply) ---
     let postSuccess = false;
+    let mediaUploaded = false;
 
     try {
         // --- Post Final Reply ---
         logger.info(`[↩️ Reply Queue] Posting final reply via Twitter API...`);
-        postSuccess = await postReplyWithMedia(
+        const postResult = await postReplyWithMedia(
             finalMessage,
             mentionInfo.tweetId,
             mediaPathToAttach // Media only attached if applicable
         );
-        
+
+        postSuccess = postResult.success;
+        mediaUploaded = postResult.mediaUploaded;
+
+        // If Twitter upload failed but we have a video URL, add it as fallback
+        if (postSuccess && !mediaUploaded && mediaPathToAttach && backendResult.publicVideoUrl) {
+            logger.warn(`[↩️ Reply Queue] ⚠️ Twitter video upload failed, but reply was posted. Adding S3 link as follow-up...`);
+
+            // Post a follow-up reply with the S3 link
+            const followUpMessage = `Watch here: ${backendResult.publicVideoUrl}`;
+            try {
+                const followUpResult = await postReplyWithMedia(
+                    followUpMessage,
+                    mentionInfo.tweetId,
+                    undefined // No media attachment
+                );
+
+                if (followUpResult.success) {
+                    logger.info(`[↩️ Reply Queue] ✅ Posted S3 link as follow-up reply`);
+                } else {
+                    logger.error(`[↩️ Reply Queue] ❌ Failed to post S3 link follow-up`);
+                }
+            } catch (followUpError) {
+                logger.error(`[↩️ Reply Queue] ❌ Error posting S3 link follow-up:`, followUpError);
+            }
+        }
+
         if (postSuccess) {
             logger.info(`[↩️ Reply Queue] Successfully posted final reply via Twitter API for ${mentionInfo.tweetId}.`);
 
@@ -2118,8 +2137,14 @@ async function main() {
                         logger.info(`[🔔 Mention] Mention ${mention.tweetId} has status '${existingMention.status}' with retry_count=${retryCount}. Will retry processing.`);
                     }
 
-                    // SAVE TO SUPABASE IMMEDIATELY (for new mentions or update existing)
-                    // This ensures ALL mentions are tracked from the moment we see them
+                    // VALIDATE FIRST - Only save valid dubbing requests to Supabase
+                    if (!isValidDubbingRequest(mention.text)) {
+                        logger.info(`[😈 Daemon Polling] ⏭️  Mention ${mention.tweetId} is not a valid dubbing request - skipping (not saving to DB)`);
+                        skippedInvalidMentions.add(mention.tweetId);
+                        continue;
+                    }
+
+                    // SAVE TO SUPABASE (only valid mentions reach here)
                     const retryCount = existingMention?.retry_count || 0;
                     const saveSuccess = await upsertMention({
                         tweet_id: mention.tweetId,
@@ -2137,13 +2162,6 @@ async function main() {
                     }
 
                     logger.info(`[🔔 Mention] ${existingMention ? 'Updated' : 'Saved new'} mention ${mention.tweetId} in Supabase with status 'pending'`);
-
-                    // NOW validate if this is a valid dubbing request
-                    if (!isValidDubbingRequest(mention.text)) {
-                        logger.info(`[😈 Daemon Polling] ⏭️  Mention ${mention.tweetId} is not a valid dubbing request - skipping (not saving to DB)`);
-                        skippedInvalidMentions.add(mention.tweetId);
-                        continue;
-                    }
 
                     // Process the mention (new or retry)
                     newMentionsFound++;
@@ -2283,6 +2301,80 @@ async function main() {
             await retryStuckMentions(STUCK_TIMEOUT_MS);
         } catch (error) {
             logger.error('[🔄 Retry] Error in initial stuck mention check:', error);
+        }
+
+        // Load pending/failed mentions from Supabase on startup (< 6 hours old)
+        logger.info('[📊 Startup] Loading unprocessed mentions from Supabase...');
+        try {
+            const unprocessedMentions = await getUnprocessedMentions();
+
+            if (unprocessedMentions && unprocessedMentions.length > 0) {
+                logger.info(`[📊 Startup] Found ${unprocessedMentions.length} unprocessed mentions (< 6 hours old)`);
+
+                for (const mention of unprocessedMentions) {
+                    // Convert MentionRecord to MentionInfo format
+                    const mentionInfo: MentionInfo = {
+                        tweetId: mention.tweet_id,
+                        tweetUrl: mention.tweet_url,
+                        username: mention.username,
+                        parentUsername: mention.parent_username,
+                        text: mention.tweet_text,
+                        hasVideo: !!mention.m3u8_url,
+                        videoM3u8Url: mention.m3u8_url
+                    };
+
+                    // Add to initiation queue
+                    mentionQueue.push(mentionInfo);
+                    logger.info(`[📊 Startup] Added ${mention.status} mention ${mention.tweet_id} to initiation queue`);
+                }
+
+                logger.info(`[📊 Startup] ✅ Loaded ${unprocessedMentions.length} mentions to initiation queue`);
+            } else {
+                logger.info('[📊 Startup] No recent unprocessed mentions found');
+            }
+        } catch (error) {
+            logger.error('[📊 Startup] Error loading unprocessed mentions:', error);
+        }
+
+        // Load processing mentions with media ready (ANY age - these are stuck replies)
+        logger.info('[📊 Startup] Loading processing mentions with media ready...');
+        try {
+            const { getProcessingMentionsWithMedia } = await import('./services/supabaseService');
+            const processingMentions = await getProcessingMentionsWithMedia();
+
+            if (processingMentions && processingMentions.length > 0) {
+                logger.info(`[📊 Startup] Found ${processingMentions.length} processing mentions with media ready`);
+
+                for (const mention of processingMentions) {
+                    const mentionInfo: MentionInfo = {
+                        tweetId: mention.tweet_id,
+                        tweetUrl: mention.tweet_url,
+                        username: mention.username,
+                        parentUsername: mention.parent_username,
+                        text: mention.tweet_text,
+                        hasVideo: !!mention.m3u8_url,
+                        videoM3u8Url: mention.m3u8_url
+                    };
+
+                    const backendResult: BackendResult = {
+                        success: true,
+                        thirdPartyID: mention.third_party_id || '',
+                        projectId: mention.project_id || '',
+                        sharingLink: mention.sharing_link || '',
+                        publicVideoUrl: mention.public_video_url || '',
+                        publicMp3Url: mention.public_mp3_url || ''
+                    };
+
+                    finalReplyQueue.push({ mentionInfo, backendResult });
+                    logger.info(`[📊 Startup] Added processing mention ${mention.tweet_id} to reply queue`);
+                }
+
+                logger.info(`[📊 Startup] ✅ Loaded ${processingMentions.length} mentions to reply queue`);
+            } else {
+                logger.info('[📊 Startup] No processing mentions with media found');
+            }
+        } catch (error) {
+            logger.error('[📊 Startup] Error loading processing mentions:', error);
         }
 
         // Then run every 5 minutes

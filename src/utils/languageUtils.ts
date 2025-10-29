@@ -211,8 +211,9 @@ export function isValidDubbingRequest(text: string): boolean {
         /\bdub\s+(?:this|it|to|in|from)/,           // "dub this", "dub it", "dub to", etc.
         /\btranslate\s+(?:this|it|to|in|from)/,     // "translate this", etc.
         /\bdubbing\s+(?:to|in|from)/,               // "dubbing to"
-        /\b(?:in|to)\s+\w+\s+(?:language|dub)/,     // "in spanish", "to french dub"
-        /\b(?:dub|translate)\b.*\b(?:in|to|from)\b/ // "dub" followed eventually by "in/to/from"
+        /\b(?:in|to)\s+\w+\s+(?:language|dub)/,     // "in spanish language", "to french dub"
+        /\b(?:dub|translate)\b.*\b(?:in|to|from)\b/,// "dub" followed eventually by "in/to/from"
+        /\b(?:in|to|from)\s+[a-z]+\s*$/i            // Just "in spanish", "to french" at end of tweet
     ];
 
     const hasValidDubbingPattern = dubbingPatterns.some(pattern => pattern.test(textWithoutMentions));

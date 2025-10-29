@@ -215,16 +215,53 @@ export async function getStuckMentions(): Promise<MentionRecord[]> {
 
 /**
  * Get all unprocessed mentions (pending, failed, initiating, processing) with retry_count < 3
+ * Only returns mentions created within the last 6 hours to avoid processing stale mentions
  */
+/**
+ * Get processing mentions that have video/audio URLs ready (regardless of age)
+ * These are ready to be posted as replies
+ */
+export async function getProcessingMentionsWithMedia(): Promise<MentionRecord[]> {
+    try {
+        const supabase = getSupabase();
+
+        logger.info(`[📊 Supabase] Querying processing mentions with media URLs ready...`);
+
+        const { data, error } = await supabase
+            .from('mentions')
+            .select('*')
+            .eq('status', 'processing')
+            .or('public_video_url.not.is.null,public_mp3_url.not.is.null')
+            .order('created_at', { ascending: true });
+
+        if (error) {
+            logger.error(`[📊 Supabase] Error fetching processing mentions with media:`, error);
+            return [];
+        }
+
+        logger.info(`[📊 Supabase] Found ${data?.length || 0} processing mentions with media ready`);
+        return data || [];
+    } catch (error) {
+        logger.error(`[📊 Supabase] Exception in getProcessingMentionsWithMedia:`, error);
+        return [];
+    }
+}
+
 export async function getUnprocessedMentions(): Promise<MentionRecord[]> {
     try {
         const supabase = getSupabase();
 
+        // Calculate 6 hours ago timestamp
+        const sixHoursAgo = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString();
+
+        logger.info(`[📊 Supabase] Querying mentions created after: ${sixHoursAgo}`);
+        logger.info(`[📊 Supabase] Current time: ${new Date().toISOString()}`);
+
         const { data, error} = await supabase
             .from('mentions')
             .select('*')
-            .in('status', ['pending', 'failed', 'initiating', 'processing'])
-            .lt('retry_count', 3)
+            .in('status', ['pending', 'failed', 'initiating'])  // Removed 'processing' - handled separately
+            .gte('created_at', sixHoursAgo)  // Only mentions < 6 hours old
             .order('created_at', { ascending: true });
 
         if (error) {
@@ -232,7 +269,33 @@ export async function getUnprocessedMentions(): Promise<MentionRecord[]> {
             return [];
         }
 
-        return data || [];
+        logger.info(`[📊 Supabase] Raw query returned ${data?.length || 0} mentions in last 6 hours`);
+
+        // Log details for debugging
+        if (data && data.length > 0) {
+            logger.debug(`[📊 Supabase] Status breakdown:`);
+            const statusCounts: Record<string, number> = {};
+            data.forEach(m => {
+                statusCounts[m.status] = (statusCounts[m.status] || 0) + 1;
+            });
+            Object.entries(statusCounts).forEach(([status, count]) => {
+                logger.debug(`[📊 Supabase]   ${status}: ${count}`);
+            });
+        }
+
+        // Filter by retry_count in memory (handles NULL as 0)
+        const filtered = (data || []).filter(m => (m.retry_count || 0) < 3);
+
+        logger.info(`[📊 Supabase] After retry_count filter: ${filtered.length} mentions (retry_count < 3)`);
+
+        if (filtered.length > 0) {
+            logger.info(`[📊 Supabase] Sample mentions to process:`);
+            filtered.slice(0, 3).forEach(m => {
+                logger.info(`[📊 Supabase]   - ${m.tweet_id}: status=${m.status}, retry=${m.retry_count || 0}, age=${Math.floor((Date.now() - new Date(m.created_at as string).getTime()) / 60000)}min`);
+            });
+        }
+
+        return filtered;
     } catch (error) {
         logger.error(`[📊 Supabase] Exception fetching unprocessed mentions:`, error);
         return [];

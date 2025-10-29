@@ -52,6 +52,10 @@ logger.info(`[🐦 API] 📊 Write capacity: 100 posts/24h (user-level)`);
 // Export rate limit plugin for external access
 export { rateLimitPlugin };
 
+// Cache authenticated user info to avoid repeated /2/users/me calls (saves 288 API calls/day!)
+let cachedUserId: string | null = null;
+let cachedUsername: string | null = null;
+
 // Rate limiting state
 let lastPollTime = 0;
 let lastTweetPostTime = 0;
@@ -364,11 +368,17 @@ export async function fetchMentions(sinceId?: string, maxResults: number = 100):
                 await sleep(waitTime);
             }
 
-            // Get authenticated user info (requires user context, not app-only)
-            logger.info(`[🐦 API Call] 🔵 Calling Twitter API: GET /2/users/me (OAuth 1.0a - user context)`);
-            const me = await rwClient.v2.me();
-            logger.info(`[🐦 API Call] ✅ Response received from /2/users/me [user context]`);
-            logger.info(`[🐦 Mentions] Fetching mentions for @${me.data.username} (ID: ${me.data.id})`);
+            // Get authenticated user info (cache to avoid repeated API calls - saves 288 calls/day!)
+            if (!cachedUserId || !cachedUsername) {
+                logger.info(`[🐦 API Call] 🔵 Calling Twitter API: GET /2/users/me (OAuth 1.0a - user context) [FIRST TIME ONLY]`);
+                const me = await rwClient.v2.me();
+                cachedUserId = me.data.id;
+                cachedUsername = me.data.username;
+                logger.info(`[🐦 API Call] ✅ Response received from /2/users/me [user context]`);
+                logger.info(`[🐦 API Call] ✅ User info cached: @${cachedUsername} (ID: ${cachedUserId})`);
+                logger.info(`[🐦 API Call] 💾 Future polls will use cached user ID (saves 288 API calls/day!)`);
+            }
+            logger.info(`[🐦 Mentions] Fetching mentions for @${cachedUsername} (ID: ${cachedUserId})`);
 
             // Build query parameters - include media fields and referenced tweets
             // Clamp maxResults between 5 and 100
@@ -392,7 +402,7 @@ export async function fetchMentions(sinceId?: string, maxResults: number = 100):
 
             // Fetch mentions timeline
             logger.info(`[🐦 Mentions] Requesting mentions (attempt ${attempt + 1}/${MAX_RETRIES + 1})...`);
-            logger.info(`[🐦 API Call] 🔵 Calling Twitter API: GET /2/users/${me.data.id}/mentions`);
+            logger.info(`[🐦 API Call] 🔵 Calling Twitter API: GET /2/users/${cachedUserId}/mentions`);
             logger.info(`[🐦 API Call] Parameters: ${JSON.stringify(params)}`);
 
             // Log auth headers for debugging (REDACTED for security)
@@ -414,7 +424,7 @@ export async function fetchMentions(sinceId?: string, maxResults: number = 100):
             if (params.expansions) queryParams.append('expansions', params.expansions);
             if (params['media.fields']) queryParams.append('media.fields', params['media.fields']);
 
-            const curlCmd = `curl -X GET 'https://api.twitter.com/2/users/${me.data.id}/mentions?${queryParams.toString()}' \\
+            const curlCmd = `curl -X GET 'https://api.twitter.com/2/users/${cachedUserId}/mentions?${queryParams.toString()}' \\
   -H 'Authorization: OAuth oauth_consumer_key="${config.TWITTER_API_KEY}", oauth_token="${config.TWITTER_ACCESS_TOKEN}", ...' \\
   -H 'Content-Type: application/json'`;
 
@@ -428,15 +438,15 @@ export async function fetchMentions(sinceId?: string, maxResults: number = 100):
             let fetchDuration;
             try {
                 logger.debug(`[🐦 Mentions] Attempting with Bearer Token (app-level limits)...`);
-                mentionsTimeline = await readOnlyClient.v2.userMentionTimeline(me.data.id, params);
+                mentionsTimeline = await readOnlyClient.v2.userMentionTimeline(cachedUserId, params);
                 fetchDuration = Date.now() - fetchStartTime;
-                logger.info(`[🐦 API Call] ✅ Response received from /2/users/${me.data.id}/mentions (${fetchDuration}ms) [app-level quota]`);
+                logger.info(`[🐦 API Call] ✅ Response received from /2/users/${cachedUserId}/mentions (${fetchDuration}ms) [app-level quota]`);
             } catch (bearerError: any) {
                 if (bearerError.code === 403) {
                     logger.warn(`[🐦 Mentions] Bearer Token not allowed for mentions, using OAuth 1.0a [user quota]`);
-                    mentionsTimeline = await rwClient.v2.userMentionTimeline(me.data.id, params);
+                    mentionsTimeline = await rwClient.v2.userMentionTimeline(cachedUserId, params);
                     fetchDuration = Date.now() - fetchStartTime;
-                    logger.info(`[🐦 API Call] ✅ Response received from /2/users/${me.data.id}/mentions (${fetchDuration}ms) [user quota]`);
+                    logger.info(`[🐦 API Call] ✅ Response received from /2/users/${cachedUserId}/mentions (${fetchDuration}ms) [user quota]`);
                 } else {
                     throw bearerError;
                 }
@@ -472,7 +482,7 @@ export async function fetchMentions(sinceId?: string, maxResults: number = 100):
 
             // Log the plugin's tracked rate limit (may differ from response if cached)
             try {
-                const pluginLimit = await rateLimitPlugin.v2.getRateLimit(`users/${me.data.id}/mentions`);
+                const pluginLimit = await rateLimitPlugin.v2.getRateLimit(`users/${cachedUserId}/mentions`);
                 if (pluginLimit) {
                     logger.debug(`[🐦 Mentions] Plugin tracked rate limit: ${pluginLimit.remaining}/${pluginLimit.limit} remaining`);
                 }
@@ -1010,24 +1020,39 @@ export async function uploadMedia(mediaPath: string): Promise<string | null> {
  * @param tweetText Reply text
  * @param replyToTweetId Tweet ID to reply to
  * @param mediaPath Optional media file path
- * @returns True if successful
+ * @returns Object with success status and whether media was uploaded
  */
 export async function postReplyWithMedia(
     tweetText: string,
     replyToTweetId: string,
     mediaPath?: string
-): Promise<boolean> {
+): Promise<{ success: boolean; mediaUploaded: boolean }> {
+    let mediaUploaded = false; // Declare outside try block for catch block access
+
     try {
         logger.info(`[🐦 Reply] Posting reply to tweet ID: ${replyToTweetId}`);
         logger.info(`[🐦 Reply] Reply text: "${tweetText}"`);
 
-        // Upload media if provided (uploadMedia already has retry logic)
+        // Upload media if provided
         let mediaId: string | null = null;
+
         if (mediaPath) {
             logger.info(`[🐦 Reply] Uploading media: ${mediaPath}`);
             try {
-                mediaId = await uploadMedia(mediaPath);
-                if (!mediaId) {
+                // Use chunked upload for videos (.mp4), regular upload for images
+                if (mediaPath.toLowerCase().endsWith('.mp4')) {
+                    logger.info('[🐦 Reply] Detected video file - using chunked upload');
+                    const { uploadVideoChunked } = await import('./twitterMediaUpload');
+                    mediaId = await uploadVideoChunked(mediaPath);
+                } else {
+                    logger.info('[🐦 Reply] Detected image file - using standard upload');
+                    mediaId = await uploadMedia(mediaPath);
+                }
+
+                if (mediaId) {
+                    mediaUploaded = true;
+                    logger.info('[🐦 Reply] ✅ Media uploaded successfully');
+                } else {
                     logger.warn('[🐦 Reply] ⚠️ Failed to upload media after all retries');
                     logger.warn('[🐦 Reply] Will post text-only reply (media upload failed but reply will still go through)');
                     // Continue without media instead of failing completely
@@ -1092,10 +1117,10 @@ export async function postReplyWithMedia(
                 if (result.data?.id) {
                     logger.info(`[🐦 Reply] ✅ Reply posted successfully! Tweet ID: ${result.data.id}`);
                     lastTweetPostTime = Date.now(); // Update last post time
-                    return true;
+                    return { success: true, mediaUploaded };
                 } else {
                     logger.error('[🐦 Reply] ❌ No tweet ID in response', result.errors);
-                    return false;
+                    return { success: false, mediaUploaded };
                 }
 
             } catch (error: any) {
@@ -1160,7 +1185,7 @@ export async function postReplyWithMedia(
 
                     if (isLastAttempt) {
                         logger.error(`[🐦 Reply] ❌ Max retries reached. Giving up.`);
-                        return false;
+                        return { success: false, mediaUploaded };
                     }
 
                     // Use short delay for false 429s (remaining > 0), otherwise use exponential backoff
@@ -1188,7 +1213,7 @@ export async function postReplyWithMedia(
                     if (error.data?.errors) {
                         logger.error(`[🐦 Reply] Twitter API Errors: ${JSON.stringify(error.data.errors)}`);
                     }
-                    return false;
+                    return { success: false, mediaUploaded };
 
                 } else if (error.code && [500, 502, 503, 504].includes(error.code) && !isLastAttempt) {
                     // Server errors - retry with backoff
@@ -1210,16 +1235,16 @@ export async function postReplyWithMedia(
                     if (error.data?.errors) {
                         logger.error(`[🐦 Reply] Twitter API Errors: ${JSON.stringify(error.data.errors)}`);
                     }
-                    return false;
+                    return { success: false, mediaUploaded };
                 }
             }
         }
 
         logger.error('[🐦 Reply] ❌ Exhausted all retries without success');
-        return false;
+        return { success: false, mediaUploaded };
     } catch (outerError: any) {
         logger.error('[🐦 Reply] ❌ Unexpected error in postReplyWithMedia:', outerError);
-        return false;
+        return { success: false, mediaUploaded };
     }
 }
 
