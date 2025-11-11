@@ -1569,7 +1569,7 @@ async function runFinalReplyQueue(): Promise<void> {
         if (hasVideoLink && backendResult.publicVideoUrl) {
             // Video dubbing success - include SHAFT branding
             // CRITICAL: Must include @ symbol to mention the user
-            finalMessage = `${ensureAtSymbol(mentionInfo.username)} Your video dubbed to ${targetLanguageName}! Provided by @shaftfinance $shaft\n\nDisclaimer: this content is not certified for accuracy`;
+            finalMessage = `${ensureAtSymbol(mentionInfo.username)} Your video dubbed to ${targetLanguageName}! Provided by @shaftfinance $shaft\n\nDisclaimer: this content is not certified for accuracy\n\nTranslate all your videos and spaces → https://www.xdub.io`;
 
             // Download video for inline attachment to tweet
             logger.info(`[↩️ Reply Queue] Downloading dubbed video for inline attachment...`);
@@ -1597,7 +1597,7 @@ async function runFinalReplyQueue(): Promise<void> {
         } else if (hasMp3Link) {
             // MP3 is available - construct the success message
             // Only include S3 link (no SpeechLab sharing link)
-            finalMessage = `${ensureAtSymbol(mentionInfo.username)} Your ${sourceLanguageName} to ${targetLanguageName} dub is ready! Provided by @shaftfinance $shaft 🎉\n\nWatch here: ${backendResult.publicMp3Url}\n\nDisclaimer: this content is not certified for accuracy`;
+            finalMessage = `${ensureAtSymbol(mentionInfo.username)} Your ${sourceLanguageName} to ${targetLanguageName} dub is ready! Provided by @shaftfinance $shaft 🎉\n\nWatch here: ${backendResult.publicMp3Url}\n\nDisclaimer: this content is not certified for accuracy\n\nTranslate all your videos and spaces → https://www.xdub.io`;
 
         } else {
             // Neither video nor MP3 is available, even though backendResult.success is true
@@ -1665,6 +1665,12 @@ async function runFinalReplyQueue(): Promise<void> {
     // --- ADDED: Log the final constructed message before sending ---
     logger.info(`[↩️ Reply Queue] Final constructed reply text: ${finalMessage}`);
     // --- END ADDED SECTION ---
+
+    // CRITICAL: Mark as processed BEFORE posting to prevent duplicate posts during retries
+    // This prevents the same mention from being posted multiple times if there's a delay
+    logger.info(`[↩️ Reply Queue] Pre-marking mention ${mentionInfo.tweetId} in processedMentions Set to prevent duplicate posts`);
+    processedMentions.add(mentionInfo.tweetId);
+    logger.info(`[↩️ Reply Queue] processedMentions Set size: ${processedMentions.size}`);
 
     // --- Posting Logic (Single Reply) ---
     let postSuccess = false;
@@ -1747,10 +1753,10 @@ async function runFinalReplyQueue(): Promise<void> {
 
             // --- Mark Processed After Successful Reply ---
             if (shouldMarkComplete) { // Only mark processed if truly complete
-                logger.info(`[↩️ Reply Queue] Marking mention ${mentionInfo.tweetId} as processed now.`);
+                // Note: Already added to processedMentions Set before posting (line ~1672)
+                // No need to call markMentionAsProcessed again here
+                logger.info(`[↩️ Reply Queue] Mention ${mentionInfo.tweetId} already in processedMentions Set.`);
                 try {
-                    await markMentionAsProcessed(mentionInfo.tweetId, processedMentions); 
-                    
                     // If we have a thirdPartyID, update the project status to 'complete'
                     if (backendResult.thirdPartyID) {
                         logger.info(`[↩️ Reply Queue] Updating project status for ${backendResult.thirdPartyID} to 'complete'.`);
@@ -1815,6 +1821,10 @@ async function runFinalReplyQueue(): Promise<void> {
         } else {
             logger.warn(`[↩️ Reply Queue] Failed to post final reply via Twitter API for ${mentionInfo.tweetId}. NOT marking as processed - will retry on restart.`);
 
+            // CRITICAL: Remove from processedMentions to allow retry
+            logger.info(`[↩️ Reply Queue] Removing ${mentionInfo.tweetId} from processedMentions Set to allow retry`);
+            processedMentions.delete(mentionInfo.tweetId);
+
             // Get current retry count and increment
             const existingMention = await getMention(mentionInfo.tweetId);
             const currentRetryCount = existingMention?.retry_count || 0;
@@ -1829,12 +1839,15 @@ async function runFinalReplyQueue(): Promise<void> {
                     error_message: 'Failed to post reply after 3 attempts',
                     retry_count: newRetryCount
                 });
+                // Keep in processedMentions since it's final_failure
+                processedMentions.add(mentionInfo.tweetId);
             } else {
                 // Mark as failed with incremented retry count (will be retried)
                 await updateMentionStatus(mentionInfo.tweetId, 'failed', {
                     error_message: 'Failed to post reply',
                     retry_count: newRetryCount
                 });
+                // Leave out of processedMentions to allow retry
             }
 
             // Log to error log file
@@ -1842,6 +1855,10 @@ async function runFinalReplyQueue(): Promise<void> {
         }
     } catch (replyError) {
         logger.error(`[↩️ Reply Queue] CRITICAL: Error posting final Twitter API reply for ${mentionInfo.tweetId}:`, replyError);
+
+        // CRITICAL: Remove from processedMentions to allow retry
+        logger.info(`[↩️ Reply Queue] Removing ${mentionInfo.tweetId} from processedMentions Set to allow retry after exception`);
+        processedMentions.delete(mentionInfo.tweetId);
 
         // Get current retry count and increment
         const existingMention = await getMention(mentionInfo.tweetId);
@@ -1857,12 +1874,15 @@ async function runFinalReplyQueue(): Promise<void> {
                 error_message: replyError instanceof Error ? replyError.message + ' (after 3 attempts)' : String(replyError) + ' (after 3 attempts)',
                 retry_count: newRetryCount
             });
+            // Keep in processedMentions since it's final_failure
+            processedMentions.add(mentionInfo.tweetId);
         } else {
             // Mark as failed with incremented retry count (will be retried)
             await updateMentionStatus(mentionInfo.tweetId, 'failed', {
                 error_message: replyError instanceof Error ? replyError.message : String(replyError),
                 retry_count: newRetryCount
             });
+            // Leave out of processedMentions to allow retry
         }
 
         // Log to error log file
