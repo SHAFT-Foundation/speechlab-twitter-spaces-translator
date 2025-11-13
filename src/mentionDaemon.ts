@@ -1580,7 +1580,7 @@ async function runFinalReplyQueue(): Promise<void> {
         if (hasVideoLink && backendResult.publicVideoUrl) {
             // Video dubbing success - include SHAFT branding
             // CRITICAL: Must include @ symbol to mention the user
-            finalMessage = `${ensureAtSymbol(mentionInfo.username)} Your video dubbed to ${targetLanguageName}! Provided by @shaftfinance $shaft\n\nDisclaimer: this content is not certified for accuracy\n\nTranslate all your videos and spaces → https://www.xdub.io`;
+            finalMessage = `${ensureAtSymbol(mentionInfo.username)} Your video dubbed to ${targetLanguageName}! Provided by @shaftfinance\n\nDisclaimer: this content is not certified for accuracy`;
 
             // Download video for inline attachment to tweet
             logger.info(`[↩️ Reply Queue] Downloading dubbed video for inline attachment...`);
@@ -1608,7 +1608,7 @@ async function runFinalReplyQueue(): Promise<void> {
         } else if (hasMp3Link) {
             // MP3 is available - construct the success message
             // Only include S3 link (no SpeechLab sharing link)
-            finalMessage = `${ensureAtSymbol(mentionInfo.username)} Your ${sourceLanguageName} to ${targetLanguageName} dub is ready! Provided by @shaftfinance $shaft 🎉\n\nWatch here: ${backendResult.publicMp3Url}\n\nDisclaimer: this content is not certified for accuracy\n\nTranslate all your videos and spaces → https://www.xdub.io`;
+            finalMessage = `${ensureAtSymbol(mentionInfo.username)} Your ${sourceLanguageName} to ${targetLanguageName} dub is ready! Provided by @shaftfinance 🎉\n\nWatch here: ${backendResult.publicMp3Url}\n\nDisclaimer: this content is not certified for accuracy`;
 
         } else {
             // Neither video nor MP3 is available, even though backendResult.success is true
