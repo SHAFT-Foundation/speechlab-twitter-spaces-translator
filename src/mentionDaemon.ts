@@ -1190,6 +1190,13 @@ function addToFinalReplyQueue(mentionInfo: MentionInfo, backendResult: BackendRe
     }
 
     logger.info(`[↩️ Reply Queue] Adding result for ${mentionInfo.tweetId} to reply queue. Success: ${backendResult.success}`);
+
+    // CRITICAL: Add to processedMentions IMMEDIATELY when adding to queue
+    // This prevents the same mention from being added multiple times if there's any delay
+    logger.info(`[↩️ Reply Queue] IMMEDIATELY marking ${mentionInfo.tweetId} in processedMentions Set to prevent duplicate queue adds`);
+    processedMentions.add(mentionInfo.tweetId);
+    logger.info(`[↩️ Reply Queue] processedMentions Set size: ${processedMentions.size}`);
+
     finalReplyQueue.push({ mentionInfo, backendResult });
 
     // Remove from in-progress set since it's now in reply queue
@@ -1410,7 +1417,7 @@ async function runInitiationQueue(): Promise<void> {
             logger.info(`[✅ SUCCESS] Backend processing completed successfully!`);
             logger.info(`[✅ SUCCESS] Tweet ID: ${mentionToProcess.tweetId}`);
             logger.info(`[✅ SUCCESS] Adding to finalReplyQueue for posting dubbed video to Twitter...`);
-            finalReplyQueue.push({ mentionInfo: mentionToProcess, backendResult });
+            addToFinalReplyQueue(mentionToProcess, backendResult);
             logger.info(`[✅ SUCCESS] Final reply queue size: ${finalReplyQueue.length}`);
             logger.info(`${'🎯'.repeat(80)}\n`);
         } else {
@@ -1554,6 +1561,10 @@ async function runFinalReplyQueue(): Promise<void> {
     const { mentionInfo, backendResult } = replyData;
     logger.info(`[↩️ Reply Queue] Processing final reply for ${mentionInfo.tweetId}. Backend Success: ${backendResult.success}`);
 
+    // Note: Mention should already be marked as processed in addToFinalReplyQueue() (line ~1197)
+    // This prevents duplicates from being added to the queue in the first place
+    logger.info(`[↩️ Reply Queue] Mention ${mentionInfo.tweetId} marked as processed: ${processedMentions.has(mentionInfo.tweetId)}`);
+
     let finalMessage = ''; // Keep for potential single message fallback
     // Media attachment is currently disabled by default via config
     let mediaPathToAttach: string | undefined = undefined;
@@ -1666,11 +1677,10 @@ async function runFinalReplyQueue(): Promise<void> {
     logger.info(`[↩️ Reply Queue] Final constructed reply text: ${finalMessage}`);
     // --- END ADDED SECTION ---
 
-    // CRITICAL: Mark as processed BEFORE posting to prevent duplicate posts during retries
-    // This prevents the same mention from being posted multiple times if there's a delay
-    logger.info(`[↩️ Reply Queue] Pre-marking mention ${mentionInfo.tweetId} in processedMentions Set to prevent duplicate posts`);
-    processedMentions.add(mentionInfo.tweetId);
-    logger.info(`[↩️ Reply Queue] processedMentions Set size: ${processedMentions.size}`);
+    // Note: Mention was already added to processedMentions in addToFinalReplyQueue() (line ~1197)
+    // This prevents duplicate posts even if the same mention is processed multiple times
+    logger.info(`[↩️ Reply Queue] Mention ${mentionInfo.tweetId} should already be in processedMentions Set`);
+    logger.info(`[↩️ Reply Queue] processedMentions.has(${mentionInfo.tweetId}): ${processedMentions.has(mentionInfo.tweetId)}`);
 
     // --- Posting Logic (Single Reply) ---
     let postSuccess = false;
@@ -2392,7 +2402,7 @@ async function main() {
                         publicMp3Url: mention.public_mp3_url || ''
                     };
 
-                    finalReplyQueue.push({ mentionInfo, backendResult });
+                    addToFinalReplyQueue(mentionInfo, backendResult);
                     logger.info(`[📊 Startup] Added processing mention ${mention.tweet_id} to reply queue`);
                 }
 
