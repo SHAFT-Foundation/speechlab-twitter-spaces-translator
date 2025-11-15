@@ -1308,6 +1308,14 @@ async function runInitiationQueue(): Promise<void> {
         const { sourceLanguageCode, sourceLanguageName, targetLanguageCode, targetLanguageName } = detectLanguages(mentionToProcess.text);
         logger.info(`[🌐 LANGUAGE] Source: ${sourceLanguageName} (${sourceLanguageCode})`);
         logger.info(`[🌐 LANGUAGE] Target: ${targetLanguageName} (${targetLanguageCode})`);
+
+        // Save detected languages to database
+        logger.info(`[💾 DATABASE] Saving detected languages to database...`);
+        await updateMentionStatus(mentionToProcess.tweetId, 'initiating', {
+            source_language: sourceLanguageCode,
+            target_language: targetLanguageCode
+        });
+        logger.info(`[💾 DATABASE] ✅ Saved languages: ${sourceLanguageCode} → ${targetLanguageCode}`);
         logger.info(`${'🌐'.repeat(80)}\n`);
 
         // Check if video was found during initial fetch
@@ -2088,6 +2096,8 @@ async function main() {
                     tweetUrl: m.tweetUrl,
                     username: m.username,
                     parentUsername: m.parentUsername,
+                    parentTweetUrl: m.parentTweetUrl,
+                    parentTweetText: m.parentTweetText,
                     text: m.text,
                     hasVideo: m.hasVideo,
                     videoM3u8Url: m.videoUrl
@@ -2187,6 +2197,8 @@ async function main() {
                         tweet_id: mention.tweetId,
                         username: mention.username,
                         parent_username: mention.parentUsername,
+                        parent_tweet_url: mention.parentTweetUrl,
+                        parent_tweet_text: mention.parentTweetText,
                         tweet_url: mention.tweetUrl,
                         tweet_text: mention.text || '',
                         status: 'pending',

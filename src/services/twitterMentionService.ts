@@ -101,6 +101,8 @@ export interface MentionData {
     tweetUrl: string;
     username: string;
     parentUsername?: string;
+    parentTweetUrl?: string;
+    parentTweetText?: string;
     text: string;
     createdAt: Date;
     authorId: string;
@@ -527,6 +529,8 @@ export async function fetchMentions(sinceId?: string, maxResults: number = 100):
 
             // Get parent tweet info if this is a reply
             let parentUsername: string | undefined;
+            let parentTweetUrl: string | undefined;
+            let parentTweetText: string | undefined;
             let videoUrl: string | undefined;
             let hasVideo = false;
 
@@ -546,6 +550,17 @@ export async function fetchMentions(sinceId?: string, maxResults: number = 100):
                         if (parentTweet.author_id) {
                             const parentAuthor = mentionsTimeline.data.includes?.users?.find(u => u.id === parentTweet.author_id);
                             parentUsername = parentAuthor?.username;
+
+                            // Build parent tweet URL
+                            if (parentUsername) {
+                                parentTweetUrl = `https://twitter.com/${parentUsername}/status/${referencedTweet.id}`;
+                            }
+                        }
+
+                        // Get parent tweet text
+                        if (parentTweet.text) {
+                            parentTweetText = parentTweet.text;
+                            logger.debug(`[🐦 Mentions] Parent tweet text: ${parentTweetText.substring(0, 100)}...`);
                         }
 
                         // Extract video from parent tweet if it has media
@@ -601,6 +616,8 @@ export async function fetchMentions(sinceId?: string, maxResults: number = 100):
                 tweetUrl: `https://twitter.com/${username}/status/${tweet.id}`,
                 username: username,
                 parentUsername: parentUsername,
+                parentTweetUrl: parentTweetUrl,
+                parentTweetText: parentTweetText,
                 text: tweet.text,
                 createdAt: tweet.created_at ? new Date(tweet.created_at) : new Date(),
                 authorId: tweet.author_id || '',

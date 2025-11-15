@@ -21,6 +21,8 @@ export interface MentionInfo {
     tweetUrl: string;
     username: string;
     parentUsername?: string;      // Username of the parent tweet author
+    parentTweetUrl?: string;      // URL of the parent tweet
+    parentTweetText?: string;     // Text content of the parent tweet
     text: string;
     hasVideo?: boolean;           // Flag indicating if mention contains a video
     videoM3u8Url?: string;        // Captured M3U8 video stream URL
