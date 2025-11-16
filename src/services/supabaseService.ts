@@ -35,6 +35,10 @@ export interface MentionRecord {
     tweet_text: string;
     parent_tweet_url?: string;
     parent_tweet_text?: string;
+    parent_tweet_category?: string;
+    parent_tweet_category_id?: string;
+    parent_tweet_domains?: any;
+    twitter_profile_image_url?: string;
     status: 'pending' | 'initiating' | 'processing' | 'complete' | 'failed' | 'final_failure' | 'skipped_no_video';
     retry_count?: number;
     third_party_id?: string;
@@ -67,6 +71,10 @@ export async function upsertMention(mention: MentionRecord): Promise<boolean> {
                 tweet_text: mention.tweet_text,
                 parent_tweet_url: mention.parent_tweet_url,
                 parent_tweet_text: mention.parent_tweet_text,
+                parent_tweet_category: mention.parent_tweet_category,
+                parent_tweet_category_id: mention.parent_tweet_category_id,
+                parent_tweet_domains: mention.parent_tweet_domains,
+                twitter_profile_image_url: mention.twitter_profile_image_url,
                 status: mention.status,
                 retry_count: mention.retry_count,
                 third_party_id: mention.third_party_id,

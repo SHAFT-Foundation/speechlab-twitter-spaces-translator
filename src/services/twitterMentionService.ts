@@ -100,9 +100,13 @@ export interface MentionData {
     tweetId: string;
     tweetUrl: string;
     username: string;
+    profileImageUrl?: string;
     parentUsername?: string;
     parentTweetUrl?: string;
     parentTweetText?: string;
+    parentTweetCategory?: string;
+    parentTweetCategoryId?: string;
+    parentTweetDomains?: any[];
     text: string;
     createdAt: Date;
     authorId: string;
@@ -387,8 +391,8 @@ export async function fetchMentions(sinceId?: string, maxResults: number = 100):
             const clampedMaxResults = Math.max(5, Math.min(maxResults, 100));
             const params: any = {
                 max_results: clampedMaxResults,
-                'tweet.fields': 'created_at,author_id,conversation_id,attachments,referenced_tweets',
-                'user.fields': 'username',
+                'tweet.fields': 'created_at,author_id,conversation_id,attachments,referenced_tweets,context_annotations',
+                'user.fields': 'username,profile_image_url',
                 // CRITICAL: referenced_tweets.id expansion tells Twitter to include the parent tweet data
                 // attachments.media_keys expansion applies to BOTH mention tweets AND referenced tweets
                 expansions: 'author_id,attachments.media_keys,referenced_tweets.id,referenced_tweets.id.author_id',
@@ -523,14 +527,18 @@ export async function fetchMentions(sinceId?: string, maxResults: number = 100):
         logger.debug(`[🐦 Mentions] Full includes object:`, JSON.stringify(mentionsTimeline.data.includes, null, 2));
 
         for (const tweet of mentionsTimeline.data.data || []) {
-            // Get author username from includes
+            // Get author username and profile image from includes
             const author = mentionsTimeline.data.includes?.users?.find(u => u.id === tweet.author_id);
             const username = author?.username || 'unknown';
+            const profileImageUrl = author?.profile_image_url;
 
             // Get parent tweet info if this is a reply
             let parentUsername: string | undefined;
             let parentTweetUrl: string | undefined;
             let parentTweetText: string | undefined;
+            let parentTweetCategory: string | undefined;
+            let parentTweetCategoryId: string | undefined;
+            let parentTweetDomains: any[] | undefined;
             let videoUrl: string | undefined;
             let hasVideo = false;
 
@@ -561,6 +569,23 @@ export async function fetchMentions(sinceId?: string, maxResults: number = 100):
                         if (parentTweet.text) {
                             parentTweetText = parentTweet.text;
                             logger.debug(`[🐦 Mentions] Parent tweet text: ${parentTweetText.substring(0, 100)}...`);
+                        }
+
+                        // Extract category from context annotations
+                        if (parentTweet.context_annotations && parentTweet.context_annotations.length > 0) {
+                            // Get the first domain as the primary category
+                            const primaryAnnotation = parentTweet.context_annotations[0];
+                            if (primaryAnnotation.domain) {
+                                parentTweetCategory = primaryAnnotation.domain.name;
+                                parentTweetCategoryId = primaryAnnotation.domain.id;
+                                parentTweetDomains = parentTweet.context_annotations.map((a: any) => ({
+                                    domain_id: a.domain?.id,
+                                    domain_name: a.domain?.name,
+                                    entity_id: a.entity?.id,
+                                    entity_name: a.entity?.name
+                                }));
+                                logger.info(`[🐦 Mentions] ✅ Parent tweet category: ${parentTweetCategory} (${parentTweetCategoryId})`);
+                            }
                         }
 
                         // Extract video from parent tweet if it has media
@@ -615,9 +640,13 @@ export async function fetchMentions(sinceId?: string, maxResults: number = 100):
                 tweetId: tweet.id,
                 tweetUrl: `https://twitter.com/${username}/status/${tweet.id}`,
                 username: username,
+                profileImageUrl: profileImageUrl,
                 parentUsername: parentUsername,
                 parentTweetUrl: parentTweetUrl,
                 parentTweetText: parentTweetText,
+                parentTweetCategory: parentTweetCategory,
+                parentTweetCategoryId: parentTweetCategoryId,
+                parentTweetDomains: parentTweetDomains,
                 text: tweet.text,
                 createdAt: tweet.created_at ? new Date(tweet.created_at) : new Date(),
                 authorId: tweet.author_id || '',
