@@ -1,0 +1,825 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dubbing Agent - Current Status Report</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 40px 20px;
+            background: #f5f5f5;
+        }
+        h1 { color: #1da1f2; margin-bottom: 10px; }
+        h2 { color: #333; margin-top: 40px; border-bottom: 2px solid #1da1f2; padding-bottom: 10px; }
+        .summary {
+            background: white;
+            padding: 30px;
+            border-radius: 12px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            margin-bottom: 30px;
+        }
+        .stat {
+            display: inline-block;
+            margin: 10px 30px 10px 0;
+        }
+        .stat-value {
+            font-size: 48px;
+            font-weight: bold;
+            color: #1da1f2;
+            display: block;
+        }
+        .stat-label {
+            color: #666;
+            font-size: 14px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        .warning {
+            background: #fff3cd;
+            border: 1px solid #ffc107;
+            padding: 20px;
+            border-radius: 8px;
+            margin: 20px 0;
+        }
+        .info {
+            background: #d1ecf1;
+            border: 1px solid #0dcaf0;
+            padding: 20px;
+            border-radius: 8px;
+            margin: 20px 0;
+        }
+        table {
+            width: 100%;
+            background: white;
+            border-collapse: collapse;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        th {
+            background: #1da1f2;
+            color: white;
+            padding: 15px;
+            text-align: left;
+            font-weight: 600;
+        }
+        td {
+            padding: 12px 15px;
+            border-bottom: 1px solid #eee;
+        }
+        tr:hover {
+            background: #f8f9fa;
+        }
+        .category-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 15px;
+            margin: 20px 0;
+        }
+        .category-card {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .category-name {
+            font-weight: bold;
+            color: #333;
+            margin-bottom: 5px;
+        }
+        .category-count {
+            font-size: 24px;
+            color: #1da1f2;
+            font-weight: bold;
+        }
+        a { color: #1da1f2; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+    </style>
+</head>
+<body>
+    <h1>🎤 Dubbing Agent Status Report</h1>
+    <p style="color: #666; margin-bottom: 30px;">Generated: 11/16/2025, 12:07:52 PM</p>
+
+    <div class="summary">
+        <h2>📊 Overview</h2>
+        <div class="stat">
+            <span class="stat-value">658</span>
+            <span class="stat-label">Total Completed Dubs</span>
+        </div>
+        <div class="stat">
+            <span class="stat-value">0</span>
+            <span class="stat-label">With Reply Tweet ID</span>
+        </div>
+        <div class="stat">
+            <span class="stat-value">658</span>
+            <span class="stat-label">Missing Reply Tweet ID</span>
+        </div>
+    </div>
+
+    <div class="warning">
+        <h3>⚠️ Analytics Not Available Yet</h3>
+        <p><strong>Why:</strong> We need reply tweet IDs to collect metrics (views, likes, etc.) from Twitter.</p>
+        <p><strong>Status:</strong> Currently 658 out of 658 dubs (100%) are missing reply tweet IDs.</p>
+        <p><strong>Next Steps:</strong></p>
+        <ol>
+            <li>Wait for backfill script to complete (currently running, waiting for Twitter rate limits)</li>
+            <li>Once backfill completes, run: <code>npx tsx scripts/collect-metrics.ts</code></li>
+            <li>Generate analytics report: <code>npx tsx scripts/generate-engagement-report.ts</code></li>
+        </ol>
+    </div>
+
+    <div class="info">
+        <h3>✅ What's Working</h3>
+        <p><strong>All future dubs</strong> will automatically track reply tweet IDs thanks to the updated daemon code.</p>
+        <p><strong>Analytics infrastructure</strong> is fully in place - database tables, metrics collection scripts, and report generators are ready.</p>
+        <p><strong>Once backfill completes</strong>, you'll be able to track:</p>
+        <ul>
+            <li>View counts for mentions vs dub replies vs parent tweets</li>
+            <li>Engagement rates (likes, retweets, replies)</li>
+            <li>Performance by language and category</li>
+            <li>Comparison with other comments on the same parent tweet</li>
+        </ul>
+    </div>
+
+    <h2>🌍 Dubs by Language</h2>
+    <div class="category-grid">
+        
+                <div class="category-card">
+                    <div class="category-name">unknown</div>
+                    <div class="category-count">571</div>
+                </div>
+            
+                <div class="category-card">
+                    <div class="category-name">Chinese</div>
+                    <div class="category-count">14</div>
+                </div>
+            
+                <div class="category-card">
+                    <div class="category-name">es_la</div>
+                    <div class="category-count">9</div>
+                </div>
+            
+                <div class="category-card">
+                    <div class="category-name">Spanish</div>
+                    <div class="category-count">9</div>
+                </div>
+            
+                <div class="category-card">
+                    <div class="category-name">Italian</div>
+                    <div class="category-count">8</div>
+                </div>
+            
+                <div class="category-card">
+                    <div class="category-name">Russian</div>
+                    <div class="category-count">7</div>
+                </div>
+            
+                <div class="category-card">
+                    <div class="category-name">zh</div>
+                    <div class="category-count">6</div>
+                </div>
+            
+                <div class="category-card">
+                    <div class="category-name">French</div>
+                    <div class="category-count">6</div>
+                </div>
+            
+                <div class="category-card">
+                    <div class="category-name">ko</div>
+                    <div class="category-count">4</div>
+                </div>
+            
+                <div class="category-card">
+                    <div class="category-name">Dutch</div>
+                    <div class="category-count">4</div>
+                </div>
+            
+                <div class="category-card">
+                    <div class="category-name">Japanese</div>
+                    <div class="category-count">3</div>
+                </div>
+            
+                <div class="category-card">
+                    <div class="category-name">Korean</div>
+                    <div class="category-count">3</div>
+                </div>
+            
+                <div class="category-card">
+                    <div class="category-name">ja</div>
+                    <div class="category-count">2</div>
+                </div>
+            
+                <div class="category-card">
+                    <div class="category-name">ar</div>
+                    <div class="category-count">2</div>
+                </div>
+            
+                <div class="category-card">
+                    <div class="category-name">fr</div>
+                    <div class="category-count">2</div>
+                </div>
+            
+                <div class="category-card">
+                    <div class="category-name">English</div>
+                    <div class="category-count">2</div>
+                </div>
+            
+                <div class="category-card">
+                    <div class="category-name">pt</div>
+                    <div class="category-count">1</div>
+                </div>
+            
+                <div class="category-card">
+                    <div class="category-name">id</div>
+                    <div class="category-count">1</div>
+                </div>
+            
+                <div class="category-card">
+                    <div class="category-name">hi</div>
+                    <div class="category-count">1</div>
+                </div>
+            
+                <div class="category-card">
+                    <div class="category-name">Arabic</div>
+                    <div class="category-count">1</div>
+                </div>
+            
+                <div class="category-card">
+                    <div class="category-name">Portuguese</div>
+                    <div class="category-count">1</div>
+                </div>
+            
+                <div class="category-card">
+                    <div class="category-name">Thai</div>
+                    <div class="category-count">1</div>
+                </div>
+            
+    </div>
+
+    <h2>📁 Dubs by Category</h2>
+    <div class="category-grid">
+        
+                <div class="category-card">
+                    <div class="category-name">Business & finance</div>
+                    <div class="category-count">11</div>
+                </div>
+            
+                <div class="category-card">
+                    <div class="category-name">Entertainment</div>
+                    <div class="category-count">11</div>
+                </div>
+            
+                <div class="category-card">
+                    <div class="category-name">Cryptocurrencies</div>
+                    <div class="category-count">5</div>
+                </div>
+            
+                <div class="category-card">
+                    <div class="category-name">Home & family</div>
+                    <div class="category-count">4</div>
+                </div>
+            
+                <div class="category-card">
+                    <div class="category-name">Digital creators</div>
+                    <div class="category-count">2</div>
+                </div>
+            
+                <div class="category-card">
+                    <div class="category-name">World news</div>
+                    <div class="category-count">2</div>
+                </div>
+            
+                <div class="category-card">
+                    <div class="category-name">Gaming</div>
+                    <div class="category-count">1</div>
+                </div>
+            
+    </div>
+
+    <h2>📋 Recent Dubs (Last 50)</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Date</th>
+                <th>User</th>
+                <th>Parent User</th>
+                <th>Language</th>
+                <th>Mention Tweet</th>
+                <th>Parent Tweet</th>
+                <th>Reply Tweet ID</th>
+            </tr>
+        </thead>
+        <tbody>
+            
+                <tr>
+                    <td>11/16/2025</td>
+                    <td>@PukaMeme</td>
+                    <td>@MarioNawfal</td>
+                    <td>ja</td>
+                    <td><a href="https://twitter.com/user/status/1990084331705115123" target="_blank">View →</a></td>
+                    <td><a href="https://twitter.com/MarioNawfal/status/1989872805924446625" target="_blank">View →</a></td>
+                    <td>⏳ Pending backfill</td>
+                </tr>
+            
+                <tr>
+                    <td>11/16/2025</td>
+                    <td>@PukaMeme</td>
+                    <td>@ShadowofEzra</td>
+                    <td>es_la</td>
+                    <td><a href="https://twitter.com/user/status/1990085253839585769" target="_blank">View →</a></td>
+                    <td><a href="https://twitter.com/ShadowofEzra/status/1989855084251930948" target="_blank">View →</a></td>
+                    <td>⏳ Pending backfill</td>
+                </tr>
+            
+                <tr>
+                    <td>11/16/2025</td>
+                    <td>@PukaMeme</td>
+                    <td>@MarioNawfal</td>
+                    <td>es_la</td>
+                    <td><a href="https://twitter.com/user/status/1990084233843380369" target="_blank">View →</a></td>
+                    <td><a href="https://twitter.com/MarioNawfal/status/1989872805924446625" target="_blank">View →</a></td>
+                    <td>⏳ Pending backfill</td>
+                </tr>
+            
+                <tr>
+                    <td>11/15/2025</td>
+                    <td>@PukaMeme</td>
+                    <td>@MarioNawfal</td>
+                    <td>ar</td>
+                    <td><a href="https://twitter.com/user/status/1989876603736994125" target="_blank">View →</a></td>
+                    <td><a href="https://twitter.com/MarioNawfal/status/1989735143360151958" target="_blank">View →</a></td>
+                    <td>⏳ Pending backfill</td>
+                </tr>
+            
+                <tr>
+                    <td>11/15/2025</td>
+                    <td>@PukaMeme</td>
+                    <td>@iAnonPatriot</td>
+                    <td>es_la</td>
+                    <td><a href="https://twitter.com/user/status/1989876688726233456" target="_blank">View →</a></td>
+                    <td><a href="https://twitter.com/iAnonPatriot/status/1989690473774981170" target="_blank">View →</a></td>
+                    <td>⏳ Pending backfill</td>
+                </tr>
+            
+                <tr>
+                    <td>11/15/2025</td>
+                    <td>@PukaMeme</td>
+                    <td>@offshoreleague</td>
+                    <td>pt</td>
+                    <td><a href="https://twitter.com/user/status/1989877096903315777" target="_blank">View →</a></td>
+                    <td><a href="https://twitter.com/offshoreleague/status/1989097073258660196" target="_blank">View →</a></td>
+                    <td>⏳ Pending backfill</td>
+                </tr>
+            
+                <tr>
+                    <td>11/15/2025</td>
+                    <td>@eddy_rre</td>
+                    <td>@tbpn</td>
+                    <td>es_la</td>
+                    <td><a href="https://twitter.com/user/status/1989829382043812209" target="_blank">View →</a></td>
+                    <td><a href="https://twitter.com/tbpn/status/1989756346301124654" target="_blank">View →</a></td>
+                    <td>⏳ Pending backfill</td>
+                </tr>
+            
+                <tr>
+                    <td>11/15/2025</td>
+                    <td>@eddy_rre</td>
+                    <td>@Asmongold_X</td>
+                    <td>ko</td>
+                    <td><a href="https://twitter.com/user/status/1989829758121603147" target="_blank">View →</a></td>
+                    <td><a href="https://twitter.com/Asmongold_X/status/1989466906668273842" target="_blank">View →</a></td>
+                    <td>⏳ Pending backfill</td>
+                </tr>
+            
+                <tr>
+                    <td>11/15/2025</td>
+                    <td>@eddy_rre</td>
+                    <td>@TheChiefNerd</td>
+                    <td>zh</td>
+                    <td><a href="https://twitter.com/user/status/1989829838337654900" target="_blank">View →</a></td>
+                    <td><a href="https://twitter.com/TheChiefNerd/status/1989687637104337075" target="_blank">View →</a></td>
+                    <td>⏳ Pending backfill</td>
+                </tr>
+            
+                <tr>
+                    <td>11/15/2025</td>
+                    <td>@PukaMeme</td>
+                    <td>@AltcoinDaily</td>
+                    <td>zh</td>
+                    <td><a href="https://twitter.com/user/status/1989787665672388880" target="_blank">View →</a></td>
+                    <td><a href="https://twitter.com/AltcoinDaily/status/1989771288697798874" target="_blank">View →</a></td>
+                    <td>⏳ Pending backfill</td>
+                </tr>
+            
+                <tr>
+                    <td>11/15/2025</td>
+                    <td>@Nickpdl1</td>
+                    <td>@AltcoinDaily</td>
+                    <td>zh</td>
+                    <td><a href="https://twitter.com/user/status/1989795078706184238" target="_blank">View →</a></td>
+                    <td><a href="https://twitter.com/AltcoinDaily/status/1989771288697798874" target="_blank">View →</a></td>
+                    <td>⏳ Pending backfill</td>
+                </tr>
+            
+                <tr>
+                    <td>11/15/2025</td>
+                    <td>@Nickpdl1</td>
+                    <td>@pumpius</td>
+                    <td>fr</td>
+                    <td><a href="https://twitter.com/user/status/1989795124982026460" target="_blank">View →</a></td>
+                    <td><a href="https://twitter.com/pumpius/status/1989756562253254923" target="_blank">View →</a></td>
+                    <td>⏳ Pending backfill</td>
+                </tr>
+            
+                <tr>
+                    <td>11/15/2025</td>
+                    <td>@Nickpdl1</td>
+                    <td>@saylordocs</td>
+                    <td>es_la</td>
+                    <td><a href="https://twitter.com/user/status/1989795214140022826" target="_blank">View →</a></td>
+                    <td><a href="https://twitter.com/saylordocs/status/1989785555530301623" target="_blank">View →</a></td>
+                    <td>⏳ Pending backfill</td>
+                </tr>
+            
+                <tr>
+                    <td>11/15/2025</td>
+                    <td>@Nickpdl1</td>
+                    <td>@UTXOTimes</td>
+                    <td>ja</td>
+                    <td><a href="https://twitter.com/user/status/1989795273854554299" target="_blank">View →</a></td>
+                    <td><a href="https://twitter.com/UTXOTimes/status/1989777925328216556" target="_blank">View →</a></td>
+                    <td>⏳ Pending backfill</td>
+                </tr>
+            
+                <tr>
+                    <td>11/15/2025</td>
+                    <td>@Nickpdl1</td>
+                    <td>@AltcoinDaily</td>
+                    <td>id</td>
+                    <td><a href="https://twitter.com/user/status/1989795359372230906" target="_blank">View →</a></td>
+                    <td><a href="https://twitter.com/AltcoinDaily/status/1989792291675054472" target="_blank">View →</a></td>
+                    <td>⏳ Pending backfill</td>
+                </tr>
+            
+                <tr>
+                    <td>11/15/2025</td>
+                    <td>@Nickpdl1</td>
+                    <td>@BTCjunkies</td>
+                    <td>hi</td>
+                    <td><a href="https://twitter.com/user/status/1989795402288443528" target="_blank">View →</a></td>
+                    <td><a href="https://twitter.com/BTCjunkies/status/1989784059225010226" target="_blank">View →</a></td>
+                    <td>⏳ Pending backfill</td>
+                </tr>
+            
+                <tr>
+                    <td>11/15/2025</td>
+                    <td>@Nickpdl1</td>
+                    <td>@BitcoinNews21M</td>
+                    <td>ko</td>
+                    <td><a href="https://twitter.com/user/status/1989795433418535342" target="_blank">View →</a></td>
+                    <td><a href="https://twitter.com/BitcoinNews21M/status/1989725080532762700" target="_blank">View →</a></td>
+                    <td>⏳ Pending backfill</td>
+                </tr>
+            
+                <tr>
+                    <td>11/15/2025</td>
+                    <td>@Nickpdl1</td>
+                    <td>@rajatsonifnance</td>
+                    <td>ar</td>
+                    <td><a href="https://twitter.com/user/status/1989795480340238613" target="_blank">View →</a></td>
+                    <td><a href="https://twitter.com/rajatsonifnance/status/1989772278297747560" target="_blank">View →</a></td>
+                    <td>⏳ Pending backfill</td>
+                </tr>
+            
+                <tr>
+                    <td>11/15/2025</td>
+                    <td>@Nickpdl1</td>
+                    <td>@Dayinthemarket</td>
+                    <td>es_la</td>
+                    <td><a href="https://twitter.com/user/status/1989795526230118846" target="_blank">View →</a></td>
+                    <td><a href="https://twitter.com/Dayinthemarket/status/1989701714732028089" target="_blank">View →</a></td>
+                    <td>⏳ Pending backfill</td>
+                </tr>
+            
+                <tr>
+                    <td>11/15/2025</td>
+                    <td>@RyanAtSpeechlab</td>
+                    <td>@yoxics</td>
+                    <td>ko</td>
+                    <td><a href="https://twitter.com/user/status/1989798376272175565" target="_blank">View →</a></td>
+                    <td><a href="https://twitter.com/yoxics/status/1989739182647046391" target="_blank">View →</a></td>
+                    <td>⏳ Pending backfill</td>
+                </tr>
+            
+                <tr>
+                    <td>11/15/2025</td>
+                    <td>@eddy_rre</td>
+                    <td>@yoxics</td>
+                    <td>zh</td>
+                    <td><a href="https://twitter.com/user/status/1989768878483018121" target="_blank">View →</a></td>
+                    <td>N/A</td>
+                    <td>⏳ Pending backfill</td>
+                </tr>
+            
+                <tr>
+                    <td>11/15/2025</td>
+                    <td>@eddy_rre</td>
+                    <td>@Home_of_Fight</td>
+                    <td>es_la</td>
+                    <td><a href="https://twitter.com/user/status/1989768930634711220" target="_blank">View →</a></td>
+                    <td><a href="https://twitter.com/Home_of_Fight/status/1989726021944230323" target="_blank">View →</a></td>
+                    <td>⏳ Pending backfill</td>
+                </tr>
+            
+                <tr>
+                    <td>11/15/2025</td>
+                    <td>@eddy_rre</td>
+                    <td>@StartupArchive_</td>
+                    <td>N/A</td>
+                    <td><a href="https://twitter.com/user/status/1989769154547581428" target="_blank">View →</a></td>
+                    <td>N/A</td>
+                    <td>⏳ Pending backfill</td>
+                </tr>
+            
+                <tr>
+                    <td>11/15/2025</td>
+                    <td>@eddy_rre</td>
+                    <td>@degencinema</td>
+                    <td>N/A</td>
+                    <td><a href="https://twitter.com/user/status/1989769215277187284" target="_blank">View →</a></td>
+                    <td>N/A</td>
+                    <td>⏳ Pending backfill</td>
+                </tr>
+            
+                <tr>
+                    <td>11/15/2025</td>
+                    <td>@Nickpdl1</td>
+                    <td>@saylordocs</td>
+                    <td>N/A</td>
+                    <td><a href="https://twitter.com/user/status/1989767212681343235" target="_blank">View →</a></td>
+                    <td>N/A</td>
+                    <td>⏳ Pending backfill</td>
+                </tr>
+            
+                <tr>
+                    <td>11/15/2025</td>
+                    <td>@Nickpdl1</td>
+                    <td>@saylordocs</td>
+                    <td>N/A</td>
+                    <td><a href="https://twitter.com/user/status/1989767282164470030" target="_blank">View →</a></td>
+                    <td>N/A</td>
+                    <td>⏳ Pending backfill</td>
+                </tr>
+            
+                <tr>
+                    <td>11/15/2025</td>
+                    <td>@Nickpdl1</td>
+                    <td>@BitcoinNews21M</td>
+                    <td>N/A</td>
+                    <td><a href="https://twitter.com/user/status/1989767371528007699" target="_blank">View →</a></td>
+                    <td>N/A</td>
+                    <td>⏳ Pending backfill</td>
+                </tr>
+            
+                <tr>
+                    <td>11/15/2025</td>
+                    <td>@Nickpdl1</td>
+                    <td>@Bitcoin_Teddy</td>
+                    <td>N/A</td>
+                    <td><a href="https://twitter.com/user/status/1989767424477204608" target="_blank">View →</a></td>
+                    <td>N/A</td>
+                    <td>⏳ Pending backfill</td>
+                </tr>
+            
+                <tr>
+                    <td>11/15/2025</td>
+                    <td>@Nickpdl1</td>
+                    <td>@TheCryptoLark</td>
+                    <td>N/A</td>
+                    <td><a href="https://twitter.com/user/status/1989767722079564244" target="_blank">View →</a></td>
+                    <td>N/A</td>
+                    <td>⏳ Pending backfill</td>
+                </tr>
+            
+                <tr>
+                    <td>11/15/2025</td>
+                    <td>@Nickpdl1</td>
+                    <td>@SimplyBitcoin</td>
+                    <td>N/A</td>
+                    <td><a href="https://twitter.com/user/status/1989767818234003755" target="_blank">View →</a></td>
+                    <td>N/A</td>
+                    <td>⏳ Pending backfill</td>
+                </tr>
+            
+                <tr>
+                    <td>11/15/2025</td>
+                    <td>@Nickpdl1</td>
+                    <td>@Vivek4real_</td>
+                    <td>N/A</td>
+                    <td><a href="https://twitter.com/user/status/1989767937662812442" target="_blank">View →</a></td>
+                    <td>N/A</td>
+                    <td>⏳ Pending backfill</td>
+                </tr>
+            
+                <tr>
+                    <td>11/15/2025</td>
+                    <td>@Nickpdl1</td>
+                    <td>@saylordocs</td>
+                    <td>N/A</td>
+                    <td><a href="https://twitter.com/user/status/1989768071494701411" target="_blank">View →</a></td>
+                    <td>N/A</td>
+                    <td>⏳ Pending backfill</td>
+                </tr>
+            
+                <tr>
+                    <td>11/15/2025</td>
+                    <td>@degen_real00</td>
+                    <td>@tbpn</td>
+                    <td>N/A</td>
+                    <td><a href="https://twitter.com/user/status/1989616575813750852" target="_blank">View →</a></td>
+                    <td>N/A</td>
+                    <td>⏳ Pending backfill</td>
+                </tr>
+            
+                <tr>
+                    <td>11/15/2025</td>
+                    <td>@degen_real00</td>
+                    <td>@wealthcryptobro</td>
+                    <td>N/A</td>
+                    <td><a href="https://twitter.com/user/status/1989617220537008505" target="_blank">View →</a></td>
+                    <td>N/A</td>
+                    <td>⏳ Pending backfill</td>
+                </tr>
+            
+                <tr>
+                    <td>11/15/2025</td>
+                    <td>@hack_life42991</td>
+                    <td>@OndoFinance</td>
+                    <td>N/A</td>
+                    <td><a href="https://twitter.com/user/status/1989607674544115725" target="_blank">View →</a></td>
+                    <td>N/A</td>
+                    <td>⏳ Pending backfill</td>
+                </tr>
+            
+                <tr>
+                    <td>11/15/2025</td>
+                    <td>@hack_life42991</td>
+                    <td>@CoinDesk</td>
+                    <td>N/A</td>
+                    <td><a href="https://twitter.com/user/status/1989607965335114205" target="_blank">View →</a></td>
+                    <td>N/A</td>
+                    <td>⏳ Pending backfill</td>
+                </tr>
+            
+                <tr>
+                    <td>11/15/2025</td>
+                    <td>@hack_life42991</td>
+                    <td>@wealthcryptobro</td>
+                    <td>N/A</td>
+                    <td><a href="https://twitter.com/user/status/1989608385663123526" target="_blank">View →</a></td>
+                    <td>N/A</td>
+                    <td>⏳ Pending backfill</td>
+                </tr>
+            
+                <tr>
+                    <td>11/15/2025</td>
+                    <td>@hack_life42991</td>
+                    <td>@ThorTorrens</td>
+                    <td>N/A</td>
+                    <td><a href="https://twitter.com/user/status/1989608434388357410" target="_blank">View →</a></td>
+                    <td>N/A</td>
+                    <td>⏳ Pending backfill</td>
+                </tr>
+            
+                <tr>
+                    <td>11/15/2025</td>
+                    <td>@hack_life42991</td>
+                    <td>@SimplyBitcoin</td>
+                    <td>N/A</td>
+                    <td><a href="https://twitter.com/user/status/1989607116542300337" target="_blank">View →</a></td>
+                    <td>N/A</td>
+                    <td>⏳ Pending backfill</td>
+                </tr>
+            
+                <tr>
+                    <td>11/15/2025</td>
+                    <td>@hack_life42991</td>
+                    <td>@wealthcryptobro</td>
+                    <td>N/A</td>
+                    <td><a href="https://twitter.com/user/status/1989602439205409164" target="_blank">View →</a></td>
+                    <td>N/A</td>
+                    <td>⏳ Pending backfill</td>
+                </tr>
+            
+                <tr>
+                    <td>11/15/2025</td>
+                    <td>@hack_life42991</td>
+                    <td>@ImperiumFirst</td>
+                    <td>N/A</td>
+                    <td><a href="https://twitter.com/user/status/1989602758811344928" target="_blank">View →</a></td>
+                    <td>N/A</td>
+                    <td>⏳ Pending backfill</td>
+                </tr>
+            
+                <tr>
+                    <td>11/15/2025</td>
+                    <td>@hack_life42991</td>
+                    <td>@WatcherGuru</td>
+                    <td>N/A</td>
+                    <td><a href="https://twitter.com/user/status/1989603151738016248" target="_blank">View →</a></td>
+                    <td>N/A</td>
+                    <td>⏳ Pending backfill</td>
+                </tr>
+            
+                <tr>
+                    <td>11/15/2025</td>
+                    <td>@hack_life42991</td>
+                    <td>@FearedBuck</td>
+                    <td>N/A</td>
+                    <td><a href="https://twitter.com/user/status/1989601727058772154" target="_blank">View →</a></td>
+                    <td>N/A</td>
+                    <td>⏳ Pending backfill</td>
+                </tr>
+            
+                <tr>
+                    <td>11/15/2025</td>
+                    <td>@hack_life42991</td>
+                    <td>@ClavicularNews</td>
+                    <td>N/A</td>
+                    <td><a href="https://twitter.com/user/status/1989602020068594172" target="_blank">View →</a></td>
+                    <td>N/A</td>
+                    <td>⏳ Pending backfill</td>
+                </tr>
+            
+                <tr>
+                    <td>11/14/2025</td>
+                    <td>@XTownCrier</td>
+                    <td>@rustyrockets</td>
+                    <td>N/A</td>
+                    <td><a href="https://twitter.com/user/status/1989493259924897805" target="_blank">View →</a></td>
+                    <td>N/A</td>
+                    <td>⏳ Pending backfill</td>
+                </tr>
+            
+                <tr>
+                    <td>11/14/2025</td>
+                    <td>@specialkor1</td>
+                    <td>@Teslaconomics</td>
+                    <td>N/A</td>
+                    <td><a href="https://twitter.com/user/status/1989481519748915502" target="_blank">View →</a></td>
+                    <td>N/A</td>
+                    <td>⏳ Pending backfill</td>
+                </tr>
+            
+                <tr>
+                    <td>11/14/2025</td>
+                    <td>@PukaMeme</td>
+                    <td>@niccruzpatane</td>
+                    <td>N/A</td>
+                    <td><a href="https://twitter.com/user/status/1989464139794882794" target="_blank">View →</a></td>
+                    <td>N/A</td>
+                    <td>⏳ Pending backfill</td>
+                </tr>
+            
+                <tr>
+                    <td>11/14/2025</td>
+                    <td>@PukaMeme</td>
+                    <td>@Teslaconomics</td>
+                    <td>N/A</td>
+                    <td><a href="https://twitter.com/user/status/1989460810108977200" target="_blank">View →</a></td>
+                    <td>N/A</td>
+                    <td>⏳ Pending backfill</td>
+                </tr>
+            
+                <tr>
+                    <td>11/14/2025</td>
+                    <td>@PukaMeme</td>
+                    <td>@BitcoinArchive</td>
+                    <td>N/A</td>
+                    <td><a href="https://twitter.com/user/status/1989461227396108732" target="_blank">View →</a></td>
+                    <td>N/A</td>
+                    <td>⏳ Pending backfill</td>
+                </tr>
+            
+                <tr>
+                    <td>11/14/2025</td>
+                    <td>@PukaMeme</td>
+                    <td>@rasmr_eth</td>
+                    <td>N/A</td>
+                    <td><a href="https://twitter.com/user/status/1989409690003091660" target="_blank">View →</a></td>
+                    <td>N/A</td>
+                    <td>⏳ Pending backfill</td>
+                </tr>
+            
+        </tbody>
+    </table>
+
+    <div style="margin-top: 50px; padding: 20px; background: white; border-radius: 8px; text-align: center;">
+        <p style="color: #666;">🤖 Generated by Dubbing Agent Analytics System</p>
+        <p style="color: #999; font-size: 12px;">Once backfill completes, you'll see full engagement metrics with views, likes, and comparative analytics.</p>
+    </div>
+</body>
+</html>

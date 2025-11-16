@@ -48,8 +48,7 @@ async function generateVerificationReport() {
         // Get all completed dubs with metrics
         const { data: dubDetails, error } = await supabase
             .from('dub_engagement_comparison')
-            .select('*')
-            .order('created_at', { ascending: false });
+            .select('*');
 
         if (error) {
             logger.error('[🔍 Verification] Error fetching dub details:', error);
