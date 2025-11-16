@@ -2220,6 +2220,19 @@ async function main() {
                         logger.info(`[📊 Categories] Mapped ${mention.tweetId} to: ${customCategories.join(', ')}`);
                     }
 
+                    // Translate parent tweet text to target language
+                    let translatedParentText: string | undefined;
+                    if (mention.parentTweetText && mention.targetLanguage) {
+                        try {
+                            const { translateText } = await import('./services/translationService');
+                            translatedParentText = await translateText(mention.parentTweetText, mention.targetLanguage);
+                            logger.info(`[🌐 Translation] Translated parent tweet for ${mention.tweetId} to ${mention.targetLanguage}`);
+                        } catch (error) {
+                            logger.error(`[🌐 Translation] Failed to translate parent tweet for ${mention.tweetId}:`, error);
+                            // Continue without translation - not critical
+                        }
+                    }
+
                     const saveSuccess = await upsertMention({
                         tweet_id: mention.tweetId,
                         username: mention.username,
@@ -2227,6 +2240,7 @@ async function main() {
                         parent_username: mention.parentUsername,
                         parent_tweet_url: mention.parentTweetUrl,
                         parent_tweet_text: mention.parentTweetText,
+                        parent_tweet_text_translated: translatedParentText,
                         parent_tweet_category: mention.parentTweetCategory,
                         parent_tweet_category_id: mention.parentTweetCategoryId,
                         parent_tweet_domains: mention.parentTweetDomains,

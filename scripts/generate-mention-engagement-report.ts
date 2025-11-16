@@ -59,7 +59,7 @@ async function generateReport() {
         // Get mention details from mentions table
         const { data: mentionDetails } = await supabase
             .from('mentions')
-            .select('username, parent_username, parent_tweet_url, tweet_url, target_language, custom_category, created_at')
+            .select('username, parent_username, parent_tweet_url, parent_tweet_text_translated, tweet_url, target_language, custom_category, created_at')
             .eq('tweet_id', mentionId)
             .single();
 
@@ -237,6 +237,7 @@ async function generateReport() {
                 <th>Parent Thread Views</th>
                 <th>% of Parent Views</th>
                 <th>Language</th>
+                <th>Parent Tweet (Translated)</th>
                 <th>Links</th>
             </tr>
         </thead>
@@ -251,6 +252,12 @@ async function generateReport() {
                     performanceClass = 'amazing';
                 }
 
+                const translatedText = d.parent_tweet_text_translated
+                    ? (d.parent_tweet_text_translated.length > 100
+                        ? d.parent_tweet_text_translated.substring(0, 100) + '...'
+                        : d.parent_tweet_text_translated)
+                    : '<em>Not translated yet</em>';
+
                 return `
                 <tr>
                     <td>@${d.username}</td>
@@ -261,6 +268,7 @@ async function generateReport() {
                     <td>${d.parent_views.toLocaleString()}</td>
                     <td>${d.mention_to_parent_rate.toFixed(1)}%</td>
                     <td>${d.target_language || 'N/A'}</td>
+                    <td style="max-width: 300px; overflow: hidden; text-overflow: ellipsis;">${translatedText}</td>
                     <td>
                         <a href="${d.tweet_url}" target="_blank">Mention</a> |
                         <a href="${d.parent_tweet_url}" target="_blank">Parent</a>

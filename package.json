@@ -35,6 +35,7 @@
     "cheerio": "^1.0.0",
     "dotenv": "^16.4.7",
     "fs-extra": "^11.3.0",
+    "openai": "^6.9.0",
     "playwright": "^1.51.1",
     "playwright-extra": "^4.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
