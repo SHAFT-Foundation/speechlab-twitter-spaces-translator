@@ -1072,7 +1072,7 @@ export async function postReplyWithMedia(
     tweetText: string,
     replyToTweetId: string,
     mediaPath?: string
-): Promise<{ success: boolean; mediaUploaded: boolean }> {
+): Promise<{ success: boolean; mediaUploaded: boolean; tweetId?: string }> {
     let mediaUploaded = false; // Declare outside try block for catch block access
 
     try {
@@ -1163,7 +1163,7 @@ export async function postReplyWithMedia(
                 if (result.data?.id) {
                     logger.info(`[🐦 Reply] ✅ Reply posted successfully! Tweet ID: ${result.data.id}`);
                     lastTweetPostTime = Date.now(); // Update last post time
-                    return { success: true, mediaUploaded };
+                    return { success: true, mediaUploaded, tweetId: result.data.id };
                 } else {
                     logger.error('[🐦 Reply] ❌ No tweet ID in response', result.errors);
                     return { success: false, mediaUploaded };

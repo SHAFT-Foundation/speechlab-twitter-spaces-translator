@@ -1705,6 +1705,21 @@ async function runFinalReplyQueue(): Promise<void> {
 
         postSuccess = postResult.success;
         mediaUploaded = postResult.mediaUploaded;
+        const dubReplyTweetId = postResult.tweetId;
+
+        // Save the dub reply tweet ID for metrics tracking
+        if (dubReplyTweetId) {
+            logger.info(`[↩️ Reply Queue] 📊 Saving dub reply tweet ID: ${dubReplyTweetId}`);
+            try {
+                await updateMentionStatus(mentionInfo.tweetId, 'processing', {
+                    dub_reply_tweet_id: dubReplyTweetId,
+                    dub_reply_tweet_url: `https://twitter.com/dubbingagent/status/${dubReplyTweetId}`
+                });
+                logger.info(`[↩️ Reply Queue] ✅ Saved dub reply tweet ID for metrics tracking`);
+            } catch (saveError) {
+                logger.error(`[↩️ Reply Queue] ❌ Failed to save dub reply tweet ID:`, saveError);
+            }
+        }
 
         // If Twitter upload failed but we have a video URL, add it as fallback
         if (postSuccess && !mediaUploaded && mediaPathToAttach && backendResult.publicVideoUrl) {
@@ -2197,6 +2212,14 @@ async function main() {
 
                     // SAVE TO SUPABASE (only valid mentions reach here)
                     const retryCount = existingMention?.retry_count || 0;
+                    // Map Twitter domains to custom categories automatically
+                    const { mapDomainsToCategories } = await import('./services/supabaseService');
+                    const customCategories = await mapDomainsToCategories(mention.parentTweetDomains || []);
+
+                    if (customCategories.length > 0) {
+                        logger.info(`[📊 Categories] Mapped ${mention.tweetId} to: ${customCategories.join(', ')}`);
+                    }
+
                     const saveSuccess = await upsertMention({
                         tweet_id: mention.tweetId,
                         username: mention.username,
@@ -2207,6 +2230,7 @@ async function main() {
                         parent_tweet_category: mention.parentTweetCategory,
                         parent_tweet_category_id: mention.parentTweetCategoryId,
                         parent_tweet_domains: mention.parentTweetDomains,
+                        custom_category: customCategories,
                         tweet_url: mention.tweetUrl,
                         tweet_text: mention.text || '',
                         status: 'pending',

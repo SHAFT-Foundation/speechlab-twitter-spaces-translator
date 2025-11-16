@@ -38,7 +38,10 @@ export interface MentionRecord {
     parent_tweet_category?: string;
     parent_tweet_category_id?: string;
     parent_tweet_domains?: any;
+    custom_category?: string[];
     twitter_profile_image_url?: string;
+    dub_reply_tweet_id?: string;
+    dub_reply_tweet_url?: string;
     status: 'pending' | 'initiating' | 'processing' | 'complete' | 'failed' | 'final_failure' | 'skipped_no_video';
     retry_count?: number;
     third_party_id?: string;
@@ -52,6 +55,43 @@ export interface MentionRecord {
     error_message?: string;
     created_at?: string;
     updated_at?: string;
+}
+
+/**
+ * Map Twitter domains to custom categories
+ */
+export async function mapDomainsToCategories(domains: any[]): Promise<string[]> {
+    try {
+        if (!domains || domains.length === 0) {
+            return [];
+        }
+
+        const supabase = getSupabase();
+        const twitterCategories = domains
+            .filter(d => d.domain_name)
+            .map(d => d.domain_name);
+
+        if (twitterCategories.length === 0) {
+            return [];
+        }
+
+        // Look up mappings for all Twitter categories
+        const { data: mappings, error } = await supabase
+            .from('category_mappings')
+            .select('custom_category')
+            .in('twitter_category', twitterCategories);
+
+        if (error || !mappings || mappings.length === 0) {
+            return [];
+        }
+
+        // Get unique custom categories
+        const customCategories = [...new Set(mappings.map(m => m.custom_category))];
+        return customCategories;
+    } catch (error) {
+        logger.error('[📊 Supabase] Error mapping domains to categories:', error);
+        return [];
+    }
 }
 
 /**
@@ -74,6 +114,7 @@ export async function upsertMention(mention: MentionRecord): Promise<boolean> {
                 parent_tweet_category: mention.parent_tweet_category,
                 parent_tweet_category_id: mention.parent_tweet_category_id,
                 parent_tweet_domains: mention.parent_tweet_domains,
+                custom_category: mention.custom_category,
                 twitter_profile_image_url: mention.twitter_profile_image_url,
                 status: mention.status,
                 retry_count: mention.retry_count,
