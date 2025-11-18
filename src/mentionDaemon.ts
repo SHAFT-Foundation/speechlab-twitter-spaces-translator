@@ -469,24 +469,32 @@ async function initiateProcessing(mentionInfo: MentionInfo, page: any): Promise<
                     targetLanguageName,
                 };
             } else if (hasVideo && !videoM3u8Url) {
-                logger.warn(`[🎬 Initiate] Video detected but M3U8 URL could not be captured.`);
+                const videoErrorDetails = [
+                    'Video M3U8 Extraction Failed:',
+                    'Video detected in mention but M3U8 URL could not be captured',
+                    `Tweet: ${mentionInfo.tweetUrl}`,
+                    'Possible causes: Protected video, DRM, network interception failed, M3U8 URL pattern changed'
+                ].join(' | ');
+
+                logger.warn(`[🎬 Initiate] ${videoErrorDetails}`);
                 const errorReplyText = `${ensureAtSymbol(mentionInfo.username)} Sorry, I found a video but couldn't extract the stream URL. The video might be protected or not yet available.`;
                 logger.info(`[🎬 Initiate] Posting error reply: ${errorReplyText}`);
                 // TODO: Replace with API call: await postReplyWithMedia(errorReplyText, mentionInfo.tweetId);
                 // await postReplyToTweet(page, mentionInfo.tweetUrl, errorReplyText);
-                throw new Error('Video detected but M3U8 extraction failed');
+                throw new Error(`Video M3U8 extraction failed - ${videoErrorDetails}`);
             } else {
                 logger.info(`[🎬 Initiate] No video found in mention. Will try Space detection next.`);
                 // Don't throw - let it fall through to Space detection
             }
         } catch (videoError) {
-            logger.error(`[🎬 Initiate] Error during video detection:`, videoError);
+            const errorMsg = videoError instanceof Error ? videoError.message : String(videoError);
+            logger.error(`[🎬 Initiate] Error during video detection: ${errorMsg}`);
             // If error was thrown with a message, it already posted a reply - don't continue to Space detection
             if (videoError instanceof Error && videoError.message.includes('M3U8 extraction failed')) {
-                throw videoError; // Stop here, error reply already posted
+                throw videoError; // Stop here, error reply already posted, detailed error will be saved to DB
             }
             // Otherwise, log and continue to Space detection as fallback
-            logger.info(`[🎬 Initiate] Continuing to Space detection after video error.`);
+            logger.info(`[🎬 Initiate] Continuing to Space detection after video error: ${errorMsg}`);
         }
     }
 
@@ -510,8 +518,22 @@ async function initiateProcessing(mentionInfo: MentionInfo, page: any): Promise<
         }
 
         if (!playElementLocator) {
-            const errMsg = `Could not find playable Space element (article or button) for tweet ${mentionInfo.tweetId}.`; // Updated error message
+            // Build detailed error message with detection strategies attempted
+            const detectionInfo = [
+                'Spaces Detection Failed - All strategies exhausted:',
+                '1. Searched for buttons with text: "Play recording", "Play", "Play Space", "Listen", "Playback"',
+                '2. Checked within article elements using getByRole',
+                '3. Checked page-level using getByRole',
+                '4. Tried flexible XPath matching aria-labels and spans',
+                '5. Attempted generic play button fallback',
+                `Tweet URL: ${mentionInfo.tweetUrl}`,
+                spaceUrl ? `Space URL provided: ${spaceUrl}` : 'No Space URL in mention text',
+                config.PROCESS_VIDEO_IN_MENTIONS ? 'Video processing enabled - already checked for video' : 'Video processing disabled'
+            ].join(' | ');
+
+            const errMsg = `Spaces button not found after 4 detection strategies (${mentionInfo.tweetId})`;
             logger.warn(`[🚀 Initiate] ${errMsg}`);
+            logger.warn(`[🚀 Initiate] Detection Details: ${detectionInfo}`);
 
             // Check if this was a text-only mention (no video, no Space)
             if (!spaceUrl && config.PROCESS_VIDEO_IN_MENTIONS) {
@@ -527,7 +549,7 @@ async function initiateProcessing(mentionInfo: MentionInfo, page: any): Promise<
                 // TODO: Replace with API call: await postReplyWithMedia(errorReplyText, mentionInfo.tweetId);
                 // await postReplyToTweet(page, mentionInfo.tweetUrl, errorReplyText);
             }
-            throw new Error(errMsg); // Throw to signal failure
+            throw new Error(`${errMsg} - ${detectionInfo}`); // Throw detailed error
         }
         logger.info(`[🚀 Initiate] Found potential Space element (article or button).`);
 
@@ -613,19 +635,25 @@ async function initiateProcessing(mentionInfo: MentionInfo, page: any): Promise<
     try {
         logger.info(`[🚀 Initiate] Clicking Play button and capturing M3U8...`);
         // Pass the located element (article or button) to the capture function
-        m3u8Url = await clickPlayButtonAndCaptureM3u8(page, playElementLocator); 
+        m3u8Url = await clickPlayButtonAndCaptureM3u8(page, playElementLocator);
         if (!m3u8Url) {
-             const errMsg = `Failed to capture M3U8 URL for tweet ${mentionInfo.tweetId}.`;
-             logger.error(`[🚀 Initiate] ${errMsg}`);
+             const m3u8ErrorDetails = [
+                 'M3U8 Capture Failed:',
+                 'Found playable Space element but M3U8 URL was not captured after clicking Play',
+                 `Tweet: ${mentionInfo.tweetUrl}`,
+                 'Possible causes: Space ended/expired, no network request intercepted, M3U8 URL pattern changed, page loaded incorrectly'
+             ].join(' | ');
+
+             logger.error(`[🚀 Initiate] ${m3u8ErrorDetails}`);
             // --- ADDED: Log error reply before sending ---
             const errorReplyText = `${ensureAtSymbol(mentionInfo.username)} Sorry, I could find the Space but couldn't get its audio stream. It might be finished or protected.`;
             logger.info(`[🚀 Initiate] Posting error reply: ${errorReplyText}`);
             // TODO: Replace with API call: await postReplyWithMedia(errorReplyText, mentionInfo.tweetId);
             // await postReplyToTweet(page, mentionInfo.tweetUrl, errorReplyText);
-             throw new Error(errMsg);
+             throw new Error(`M3U8 capture failed - ${m3u8ErrorDetails}`);
         }
-        logger.info(`[🚀 Initiate] Captured M3U8 URL.`);
-        
+        logger.info(`[🚀 Initiate] Captured M3U8 URL: ${m3u8Url.substring(0, 100)}...`);
+
         // 4. Now try to extract title from modal
         try {
             logger.info('[🚀 Initiate] Waiting 60 seconds before extracting modal title...');
@@ -644,7 +672,8 @@ async function initiateProcessing(mentionInfo: MentionInfo, page: any): Promise<
             // Continue with article title if modal extraction fails
         }
     } catch (error) {
-         logger.error(`[🚀 Initiate] Error during M3U8 capture for ${mentionInfo.tweetId}:`, error);
+         const errorMsg = error instanceof Error ? error.message : String(error);
+         logger.error(`[🚀 Initiate] Error during M3U8 capture for ${mentionInfo.tweetId}: ${errorMsg}`);
          try {
              // --- ADDED: Log error reply before sending ---
              const errorReplyText = `${ensureAtSymbol(mentionInfo.username)} Sorry, I encountered an error trying to access the Space audio.`;
@@ -652,7 +681,7 @@ async function initiateProcessing(mentionInfo: MentionInfo, page: any): Promise<
              // TODO: Replace with API call: await postReplyWithMedia(errorReplyText, mentionInfo.tweetId);
              // await postReplyToTweet(page, mentionInfo.tweetUrl, errorReplyText);
          } catch(replyError) { /* Ignore */ }
-         throw error;
+         throw error; // Detailed error will be saved to DB
     }
 
     // 5. Extract Space ID (Best Effort)
