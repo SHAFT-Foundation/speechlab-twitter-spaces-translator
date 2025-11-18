@@ -2,12 +2,13 @@
 
 ## Overview
 
-The analytics system tracks tweet engagement metrics (views, likes, retweets) to demonstrate the value of dubbed content. It compares your dub reply performance against:
+The analytics system tracks tweet engagement metrics (views, likes, retweets) to demonstrate the value of dubbed content. It tracks:
 
-1. **Parent tweets** - Original content being dubbed
-2. **Sibling comments** - Other replies to the same parent tweet
-3. **Category trends** - Performance by content category
-4. **Language trends** - Performance by target language
+1. **Mention tweets** - User requests to @dubbingagent
+2. **Dub reply tweets** - Bot's video replies (tracked via `dub_reply_tweet_id`)
+3. **Parent tweets** - Original content being dubbed
+4. **Sibling comments** - Other replies to the same parent tweet
+5. **Translated parent text** - Parent tweet text translated to target language
 
 ---
 
@@ -28,26 +29,37 @@ The analytics system tracks tweet engagement metrics (views, likes, retweets) to
 
 ### 1. Database Schema
 
+**Table: `mentions`** (Updated with analytics fields)
+```sql
+ALTER TABLE mentions
+ADD COLUMN dub_reply_tweet_id TEXT,
+ADD COLUMN dub_reply_tweet_url TEXT,
+ADD COLUMN parent_tweet_text_translated TEXT;
+```
+
 **Table: `tweet_metrics`**
 Stores historical metrics data over time
 
 ```sql
 CREATE TABLE tweet_metrics (
-    tweet_id TEXT,
-    tweet_type TEXT, -- 'mention', 'dub_reply', 'parent', 'sibling_comment'
+    id BIGSERIAL PRIMARY KEY,
+    tweet_id TEXT NOT NULL,
+    tweet_type TEXT NOT NULL, -- 'mention', 'dub_reply', 'parent', 'sibling_comment'
     mention_id TEXT, -- Links back to mentions table
-    impression_count BIGINT, -- VIEWS!
-    like_count INTEGER,
-    reply_count INTEGER,
-    retweet_count INTEGER,
-    quote_count INTEGER,
-    collected_at TIMESTAMPTZ
+    impression_count BIGINT DEFAULT 0, -- VIEWS!
+    like_count INTEGER DEFAULT 0,
+    reply_count INTEGER DEFAULT 0,
+    retweet_count INTEGER DEFAULT 0,
+    quote_count INTEGER DEFAULT 0,
+    collected_at TIMESTAMPTZ DEFAULT NOW(),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(tweet_id, collected_at)
 );
 ```
 
 **Views:**
 - `tweet_metrics_latest` - Most recent metrics for each tweet
-- `dub_engagement_comparison` - Pre-calculated comparison stats
+- `dub_engagement_comparison` - Pre-calculated comparison stats with dub reply data
 
 **Mentions Table Additions:**
 - `dub_reply_tweet_id` - Tweet ID of your video reply
@@ -83,68 +95,94 @@ npx tsx scripts/collect-metrics.ts --mention-id 1989787665672388880
 npx tsx scripts/collect-metrics.ts --include-siblings --sample-size 20
 ```
 
-### 4. Report Generation
+### 4. Report Generation Scripts
 
-**File:** `scripts/generate-engagement-report.ts`
-
-Generates comprehensive analytics reports.
+**Mention Engagement Report**
+`scripts/generate-mention-engagement-report.ts` - Compares mention tweets to sibling comments
 
 ```bash
-# Markdown report (default)
-npx tsx scripts/generate-engagement-report.ts
+npx tsx scripts/generate-mention-engagement-report.ts
+# Generates: reports/mention-engagement-report.html
+```
 
-# JSON report (for programmatic use)
-npx tsx scripts/generate-engagement-report.ts json
+**User-Specific Report**
+`scripts/generate-user-report.ts` - Filter for specific parent user (e.g., MarioNawfal)
 
-# HTML report (for sharing)
-npx tsx scripts/generate-engagement-report.ts html
+```bash
+npx tsx scripts/generate-user-report.ts MarioNawfal
+# Generates: reports/marionawfal-engagement-report.html
+```
+
+**Verification Report**
+`scripts/generate-verification-report.ts` - Detailed report with clickable Twitter links
+
+```bash
+npx tsx scripts/generate-verification-report.ts
+# Generates: reports/verification-report.html
+```
+
+### 5. Translation Scripts
+
+**Translate Parent Tweets**
+`scripts/translate-parent-tweets.ts` - Backfills translations for existing mentions
+
+```bash
+npx tsx scripts/translate-parent-tweets.ts
+# Translates parent tweet text to target language using OpenAI
 ```
 
 ---
 
 ## Getting Started
 
-### Step 1: Run Migration
+### Step 1: Run Migrations
 
-```bash
-# Add required tables and columns
-psql -h cemuqqzmamjmtefodbqs.supabase.co -U postgres -d postgres -f migrations/006_create_tweet_metrics.sql
-```
+In Supabase SQL Editor, run these migrations in order:
 
-Or in Supabase SQL Editor:
 ```sql
--- Run the contents of migrations/006_create_tweet_metrics.sql
+-- Migration 006: Create tweet metrics table
+-- File: migrations/006_create_tweet_metrics.sql
+
+-- Migration 007: Add translated parent text column
+-- File: migrations/007_add_translated_parent_text.sql
+ALTER TABLE mentions ADD COLUMN IF NOT EXISTS parent_tweet_text_translated TEXT;
 ```
 
-### Step 2: Update Mentions with Dub Reply Tweet IDs
+### Step 2: Dub Reply Tweet ID Tracking
 
-First, you need to track which tweet ID is your dub reply. When posting the dub video, save the tweet ID:
+The daemon automatically tracks reply tweet IDs when posting dub videos.
 
-```typescript
-// In mentionDaemon.ts or wherever you post the dub reply
-const replyTweet = await client.v2.reply(dubVideoWithText, mentionTweetId);
-
-// Save the reply tweet ID
-await supabase
-  .from('mentions')
-  .update({
-    dub_reply_tweet_id: replyTweet.data.id,
-    dub_reply_tweet_url: `https://twitter.com/dubbingagent/status/${replyTweet.data.id}`
-  })
-  .eq('tweet_id', mentionTweetId);
-```
-
-### Step 3: Collect Metrics
+**Backfill historical data:**
 
 ```bash
-# Collect metrics for all completed dubs
-npx tsx scripts/collect-metrics.ts --include-siblings
+# Option A: Timeline method (recommended - more reliable)
+npx tsx scripts/backfill-dub-reply-tweet-ids-timeline.ts
+
+# Option B: Search method (limited to last 7 days)
+npx tsx scripts/backfill-dub-reply-tweet-ids.ts
+```
+
+### Step 3: Translation Setup
+
+**Automatic translation** is enabled in the daemon - all NEW mentions will have translated parent text.
+
+**Backfill existing mentions:**
+
+```bash
+npx tsx scripts/translate-parent-tweets.ts
+# Translates parent tweets from last 2 weeks
+```
+
+### Step 4: Collect Metrics
+
+```bash
+# Collect mention tweet metrics + sibling comment metrics
+npx tsx scripts/collect-mention-metrics.ts
 
 # This will:
 # 1. Fetch views/likes for mention tweets
-# 2. Fetch views/likes for dub reply tweets
-# 3. Fetch views/likes for parent tweets
-# 4. Sample other comments on parent tweets for comparison
+# 2. Fetch views/likes for parent tweets
+# 3. Sample 10 other comments on parent tweets for comparison
 ```
 
 **Rate Limiting:** The script respects Twitter's rate limits (900 requests per 15 min). It will pause automatically if rate limited.
