@@ -327,12 +327,32 @@ async function getProjectStatus(thirdPartyID: string): Promise<ProjectStatusInfo
  */
 async function findArticleWithPlayButton(page: any): Promise<any | null> {
     logger.debug('[🐦 Helper] Searching for playable Space element (button or article)...');
-    
-    const playButtonNameRegex = /Play recording/i; // Case-insensitive regex
-    const articleSelector = 'article[data-testid="tweet"]';
-    const flexibleButtonXPath = "//button[contains(@aria-label, 'Play recording') or .//span[contains(text(), 'Play recording')]]";
 
-    // --- Strategy 1: Find button within articles using getByRole --- 
+    // Multiple regex patterns to match different button text variants
+    const playButtonPatterns = [
+        /Play recording/i,    // Original pattern
+        /^Play$/i,            // Simple "Play" button
+        /Play Space/i,        // "Play Space" variant
+        /Listen/i,            // "Listen" variant
+        /Playback/i           // "Playback" variant
+    ];
+
+    const articleSelector = 'article[data-testid="tweet"]';
+
+    // Build flexible XPath that matches any of the button text variants
+    const xpathConditions = [
+        "contains(@aria-label, 'Play recording')",
+        "contains(@aria-label, 'Play Space')",
+        "contains(@aria-label, 'Play')",
+        "contains(@aria-label, 'Listen')",
+        ".//span[contains(text(), 'Play recording')]",
+        ".//span[contains(text(), 'Play Space')]",
+        ".//span[text()='Play']",
+        ".//span[contains(text(), 'Listen')]"
+    ];
+    const flexibleButtonXPath = `//button[${xpathConditions.join(' or ')}]`;
+
+    // --- Strategy 1: Find button within articles using getByRole (try all patterns) ---
     logger.debug(`[🐦 Helper] Strategy 1: Searching within articles (${articleSelector}) using getByRole...`);
     const articles = await page.locator(articleSelector).all();
     for (let i = 0; i < articles.length; i++) {
@@ -341,36 +361,45 @@ async function findArticleWithPlayButton(page: any): Promise<any | null> {
              logger.debug(`[🐦 Helper] Article ${i + 1} is not visible, skipping.`);
              continue;
          }
-        const buttonInArticle = article.getByRole('button', { name: playButtonNameRegex }).first();
-        if (await buttonInArticle.isVisible({ timeout: 500 })) {
-            logger.info(`[🐦 Helper] Found Play button in article ${i + 1} using getByRole. Returning article.`);
-            return article; // Return the article containing the button
+
+        // Try each pattern
+        for (const pattern of playButtonPatterns) {
+            const buttonInArticle = article.getByRole('button', { name: pattern }).first();
+            if (await buttonInArticle.isVisible({ timeout: 500 }).catch(() => false)) {
+                logger.info(`[🐦 Helper] Found Play button in article ${i + 1} using pattern: ${pattern}. Returning article.`);
+                return article; // Return the article containing the button
+            }
         }
     }
 
-    // --- Strategy 2: Find button directly on page using getByRole --- 
+    // --- Strategy 2: Find button directly on page using getByRole (try all patterns) ---
     logger.info('[🐦 Helper] Strategy 2: Searching page-level using getByRole...');
-    const buttonByRole = page.getByRole('button', { name: playButtonNameRegex }).first();
-    if (await buttonByRole.isVisible({ timeout: 1000 })) {
-        logger.info('[🐦 Helper] Found Play button using getByRole directly on page. Returning button locator.');
-        return buttonByRole;
+    for (const pattern of playButtonPatterns) {
+        const buttonByRole = page.getByRole('button', { name: pattern }).first();
+        if (await buttonByRole.isVisible({ timeout: 1000 }).catch(() => false)) {
+            logger.info(`[🐦 Helper] Found Play button using pattern: ${pattern} directly on page. Returning button locator.`);
+            return buttonByRole;
+        }
     }
-    
-    // --- Strategy 3: Find button directly on page using flexible XPath --- 
+
+    // --- Strategy 3: Find button directly on page using flexible XPath ---
     logger.info('[🐦 Helper] Strategy 3: Searching page-level using flexible XPath...');
     const buttonByXPath = page.locator(flexibleButtonXPath).first();
-    if (await buttonByXPath.isVisible({ timeout: 1000 })) {
+    if (await buttonByXPath.isVisible({ timeout: 1000 }).catch(() => false)) {
         logger.info('[🐦 Helper] Found Play button using flexible XPath directly on page. Returning button locator.');
         return buttonByXPath;
     }
 
-    // --- Deprecated Selectors (kept for reference, commented out) ---
-    // const playRecordingSelectors = [
-    //     'button[aria-label*="Play recording"]'
-    // ];
-    // const nestedButtonSelector = 'button[aria-label*="Play recording"]:has(button:has-text("Play recording"))';
+    // --- Strategy 4: Fallback to generic aria-label search for any play-related button ---
+    logger.info('[🐦 Helper] Strategy 4: Fallback search for any play-related button...');
+    const genericPlayXPath = "//button[contains(translate(@aria-label, 'PLAY', 'play'), 'play')]";
+    const genericPlayButton = page.locator(genericPlayXPath).first();
+    if (await genericPlayButton.isVisible({ timeout: 1000 }).catch(() => false)) {
+        logger.info('[🐦 Helper] Found generic play button using fallback XPath. Returning button locator.');
+        return genericPlayButton;
+    }
 
-    logger.warn('[🐦 Helper] Could not find any playable element using getByRole or XPath strategies.');
+    logger.warn('[🐦 Helper] Could not find any playable element using any detection strategy.');
     return null;
 }
 
