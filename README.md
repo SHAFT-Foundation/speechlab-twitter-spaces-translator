@@ -23,6 +23,7 @@ Imagine your content seamlessly translated and shared, expanding your reach and 
 - [Configuration Details](#-configuration-details)
 - [Monitoring & Observability](#-monitoring--observability)
 - [Troubleshooting](#-troubleshooting)
+- [Operations & Documentation](#-operations--documentation)
 
 ---
 
@@ -1377,6 +1378,85 @@ curl http://localhost:3000/health
   "lastPoll": "2025-10-23T19:30:00Z"
 }
 ```
+
+---
+
+## 📚 Operations & Documentation
+
+### Comprehensive Documentation
+
+This project includes detailed documentation for all aspects of system operation, monitoring, and troubleshooting:
+
+#### Core Documentation
+
+| Document | Description | Use Case |
+|----------|-------------|----------|
+| **[OPERATIONS_RUNBOOK.md](OPERATIONS_RUNBOOK.md)** | Complete operations manual with monitoring procedures and troubleshooting guides | Daily operations, incident response, system maintenance |
+| **[ANALYTICS_SYSTEM.md](ANALYTICS_SYSTEM.md)** | Analytics and engagement tracking documentation | Understanding metrics, generating reports, analyzing performance |
+| **[SCHEMA_DOCUMENTATION.md](SCHEMA_DOCUMENTATION.md)** | Database schema reference and migration guide | Database queries, schema updates, data management |
+
+#### Operational Scripts
+
+| Script | Purpose | Command |
+|--------|---------|---------|
+| `health-check.ts` | System health monitoring | `npx tsx scripts/health-check.ts` |
+| `check-recent-mentions.ts` | Recent activity analysis | `npx tsx scripts/check-recent-mentions.ts` |
+| `collect-mention-metrics.ts` | Engagement metrics collection | `npx tsx scripts/collect-mention-metrics.ts` |
+| `translate-parent-tweets.ts` | Backfill translations | `npx tsx scripts/translate-parent-tweets.ts` |
+| `generate-mention-engagement-report.ts` | HTML analytics reports | `npx tsx scripts/generate-mention-engagement-report.ts` |
+| `generate-user-report.ts` | User-specific analytics | `npx tsx scripts/generate-user-report.ts MarioNawfal` |
+
+#### Quick Health Check
+
+```bash
+# Check system status
+npx tsx scripts/health-check.ts
+
+# View recent activity (last 7 days)
+npx tsx scripts/check-recent-mentions.ts
+
+# Generate analytics report
+npx tsx scripts/generate-mention-engagement-report.ts
+```
+
+#### Daily Operations Checklist
+
+1. **Morning Review** (5 minutes)
+   ```bash
+   npx tsx scripts/health-check.ts
+   tail -100 logs/daemon.log
+   ```
+
+2. **Weekly Analytics** (30 minutes)
+   ```bash
+   npx tsx scripts/collect-mention-metrics.ts
+   npx tsx scripts/generate-mention-engagement-report.ts
+   open reports/mention-engagement-report.html
+   ```
+
+3. **Monthly Maintenance** (1-2 hours)
+   - Review [OPERATIONS_RUNBOOK.md](OPERATIONS_RUNBOOK.md) maintenance tasks
+   - Database cleanup and optimization
+   - API cost review
+   - Archive old reports
+
+### Key Operational Features
+
+- **Automatic Translation:** All new mentions have parent tweets translated to target language
+- **Engagement Tracking:** Views, likes, retweets, replies tracked for mentions and parent tweets
+- **Analytics Reports:** HTML reports comparing dub performance to other comments
+- **Health Monitoring:** Automated health checks with recommendations
+- **Crash Recovery:** Automatic retry of interrupted mentions on daemon restart
+- **Rate Limit Handling:** Intelligent backoff and retry for API limits
+
+### Getting Help
+
+For operational issues:
+1. Check [OPERATIONS_RUNBOOK.md](OPERATIONS_RUNBOOK.md) for common issues
+2. Run `npx tsx scripts/health-check.ts` for system diagnostics
+3. Review logs in `logs/daemon.log`
+4. Check database status in Supabase dashboard
+5. Open an issue on GitHub with logs and health check output
 
 ---
 
