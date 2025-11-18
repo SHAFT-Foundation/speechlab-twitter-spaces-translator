@@ -2280,11 +2280,15 @@ async function main() {
 
                     // Translate parent tweet text to target language
                     let translatedParentText: string | undefined;
-                    if (mention.parentTweetText && mention.targetLanguage) {
+                    if (mention.parentTweetText) {
                         try {
-                            const { translateText } = await import('./services/translationService');
-                            translatedParentText = await translateText(mention.parentTweetText, mention.targetLanguage);
-                            logger.info(`[🌐 Translation] Translated parent tweet for ${mention.tweetId} to ${mention.targetLanguage}`);
+                            // Detect target language from mention text
+                            const { targetLanguageCode } = detectLanguages(mention.text);
+                            if (targetLanguageCode) {
+                                const { translateText } = await import('./services/translationService');
+                                translatedParentText = await translateText(mention.parentTweetText, targetLanguageCode);
+                                logger.info(`[🌐 Translation] Translated parent tweet for ${mention.tweetId} to ${targetLanguageCode}`);
+                            }
                         } catch (error) {
                             logger.error(`[🌐 Translation] Failed to translate parent tweet for ${mention.tweetId}:`, error);
                             // Continue without translation - not critical
