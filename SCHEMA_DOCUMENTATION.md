@@ -45,6 +45,7 @@ CREATE TABLE mentions (
     third_party_id TEXT,      -- ElevenLabs dubbing ID
     project_id TEXT,
     m3u8_url TEXT,
+    content_type TEXT CHECK (content_type IN ('space', 'video', 'unknown')),  -- NEW: Content type classification
     source_language TEXT,
     target_language TEXT,
     sharing_link TEXT,
@@ -61,6 +62,7 @@ CREATE INDEX idx_mentions_status ON mentions(status);
 CREATE INDEX idx_mentions_created_at ON mentions(created_at DESC);
 CREATE INDEX idx_mentions_parent_username ON mentions(parent_username);
 CREATE INDEX idx_mentions_target_language ON mentions(target_language);
+CREATE INDEX idx_mentions_content_type ON mentions(content_type);  -- NEW: For filtering by type
 CREATE INDEX idx_mentions_custom_category ON mentions USING GIN(custom_category);
 ```
 

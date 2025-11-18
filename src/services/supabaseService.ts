@@ -48,6 +48,7 @@ export interface MentionRecord {
     third_party_id?: string;
     project_id?: string;
     m3u8_url?: string;
+    content_type?: 'space' | 'video' | 'unknown';
     source_language?: string;
     target_language?: string;
     sharing_link?: string;
@@ -56,6 +57,29 @@ export interface MentionRecord {
     error_message?: string;
     created_at?: string;
     updated_at?: string;
+}
+
+/**
+ * Detect content type from M3U8 URL
+ * Twitter Spaces URLs contain 'dynamic_playlist' or 'prod/dynamic_playlist'
+ * Video URLs contain 'amplify_video' or 'ext_tw_video'
+ */
+export function detectContentType(m3u8Url?: string): 'space' | 'video' | 'unknown' {
+    if (!m3u8Url) {
+        return 'unknown';
+    }
+
+    // Twitter Spaces patterns
+    if (m3u8Url.includes('dynamic_playlist') || m3u8Url.includes('prod/dynamic_playlist')) {
+        return 'space';
+    }
+
+    // Twitter Video patterns
+    if (m3u8Url.includes('amplify_video') || m3u8Url.includes('ext_tw_video') || m3u8Url.includes('video')) {
+        return 'video';
+    }
+
+    return 'unknown';
 }
 
 /**
@@ -123,6 +147,7 @@ export async function upsertMention(mention: MentionRecord): Promise<boolean> {
                 third_party_id: mention.third_party_id,
                 project_id: mention.project_id,
                 m3u8_url: mention.m3u8_url,
+                content_type: mention.content_type || detectContentType(mention.m3u8_url),
                 source_language: mention.source_language,
                 target_language: mention.target_language,
                 sharing_link: mention.sharing_link,

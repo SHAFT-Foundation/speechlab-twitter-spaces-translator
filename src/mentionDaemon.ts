@@ -50,6 +50,7 @@ interface InitiationResult {
     m3u8Url: string;
     spaceId: string;
     spaceTitle: string | null;
+    contentType: 'space' | 'video';  // Explicitly track content type
     mentionInfo: MentionInfo; // Pass original mention info
     sourceLanguageCode: string;
     sourceLanguageName: string;
@@ -462,6 +463,7 @@ async function initiateProcessing(mentionInfo: MentionInfo, page: any): Promise<
                     m3u8Url: videoM3u8Url,
                     spaceId,
                     spaceTitle,
+                    contentType: 'video',  // Explicitly mark as video
                     mentionInfo,
                     sourceLanguageCode,
                     sourceLanguageName,
@@ -715,6 +717,7 @@ async function initiateProcessing(mentionInfo: MentionInfo, page: any): Promise<
         m3u8Url,
         spaceId,
         spaceTitle,
+        contentType: 'space',  // Explicitly mark as space
         mentionInfo, // Include original mention info
         sourceLanguageCode,
         sourceLanguageName,
@@ -1447,6 +1450,7 @@ async function runInitiationQueue(): Promise<void> {
             spaceId,
             spaceTitle,
             m3u8Url: mentionToProcess.videoM3u8Url!,
+            contentType: 'video',  // This path is for videos
             mentionInfo: mentionToProcess,
             sourceLanguageCode,
             sourceLanguageName,
@@ -1463,9 +1467,12 @@ async function runInitiationQueue(): Promise<void> {
         logger.info(`\n${'⚙️'.repeat(80)}`);
         logger.info(`[STEP 5] START BACKEND PROCESSING (SPEECHLAB)`);
         logger.info(`${'⚙️'.repeat(80)}`);
-        logger.info(`[⚙️ BACKEND] Updating database status to 'processing'...`);
-        await updateMentionStatus(mentionToProcess.tweetId, 'processing');
-        logger.info(`[⚙️ BACKEND] ✅ Database status updated`);
+        logger.info(`[⚙️ BACKEND] Updating database status to 'processing' and saving M3U8 URL + content type...`);
+        await updateMentionStatus(mentionToProcess.tweetId, 'processing', {
+            m3u8_url: initResult.m3u8Url,
+            content_type: initResult.contentType
+        });
+        logger.info(`[⚙️ BACKEND] ✅ Database status updated with M3U8 URL and content_type: ${initResult.contentType}`);
         logger.info(`[⚙️ BACKEND] Calling performBackendProcessing()...`);
         logger.info(`[⚙️ BACKEND] This will: download video → upload to Speechlab → wait for dubbing → download result`);
 
