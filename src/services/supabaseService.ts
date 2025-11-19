@@ -36,6 +36,7 @@ export interface MentionRecord {
     parent_tweet_url?: string;
     parent_tweet_text?: string;
     parent_tweet_text_translated?: string;
+    parent_video_preview_url?: string;
     parent_tweet_category?: string;
     parent_tweet_category_id?: string;
     parent_tweet_domains?: any;
@@ -137,6 +138,7 @@ export async function upsertMention(mention: MentionRecord): Promise<boolean> {
                 parent_tweet_url: mention.parent_tweet_url,
                 parent_tweet_text: mention.parent_tweet_text,
                 parent_tweet_text_translated: mention.parent_tweet_text_translated,
+                parent_video_preview_url: mention.parent_video_preview_url,
                 parent_tweet_category: mention.parent_tweet_category,
                 parent_tweet_category_id: mention.parent_tweet_category_id,
                 parent_tweet_domains: mention.parent_tweet_domains,

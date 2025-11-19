@@ -30,6 +30,11 @@ interface EnvConfig {
     TWITTER_ACCESS_SECRET: string;
     // Optional: Bearer token if needed for specific v2 endpoints
     TWITTER_BEARER_TOKEN?: string;
+    // Supabase credentials
+    SUPABASE_URL: string;
+    SUPABASE_SERVICE_KEY: string;
+    // OpenAI credentials
+    OPENAI_API_KEY: string;
     // Browser configuration
     BROWSER_HEADLESS?: boolean;
     // Feature Flags
@@ -59,7 +64,11 @@ function validateConfig(env: NodeJS.ProcessEnv): EnvConfig {
         'TWITTER_API_KEY',
         'TWITTER_API_SECRET',
         'TWITTER_ACCESS_TOKEN',
-        'TWITTER_ACCESS_SECRET'
+        'TWITTER_ACCESS_SECRET',
+        // Supabase and OpenAI
+        'SUPABASE_URL',
+        'SUPABASE_SERVICE_KEY',
+        'OPENAI_API_KEY'
     ];
 
     for (const key of requiredKeys) {
@@ -129,6 +138,10 @@ function validateConfig(env: NodeJS.ProcessEnv): EnvConfig {
         TWITTER_ACCESS_TOKEN: env.TWITTER_ACCESS_TOKEN!,
         TWITTER_ACCESS_SECRET: env.TWITTER_ACCESS_SECRET!,
         TWITTER_BEARER_TOKEN: env.TWITTER_BEARER_TOKEN,
+        // Supabase and OpenAI
+        SUPABASE_URL: env.SUPABASE_URL!,
+        SUPABASE_SERVICE_KEY: env.SUPABASE_SERVICE_KEY!,
+        OPENAI_API_KEY: env.OPENAI_API_KEY!,
         // Browser config
         BROWSER_HEADLESS: browserHeadless,
         // Add new flags

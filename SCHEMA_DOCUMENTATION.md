@@ -24,6 +24,7 @@ CREATE TABLE mentions (
     parent_tweet_url TEXT,
     parent_tweet_text TEXT,
     parent_tweet_text_translated TEXT,  -- NEW: Translated to target language
+    parent_video_preview_url TEXT,      -- NEW: Preview/thumbnail URL for videos in parent tweet
     parent_tweet_category TEXT,
     parent_tweet_category_id TEXT,
     parent_tweet_domains JSONB,

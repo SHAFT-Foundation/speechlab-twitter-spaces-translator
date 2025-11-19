@@ -24,6 +24,7 @@ export interface MentionInfo {
     parentUsername?: string;      // Username of the parent tweet author
     parentTweetUrl?: string;      // URL of the parent tweet
     parentTweetText?: string;     // Text content of the parent tweet
+    parentVideoPreviewUrl?: string; // Preview image URL for video in parent tweet
     parentTweetCategory?: string; // Category of parent tweet
     parentTweetCategoryId?: string; // Category ID
     parentTweetDomains?: any[];   // Full context annotations

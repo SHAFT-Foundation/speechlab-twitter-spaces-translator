@@ -104,6 +104,7 @@ export interface MentionData {
     parentUsername?: string;
     parentTweetUrl?: string;
     parentTweetText?: string;
+    parentVideoPreviewUrl?: string;
     parentTweetCategory?: string;
     parentTweetCategoryId?: string;
     parentTweetDomains?: any[];
@@ -396,7 +397,7 @@ export async function fetchMentions(sinceId?: string, maxResults: number = 100):
                 // CRITICAL: referenced_tweets.id expansion tells Twitter to include the parent tweet data
                 // attachments.media_keys expansion applies to BOTH mention tweets AND referenced tweets
                 expansions: 'author_id,attachments.media_keys,referenced_tweets.id,referenced_tweets.id.author_id',
-                'media.fields': 'type,url,variants,duration_ms,media_key',
+                'media.fields': 'type,url,variants,duration_ms,media_key,preview_image_url',
             };
 
             logger.info(`[🐦 Mentions] Requesting up to ${clampedMaxResults} mentions...`);
@@ -540,6 +541,7 @@ export async function fetchMentions(sinceId?: string, maxResults: number = 100):
             let parentTweetCategoryId: string | undefined;
             let parentTweetDomains: any[] | undefined;
             let videoUrl: string | undefined;
+            let videoPreviewUrl: string | undefined;
             let hasVideo = false;
 
             if (tweet.referenced_tweets && tweet.referenced_tweets.length > 0) {
@@ -617,6 +619,13 @@ export async function fetchMentions(sinceId?: string, maxResults: number = 100):
                                             } else {
                                                 logger.warn(`[🐦 Mentions] ⚠️ No MP4 variants found for video`);
                                             }
+
+                                            // Extract preview image URL if available
+                                            if ((media as any).preview_image_url) {
+                                                videoPreviewUrl = (media as any).preview_image_url;
+                                                logger.info(`[🐦 Mentions] ✅ Found video preview URL: ${videoPreviewUrl}`);
+                                            }
+
                                             break;
                                         }
                                     } else {
@@ -644,6 +653,7 @@ export async function fetchMentions(sinceId?: string, maxResults: number = 100):
                 parentUsername: parentUsername,
                 parentTweetUrl: parentTweetUrl,
                 parentTweetText: parentTweetText,
+                parentVideoPreviewUrl: videoPreviewUrl,
                 parentTweetCategory: parentTweetCategory,
                 parentTweetCategoryId: parentTweetCategoryId,
                 parentTweetDomains: parentTweetDomains,
@@ -1386,13 +1396,13 @@ export async function fetchVideoForMention(mentionId: string): Promise<{ videoUr
             return { videoUrl: cached.videoUrl, parentTweetId };
         }
 
-        // Fetch parent tweet with media - with retry logic
-        logger.info(`[🐦 Video Fetch] Fetching video from parent tweet ${parentTweetId}...`);
+        // Fetch parent tweet with media AND text (for Space URLs) - with retry logic
+        logger.info(`[🐦 Video Fetch] Fetching video/Space from parent tweet ${parentTweetId}...`);
         let parentTweetData: any;
         for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
             try {
                 parentTweetData = await readOnlyClient.v2.singleTweet(parentTweetId, {
-                    'tweet.fields': 'attachments',
+                    'tweet.fields': 'attachments,text,entities',
                     expansions: 'attachments.media_keys',
                     'media.fields': 'type,url,variants,duration_ms'
                 });
@@ -1445,6 +1455,37 @@ export async function fetchVideoForMention(mentionId: string): Promise<{ videoUr
         } else {
             logger.warn(`[🐦 Video Fetch] ❌ No media found in parent tweet ${parentTweetId}`);
             logger.warn(`[🐦 Video Fetch] Includes object: ${JSON.stringify(parentTweetData.includes)}`);
+        }
+
+        // THIRD: Check parent tweet text for Twitter Space URLs if no video found
+        if (!videoUrl && parentTweetData.data?.text) {
+            logger.info(`[🐦 Video Fetch] No video found, checking parent tweet text for Space URL...`);
+            logger.info(`[🐦 Video Fetch] Parent tweet text: ${parentTweetData.data.text}`);
+
+            // Check for expanded URLs in entities first (t.co links get expanded here)
+            if (parentTweetData.data.entities?.urls) {
+                for (const urlEntity of parentTweetData.data.entities.urls) {
+                    const expandedUrl = urlEntity.expanded_url || urlEntity.url;
+                    logger.info(`[🐦 Video Fetch] Checking URL: ${expandedUrl}`);
+
+                    // Check if it's a Space URL
+                    const spaceUrlMatch = expandedUrl.match(/https:\/\/(?:twitter|x)\.com\/i\/spaces\/([a-zA-Z0-9]+)/);
+                    if (spaceUrlMatch) {
+                        videoUrl = expandedUrl; // Use the Space URL as the "video" URL for now
+                        logger.info(`[🐦 Video Fetch] ✅ Found Twitter Space URL in parent tweet: ${videoUrl}`);
+                        break;
+                    }
+                }
+            }
+
+            // Fallback: Check raw text for Space URLs
+            if (!videoUrl) {
+                const spaceUrlMatch = parentTweetData.data.text.match(/https:\/\/(?:twitter|x)\.com\/i\/spaces\/([a-zA-Z0-9]+)/);
+                if (spaceUrlMatch) {
+                    videoUrl = spaceUrlMatch[0];
+                    logger.info(`[🐦 Video Fetch] ✅ Found Twitter Space URL in parent tweet text: ${videoUrl}`);
+                }
+            }
         }
 
         // Cache the result

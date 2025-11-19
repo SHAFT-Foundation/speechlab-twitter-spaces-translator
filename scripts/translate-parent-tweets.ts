@@ -11,10 +11,7 @@ import { config } from '../src/utils/config';
 import logger from '../src/utils/logger';
 import OpenAI from 'openai';
 
-const SUPABASE_URL = 'https://cemuqqzmamjmtefodbqs.supabase.co';
-const SUPABASE_SERVICE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNlbXVxcXptYW1qbXRlZm9kYnFzIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc1NjA3NTE3NCwiZXhwIjoyMDcxNjUxMTc0fQ.oyab1F0RzduXtHKPHuzocvvM0tHRtFFmWtNDh1cDtio';
-
-const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
+const supabase = createClient(config.SUPABASE_URL, config.SUPABASE_SERVICE_KEY);
 
 const twitterClient = new TwitterApi({
     appKey: config.TWITTER_API_KEY,

@@ -9,7 +9,8 @@ import {
     findSpaceUrlOnPage,
     clickPlayButtonAndCaptureM3u8,
     extractSpaceTitleFromModal,
-    getVideoM3u8FromMention
+    getVideoM3u8FromMention,
+    initializeDaemonBrowser
 } from './services/twitterInteractionService';
 import { fetchMentions, postReplyWithMedia, MentionData, fetchVideoForMention, testTwitterApiConnection } from './services/twitterMentionService';
 import { downloadAndUploadAudio, downloadAndUploadVideo } from './services/audioService';
@@ -1392,6 +1393,68 @@ async function runInitiationQueue(): Promise<void> {
             const { videoUrl, parentTweetId } = await fetchVideoForMention(mentionToProcess.tweetId);
 
             if (videoUrl) {
+                // Check if this is a Twitter Space URL (not a direct m3u8 video)
+                const isSpaceUrl = videoUrl.match(/https:\/\/(?:twitter|x)\.com\/i\/spaces\/([a-zA-Z0-9]+)/);
+
+                if (isSpaceUrl) {
+                    logger.info(`[🎥 VIDEO] 🎙️ Detected Twitter Space URL in parent tweet ${parentTweetId}`);
+                    logger.info(`[🎥 VIDEO] Space URL: ${videoUrl}`);
+                    logger.info(`[🎥 VIDEO] Twitter Spaces require Playwright browser to extract m3u8`);
+
+                    // Initialize browser for Space processing
+                    logger.info(`[🌐 BROWSER] Initializing Playwright browser for Space m3u8 extraction...`);
+                    const { browser, context } = await initializeDaemonBrowser();
+                    const page = await context.newPage();
+
+                    try {
+                        // Twitter Spaces need browser-based m3u8 extraction
+                        // Call the full initiateProcessing() function with Playwright
+                        const initResult = await initiateProcessing(mentionToProcess, page);
+
+                        // Continue with backend processing
+                        logger.info(`\n${'⚙️'.repeat(80)}`);
+                        logger.info(`[STEP 5] START BACKEND PROCESSING (SPEECHLAB)`);
+                        logger.info(`${'⚙️'.repeat(80)}`);
+                        logger.info(`[⚙️ BACKEND] Updating database status to 'processing' and saving M3U8 URL + content type...`);
+                        await updateMentionStatus(mentionToProcess.tweetId, 'processing', {
+                            m3u8_url: initResult.m3u8Url,
+                            content_type: initResult.contentType
+                        });
+                        logger.info(`[⚙️ BACKEND] ✅ Database status updated with M3U8 URL and content_type: ${initResult.contentType}`);
+                        logger.info(`[⚙️ BACKEND] Calling performBackendProcessing()...`);
+
+                        const backendResult = await performBackendProcessing(initResult);
+                        logger.info(`[⚙️ BACKEND] performBackendProcessing() returned`);
+                        logger.info(`${'⚙️'.repeat(80)}\n`);
+
+                        // Queue for final reply
+                        addToFinalReplyQueue(mentionToProcess, backendResult);
+                    } catch (spaceError) {
+                        logger.error(`[🎥 VIDEO] ❌ Error processing Twitter Space:`, spaceError);
+                        // Update status to failed
+                        await updateMentionStatus(mentionToProcess.tweetId, 'failed', {
+                            error_message: `Space processing error: ${spaceError instanceof Error ? spaceError.message : String(spaceError)}`
+                        });
+                    } finally {
+                        // Clean up browser resources
+                        logger.info(`[🌐 BROWSER] Closing browser...`);
+                        await page.close();
+                        await context.close();
+                        await browser.close();
+                        logger.info(`[🌐 BROWSER] Browser closed`);
+
+                        // CRITICAL: Done processing - unlock worker
+                        logger.info(`\n${'🔓'.repeat(80)}`);
+                        logger.info(`[WORKER EXIT] Space processing complete - unlocking worker`);
+                        logger.info(`[WORKER EXIT] 🔴 Setting worker flag to FALSE`);
+                        logger.info(`${'🔓'.repeat(80)}\n`);
+                        isInitiatingProcessing = false;
+                        lastWorkerStartTime = null;
+                        return;
+                    }
+                }
+
+                // Regular video - use fast path
                 logger.info(`[🎥 VIDEO] ✅ SUCCESS! Found video in parent tweet ${parentTweetId}`);
                 logger.info(`[🎥 VIDEO] Video URL: ${videoUrl}`);
                 mentionToProcess.hasVideo = true;
@@ -2310,6 +2373,7 @@ async function main() {
                         parent_tweet_url: mention.parentTweetUrl,
                         parent_tweet_text: mention.parentTweetText,
                         parent_tweet_text_translated: translatedParentText,
+                        parent_video_preview_url: mention.parentVideoPreviewUrl,
                         parent_tweet_category: mention.parentTweetCategory,
                         parent_tweet_category_id: mention.parentTweetCategoryId,
                         parent_tweet_domains: mention.parentTweetDomains,
