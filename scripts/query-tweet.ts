@@ -20,19 +20,6 @@ async function queryTweet(tweetId: string) {
     console.log('Mentions Table:');
     console.log(JSON.stringify(mentions, null, 2));
   }
-
-  // Query dub_replies table
-  const { data: dubReplies, error: dubRepliesError } = await supabase
-    .from('dub_replies')
-    .select('id, tweet_id, space_id, video_url, content_type, status, error_message, created_at')
-    .eq('tweet_id', tweetId);
-
-  if (dubRepliesError) {
-    console.error('Dub Replies Error:', dubRepliesError);
-  } else {
-    console.log('\nDub Replies Table:');
-    console.log(JSON.stringify(dubReplies, null, 2));
-  }
 }
 
 const tweetId = process.argv[2] || '1990830841581482128';
