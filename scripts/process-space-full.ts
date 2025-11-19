@@ -159,20 +159,23 @@ async function processSpaceFull(tweetId: string) {
         logger.info(`\n[FULL] Step 8: Creating SpeechLab dubbing project...`);
         const thirdPartyID = `${spaceTitle.toLowerCase().replace(/\s+/g, '-')}-${sourceLanguageCode}-to-${targetLanguageCode}-${tweetId}`;
 
-        const project = await createDubbingProject(
-            thirdPartyID,
-            spaceTitle,
+        const projectId = await createDubbingProject(
             audioS3Url,
-            sourceLanguageCode,
+            spaceTitle,
             targetLanguageCode,
-            config.DUB_ACCENT
+            thirdPartyID,
+            sourceLanguageCode
         );
 
-        logger.info(`[FULL] ✅ Project created: ${project.id}`);
+        if (!projectId) {
+            throw new Error('Failed to create dubbing project');
+        }
+
+        logger.info(`[FULL] ✅ Project created: ${projectId}`);
 
         // Step 9: Wait for completion
         logger.info(`\n[FULL] Step 9: Waiting for dubbing to complete (this may take 10-15 minutes)...`);
-        const completedProject = await waitForProjectCompletion(project.id, thirdPartyID);
+        const completedProject = await waitForProjectCompletion(projectId, thirdPartyID);
 
         if (!completedProject || completedProject.job?.status !== 'COMPLETE') {
             throw new Error(`Project did not complete successfully`);
@@ -189,7 +192,7 @@ async function processSpaceFull(tweetId: string) {
 
         // Step 11: Generate sharing link
         logger.info(`\n[FULL] Step 11: Generating sharing link...`);
-        const sharingLink = await generateSharingLink(project.id);
+        const sharingLink = await generateSharingLink(projectId);
         logger.info(`[FULL] ✅ Sharing link: ${sharingLink}`);
 
         await updateMentionStatus(tweetId, 'complete', {
