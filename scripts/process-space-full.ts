@@ -175,7 +175,8 @@ async function processSpaceFull(tweetId: string) {
 
         // Step 9: Wait for completion
         logger.info(`\n[FULL] Step 9: Waiting for dubbing to complete (this may take 10-15 minutes)...`);
-        const completedProject = await waitForProjectCompletion(projectId, thirdPartyID);
+        const maxWaitTimeMs = 6 * 60 * 60 * 1000; // 6 hours in milliseconds
+        const completedProject = await waitForProjectCompletion(thirdPartyID, maxWaitTimeMs);
 
         if (!completedProject || completedProject.job?.status !== 'COMPLETE') {
             throw new Error(`Project did not complete successfully`);
@@ -183,12 +184,60 @@ async function processSpaceFull(tweetId: string) {
 
         logger.info(`[FULL] ✅ Dubbing complete!`);
 
-        // Step 10: Get dubbed audio URL
-        const dubbedAudioUrl = completedProject.translations?.[0]?.dub?.[0]?.audio_url;
-        if (!dubbedAudioUrl) {
-            throw new Error('No dubbed audio URL found in completed project');
+        // Step 10: Download and upload dubbed audio (same as daemon)
+        logger.info(`\n[FULL] Step 10: Downloading dubbed audio and uploading to S3...`);
+        const outputAudio = completedProject.translations?.[0]?.dub?.[0]?.medias?.find(d =>
+            d.category === 'audio' && d.format === 'mp3' && d.operationType === 'OUTPUT'
+        );
+
+        if (!outputAudio?.presignedURL) {
+            throw new Error('No dubbed audio found in completed project medias');
         }
-        logger.info(`[FULL] ✅ Dubbed audio URL: ${dubbedAudioUrl}`);
+
+        logger.info(`[FULL] Found dubbed audio with presigned URL`);
+
+        // Download and upload to S3 (reusing existing audioService)
+        const { downloadFile } = await import('../src/utils/fileUtils.js');
+        const { uploadLocalFileToS3 } = await import('../src/services/audioService.js');
+        const path = await import('path');
+        const fs = await import('fs');
+        const os = await import('os');
+
+        const tempDir = path.join(os.tmpdir(), 'twitter-spaces-audio');
+        if (!fs.existsSync(tempDir)) {
+            fs.mkdirSync(tempDir, { recursive: true });
+        }
+
+        const audioFilename = `${thirdPartyID}_dubbed.mp3`;
+        const destinationAudioPath = path.join(tempDir, audioFilename);
+
+        logger.info(`[FULL] Downloading dubbed audio to ${destinationAudioPath}...`);
+        const downloadSuccess = await downloadFile(outputAudio.presignedURL, destinationAudioPath);
+
+        if (!downloadSuccess) {
+            throw new Error('Failed to download dubbed audio file');
+        }
+
+        logger.info(`[FULL] Successfully downloaded dubbed audio`);
+
+        // Upload to public S3
+        const publicS3Key = `dubbed-spaces/${audioFilename}`;
+        logger.info(`[FULL] Uploading to S3 as ${publicS3Key}...`);
+        const dubbedAudioUrl = await uploadLocalFileToS3(destinationAudioPath, publicS3Key);
+
+        if (!dubbedAudioUrl) {
+            throw new Error('Failed to upload dubbed audio to S3');
+        }
+
+        logger.info(`[FULL] ✅ Dubbed audio uploaded to S3: ${dubbedAudioUrl}`);
+
+        // Clean up temp file
+        try {
+            fs.unlinkSync(destinationAudioPath);
+            logger.info(`[FULL] Cleaned up temp file: ${destinationAudioPath}`);
+        } catch (e) {
+            logger.warn(`[FULL] Failed to clean up temp file: ${e}`);
+        }
 
         // Step 11: Generate sharing link
         logger.info(`\n[FULL] Step 11: Generating sharing link...`);
@@ -202,7 +251,7 @@ async function processSpaceFull(tweetId: string) {
 
         // Step 12: Post reply to Twitter
         logger.info(`\n[FULL] Step 12: Posting reply to Twitter...`);
-        const replyText = `@${mention.username} Your Space dubbed to ${targetLanguageName}!\n\nListen: ${sharingLink}\n\nDisclaimer: this content is not certified for accuracy`;
+        const replyText = `@${mention.username} Your ${sourceLanguageName} to ${targetLanguageName} dub is ready! 🎉\n\nWatch here: ${dubbedAudioUrl}\n\nDisclaimer: this content is not certified for accuracy`;
 
         logger.info(`[FULL] Reply text: ${replyText}`);
         const replyResult = await postReplyWithMedia(replyText, tweetId, undefined);
