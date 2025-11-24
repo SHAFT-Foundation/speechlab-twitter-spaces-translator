@@ -44,9 +44,9 @@ async function processVideoFull(tweetId: string) {
         process.exit(1);
     }
 
-    const isSpaceUrl = videoUrl.match(/https:\/\/(?:twitter|x)\.com\/i\/spaces\/([a-zA-Z0-9]+)/);
+    const isSpaceUrl = videoUrl.match(/https:\/\/(?:twitter|x)\.com\/i\/(?:spaces|broadcasts)\/([a-zA-Z0-9]+)/);
     if (isSpaceUrl) {
-        logger.error(`[FULL] This is a Space URL, not a video. Use process-space-full.ts instead.`);
+        logger.error(`[FULL] This is a Space/Broadcast URL, not a video. Use process-space-full.ts instead.`);
         process.exit(1);
     }
 

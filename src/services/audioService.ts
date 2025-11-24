@@ -43,10 +43,12 @@ function ensureTempVideoDirExists(): void {
  */
 function runFfmpegDownload(m3u8Url: string, outputFilePath: string): Promise<void> {
     return new Promise((resolve, reject) => {
+        const MAX_DURATION_SECONDS = 90 * 60; // 90 minutes = 5400 seconds
         const ffmpegArgs = [
             '-protocol_whitelist', 'file,http,https,tcp,tls,crypto',
             '-i', m3u8Url,
-            '-c', 'copy', 
+            '-t', MAX_DURATION_SECONDS.toString(), // Limit to 90 minutes
+            '-c', 'copy',
             '-bsf:a', 'aac_adtstoasc',
             '-y',
             outputFilePath
@@ -55,7 +57,7 @@ function runFfmpegDownload(m3u8Url: string, outputFilePath: string): Promise<voi
         // Log the full ffmpeg command prominently
         const ffmpegCommand = `ffmpeg ${ffmpegArgs.join(' ')}`;
         logger.info('-------------------------------------------');
-        logger.info(`[🎧 Audio] EXECUTING FFMPEG COMMAND:`);
+        logger.info(`[🎧 Audio] EXECUTING FFMPEG COMMAND (MAX 90 MINUTES):`);
         logger.info(ffmpegCommand);
         logger.info('-------------------------------------------');
 
@@ -405,9 +407,11 @@ export async function uploadLocalFileToS3(localFilePath: string, s3Key: string):
  */
 function runFfmpegVideoDownload(m3u8Url: string, outputFilePath: string): Promise<void> {
     return new Promise((resolve, reject) => {
+        const MAX_DURATION_SECONDS = 90 * 60; // 90 minutes = 5400 seconds
         const ffmpegArgs = [
             '-protocol_whitelist', 'file,http,https,tcp,tls,crypto',
             '-i', m3u8Url,
+            '-t', MAX_DURATION_SECONDS.toString(), // Limit to 90 minutes
             '-c:v', 'libx264',      // Video codec: H.264 for Twitter compatibility
             '-c:a', 'aac',          // Audio codec: AAC
             '-movflags', '+faststart', // Optimize for web streaming
@@ -419,7 +423,7 @@ function runFfmpegVideoDownload(m3u8Url: string, outputFilePath: string): Promis
 
         const ffmpegCommand = `ffmpeg ${ffmpegArgs.join(' ')}`;
         logger.info('-------------------------------------------');
-        logger.info(`[🎬 Video] EXECUTING FFMPEG COMMAND:`);
+        logger.info(`[🎬 Video] EXECUTING FFMPEG COMMAND (MAX 90 MINUTES):`);
         logger.info(ffmpegCommand);
         logger.info('-------------------------------------------');
 

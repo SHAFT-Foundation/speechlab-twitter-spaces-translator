@@ -329,6 +329,108 @@ export async function getProcessingMentionsWithMedia(): Promise<MentionRecord[]>
     }
 }
 
+/**
+ * Twitter Account Record
+ */
+export interface TwitterAccountRecord {
+    username: string;
+    profile_image_url?: string;
+    user_id?: string;
+    display_name?: string;
+    created_at?: string;
+    updated_at?: string;
+}
+
+/**
+ * Upsert a Twitter account (create or update profile info)
+ */
+export async function upsertTwitterAccount(account: TwitterAccountRecord): Promise<boolean> {
+    try {
+        const supabase = getSupabase();
+
+        const { error } = await supabase
+            .from('twitter_accounts')
+            .upsert({
+                username: account.username,
+                profile_image_url: account.profile_image_url,
+                user_id: account.user_id,
+                display_name: account.display_name,
+                updated_at: new Date().toISOString()
+            }, {
+                onConflict: 'username'
+            });
+
+        if (error) {
+            if (error.message && !error.message.includes('table') && !error.message.includes('schema')) {
+                logger.error(`[📊 Supabase] Error upserting twitter account @${account.username}:`, error);
+            }
+            return false;
+        }
+
+        logger.debug(`[📊 Supabase] Twitter account @${account.username} upserted successfully`);
+        return true;
+    } catch (error) {
+        logger.error(`[📊 Supabase] Exception upserting twitter account:`, error);
+        return false;
+    }
+}
+
+/**
+ * Get a Twitter account by username
+ */
+export async function getTwitterAccount(username: string): Promise<TwitterAccountRecord | null> {
+    try {
+        const supabase = getSupabase();
+
+        const { data, error } = await supabase
+            .from('twitter_accounts')
+            .select('*')
+            .eq('username', username)
+            .single();
+
+        if (error) {
+            if (error.code === 'PGRST116') {
+                // Not found
+                return null;
+            }
+            logger.error(`[📊 Supabase] Error fetching twitter account @${username}:`, error);
+            return null;
+        }
+
+        return data as TwitterAccountRecord;
+    } catch (error) {
+        logger.error(`[📊 Supabase] Exception fetching twitter account:`, error);
+        return null;
+    }
+}
+
+/**
+ * Get all Twitter accounts that need profile image refresh (older than 7 days)
+ */
+export async function getStaleTwitterAccounts(): Promise<TwitterAccountRecord[]> {
+    try {
+        const supabase = getSupabase();
+        const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+
+        const { data, error } = await supabase
+            .from('twitter_accounts')
+            .select('*')
+            .lt('updated_at', sevenDaysAgo)
+            .order('updated_at', { ascending: true })
+            .limit(100);
+
+        if (error) {
+            logger.error(`[📊 Supabase] Error fetching stale twitter accounts:`, error);
+            return [];
+        }
+
+        return data || [];
+    } catch (error) {
+        logger.error(`[📊 Supabase] Exception fetching stale twitter accounts:`, error);
+        return [];
+    }
+}
+
 export async function getUnprocessedMentions(): Promise<MentionRecord[]> {
     try {
         const supabase = getSupabase();

@@ -80,15 +80,15 @@ async function processSpaceFull(tweetId: string) {
         process.exit(1);
     }
 
-    const isSpaceUrl = videoUrl.match(/https:\/\/(?:twitter|x)\.com\/i\/spaces\/([a-zA-Z0-9]+)/);
+    const isSpaceUrl = videoUrl.match(/https:\/\/(?:twitter|x)\.com\/i\/(?:spaces|broadcasts)\/([a-zA-Z0-9]+)/);
     if (!isSpaceUrl) {
-        logger.error(`[FULL] Not a Space URL: ${videoUrl}`);
+        logger.error(`[FULL] Not a Space/Broadcast URL: ${videoUrl}`);
         process.exit(1);
     }
 
     const spaceId = isSpaceUrl[1];
-    logger.info(`[FULL] ✅ Space URL: ${videoUrl}`);
-    logger.info(`[FULL] Space ID: ${spaceId}`);
+    logger.info(`[FULL] ✅ Space/Broadcast URL: ${videoUrl}`);
+    logger.info(`[FULL] Space/Broadcast ID: ${spaceId}`);
 
     // Step 4: Initialize browser
     logger.info(`\n[FULL] Step 4: Launching Playwright browser...`);

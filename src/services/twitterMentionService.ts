@@ -2,6 +2,7 @@ import { TwitterApi, TweetV2, EUploadMimeType } from 'twitter-api-v2';
 import { TwitterApiRateLimitPlugin } from '@twitter-api-v2/plugin-rate-limit';
 import logger from '../utils/logger';
 import { config } from '../utils/config';
+import { upsertTwitterAccount } from './supabaseService';
 import * as fs from 'fs';
 
 /**
@@ -533,6 +534,16 @@ export async function fetchMentions(sinceId?: string, maxResults: number = 100):
             const username = author?.username || 'unknown';
             const profileImageUrl = author?.profile_image_url;
 
+            // Store mention author account in twitter_accounts table
+            if (author && username !== 'unknown') {
+                await upsertTwitterAccount({
+                    username: username,
+                    profile_image_url: profileImageUrl,
+                    user_id: tweet.author_id,
+                    display_name: (author as any).name
+                });
+            }
+
             // Get parent tweet info if this is a reply
             let parentUsername: string | undefined;
             let parentTweetUrl: string | undefined;
@@ -540,6 +551,7 @@ export async function fetchMentions(sinceId?: string, maxResults: number = 100):
             let parentTweetCategory: string | undefined;
             let parentTweetCategoryId: string | undefined;
             let parentTweetDomains: any[] | undefined;
+            let parentProfileImageUrl: string | undefined;
             let videoUrl: string | undefined;
             let videoPreviewUrl: string | undefined;
             let hasVideo = false;
@@ -556,10 +568,21 @@ export async function fetchMentions(sinceId?: string, maxResults: number = 100):
                         logger.debug(`[🐦 Mentions] Found parent tweet ${referencedTweet.id} in includes`);
                         logger.debug(`[🐦 Mentions] Parent tweet attachments:`, parentTweet.attachments);
 
-                        // Get parent author username
+                        // Get parent author username and profile image
                         if (parentTweet.author_id) {
                             const parentAuthor = mentionsTimeline.data.includes?.users?.find(u => u.id === parentTweet.author_id);
                             parentUsername = parentAuthor?.username;
+                            parentProfileImageUrl = parentAuthor?.profile_image_url;
+
+                            // Store parent author account in twitter_accounts table
+                            if (parentAuthor && parentUsername) {
+                                await upsertTwitterAccount({
+                                    username: parentUsername,
+                                    profile_image_url: parentProfileImageUrl,
+                                    user_id: parentTweet.author_id,
+                                    display_name: (parentAuthor as any).name
+                                });
+                            }
 
                             // Build parent tweet URL
                             if (parentUsername) {
@@ -645,11 +668,12 @@ export async function fetchMentions(sinceId?: string, maxResults: number = 100):
             }
 
             // Build mention data WITH video info from parent tweet
+            // Use parent profile image (not mention author's profile image)
             mentions.push({
                 tweetId: tweet.id,
                 tweetUrl: `https://twitter.com/${username}/status/${tweet.id}`,
                 username: username,
-                profileImageUrl: profileImageUrl,
+                profileImageUrl: parentProfileImageUrl,
                 parentUsername: parentUsername,
                 parentTweetUrl: parentTweetUrl,
                 parentTweetText: parentTweetText,
@@ -1466,24 +1490,29 @@ export async function fetchVideoForMention(mentionId: string): Promise<{ videoUr
             if (parentTweetData.data.entities?.urls) {
                 for (const urlEntity of parentTweetData.data.entities.urls) {
                     const expandedUrl = urlEntity.expanded_url || urlEntity.url;
+                    const unwoundUrl = urlEntity.unwound_url;
                     logger.info(`[🐦 Video Fetch] Checking URL: ${expandedUrl}`);
+                    if (unwoundUrl) {
+                        logger.info(`[🐦 Video Fetch] Unwound URL: ${unwoundUrl}`);
+                    }
 
-                    // Check if it's a Space URL
-                    const spaceUrlMatch = expandedUrl.match(/https:\/\/(?:twitter|x)\.com\/i\/spaces\/([a-zA-Z0-9]+)/);
+                    // Check if it's a Space URL (spaces/ or broadcasts/)
+                    const urlToCheck = unwoundUrl || expandedUrl;
+                    const spaceUrlMatch = urlToCheck.match(/https:\/\/(?:twitter|x)\.com\/i\/(?:spaces|broadcasts)\/([a-zA-Z0-9]+)/);
                     if (spaceUrlMatch) {
-                        videoUrl = expandedUrl; // Use the Space URL as the "video" URL for now
-                        logger.info(`[🐦 Video Fetch] ✅ Found Twitter Space URL in parent tweet: ${videoUrl}`);
+                        videoUrl = urlToCheck; // Use the Space/Broadcast URL as the "video" URL
+                        logger.info(`[🐦 Video Fetch] ✅ Found Twitter Space/Broadcast URL in parent tweet: ${videoUrl}`);
                         break;
                     }
                 }
             }
 
-            // Fallback: Check raw text for Space URLs
+            // Fallback: Check raw text for Space URLs (spaces/ or broadcasts/)
             if (!videoUrl) {
-                const spaceUrlMatch = parentTweetData.data.text.match(/https:\/\/(?:twitter|x)\.com\/i\/spaces\/([a-zA-Z0-9]+)/);
+                const spaceUrlMatch = parentTweetData.data.text.match(/https:\/\/(?:twitter|x)\.com\/i\/(?:spaces|broadcasts)\/([a-zA-Z0-9]+)/);
                 if (spaceUrlMatch) {
                     videoUrl = spaceUrlMatch[0];
-                    logger.info(`[🐦 Video Fetch] ✅ Found Twitter Space URL in parent tweet text: ${videoUrl}`);
+                    logger.info(`[🐦 Video Fetch] ✅ Found Twitter Space/Broadcast URL in parent tweet text: ${videoUrl}`);
                 }
             }
         }

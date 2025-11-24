@@ -32,12 +32,14 @@ async function backfillProfileImages() {
         const twoWeeksAgo = new Date();
         twoWeeksAgo.setDate(twoWeeksAgo.getDate() - 14);
 
-        // Fetch mentions missing profile images
+        // Fetch mentions missing or with incorrect profile images
+        // Note: twitter_profile_image_url should be the PARENT author's profile image
+        // We fetch all mentions (not just null ones) to fix any incorrect images
         const { data: mentions, error } = await supabase
             .from('mentions')
-            .select('tweet_id, username, twitter_profile_image_url')
+            .select('tweet_id, username, parent_username, twitter_profile_image_url')
             .gte('created_at', twoWeeksAgo.toISOString())
-            .is('twitter_profile_image_url', null)
+            .not('parent_username', 'is', null)  // Only process mentions that have a parent
             .order('created_at', { ascending: true });
 
         if (error) {
@@ -46,39 +48,43 @@ async function backfillProfileImages() {
         }
 
         if (!mentions || mentions.length === 0) {
-            logger.info('[Backfill Images] No mentions missing profile images');
+            logger.info('[Backfill Images] No mentions to process');
             return;
         }
 
-        logger.info(`[Backfill Images] Found ${mentions.length} mentions missing profile images`);
+        logger.info(`[Backfill Images] Found ${mentions.length} mentions to process (fixing profile images)`);
 
         let updatedCount = 0;
         let errorCount = 0;
 
-        // Group by username to batch fetch user data
+        // Group by parent_username to batch fetch user data
+        // Note: We're fetching PARENT author profile images, not mention author images
         const usernameMap = new Map<string, string[]>();
         for (const mention of mentions) {
-            if (!usernameMap.has(mention.username)) {
-                usernameMap.set(mention.username, []);
+            const parentUsername = mention.parent_username;
+            if (!parentUsername) continue;
+
+            if (!usernameMap.has(parentUsername)) {
+                usernameMap.set(parentUsername, []);
             }
-            usernameMap.get(mention.username)!.push(mention.tweet_id);
+            usernameMap.get(parentUsername)!.push(mention.tweet_id);
         }
 
-        logger.info(`[Backfill Images] Processing ${usernameMap.size} unique usernames...`);
+        logger.info(`[Backfill Images] Processing ${usernameMap.size} unique parent usernames...`);
 
-        for (const [username, tweetIds] of usernameMap.entries()) {
+        for (const [parentUsername, tweetIds] of usernameMap.entries()) {
             try {
-                logger.info(`[Backfill Images] Fetching profile image for @${username}...`);
+                logger.info(`[Backfill Images] Fetching profile image for parent author @${parentUsername}...`);
 
-                const user = await rwClient.v2.userByUsername(username, {
+                const user = await rwClient.v2.userByUsername(parentUsername, {
                     'user.fields': 'profile_image_url'
                 });
 
                 if (user.data && user.data.profile_image_url) {
                     const profileImageUrl = user.data.profile_image_url;
-                    logger.info(`[Backfill Images] ✅ Found profile image for @${username}: ${profileImageUrl}`);
+                    logger.info(`[Backfill Images] ✅ Found profile image for @${parentUsername}: ${profileImageUrl}`);
 
-                    // Update all mentions with this username
+                    // Update all mentions with this parent_username
                     for (const tweetId of tweetIds) {
                         const { error: updateError } = await supabase
                             .from('mentions')
@@ -96,7 +102,7 @@ async function backfillProfileImages() {
                         }
                     }
                 } else {
-                    logger.warn(`[Backfill Images] No profile image found for @${username}`);
+                    logger.warn(`[Backfill Images] No profile image found for @${parentUsername}`);
                 }
 
                 // Rate limit protection - 300 requests per 15 minutes = 1 per 3 seconds
@@ -109,7 +115,7 @@ async function backfillProfileImages() {
                     // Retry this username
                     continue;
                 }
-                logger.error(`[Backfill Images] Error fetching @${username}:`, error);
+                logger.error(`[Backfill Images] Error fetching @${parentUsername}:`, error);
                 errorCount += tweetIds.length;
             }
         }
